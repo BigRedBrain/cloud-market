@@ -3,6 +3,11 @@
 Status: **not started.** Nothing has been pushed and nothing has been applied to
 production. This document is the plan to be reviewed before either happens.
 
+A first pre-flight attempt read the **development** database rather than
+production and must be re-run. Production's migration state is still unverified.
+The cause, and the tooling change that makes the mistake impossible to repeat,
+are in §7a — read that before running Step 0.
+
 ---
 
 ## 1. What is being deployed
@@ -59,22 +64,33 @@ Each step has an explicit gate. Do not proceed past a failed gate.
 
 ### Step 0 — Pre-flight (read-only)
 
-```bash
-DATABASE_URL=<production> node scripts/verify-bag-production.mjs \
-  https://cloud-market-ten.vercel.app --allow-production --preflight
+This shell is **PowerShell**, which has no `VAR=value command` prefix. Set the
+variable first:
+
+```powershell
+$env:DATABASE_URL = "<pooled production connection string>"
+node scripts/verify-bag-production.mjs https://cloud-market-ten.vercel.app --allow-production --preflight
 ```
 
-Expected output:
+Use the **pooled** string here; the unpooled one is only for Step 2.
+
+The script no longer reads `.env.local`, and it refuses to run unless the
+database it connects to is the same one the deployed app reports at
+`/api/health`. A first line reading `target confirmed` is what makes the rest of
+the output trustworthy:
 
 ```
+deployed app database:  2b968b3cbe06 (environment: production)
+this script's database: 2b968b3cbe06
+target confirmed: same database as the deployed application
+
 PRE-FLIGHT: 0005 NOT APPLIED, 0006 NOT APPLIED
 ```
 
-It also prints the endpoint fingerprint. **Confirm it reads `2b968b3cbe06`**
-before continuing — that is the check that the target is production and not a
-branch. Prints no credentials.
+Prints no credentials. If the two fingerprints differ it aborts with exit 1 and
+reads nothing.
 
-**Gate:** both migrations report NOT APPLIED, fingerprint is `2b968b3cbe06`.
+**Gate:** `target confirmed` appears, and both migrations report NOT APPLIED.
 
 ### Step 1 — Snapshot for rollback
 
@@ -97,8 +113,9 @@ only to restore it.
 Use the **unpooled** connection string. Drizzle migrations run DDL in a
 transaction; a pooled connection can hand you a different backend mid-session.
 
-```bash
-DATABASE_URL=<production-unpooled> npx drizzle-kit migrate
+```powershell
+$env:DATABASE_URL = "<UNPOOLED production connection string>"
+npx drizzle-kit migrate
 ```
 
 Both files apply in one run, in order. `ALTER TYPE … ADD VALUE` is permitted
@@ -110,12 +127,12 @@ is written later by application code. Neon runs Postgres 17.
 
 ### Step 3 — Confirm the schema landed
 
-```bash
-DATABASE_URL=<production> node scripts/verify-bag-production.mjs \
-  https://cloud-market-ten.vercel.app --allow-production --preflight
+```powershell
+$env:DATABASE_URL = "<pooled production connection string>"
+node scripts/verify-bag-production.mjs https://cloud-market-ten.vercel.app --allow-production --preflight
 ```
 
-Expected: `PRE-FLIGHT: 0005 APPLIED, 0006 APPLIED`.
+Expected: `target confirmed`, then `PRE-FLIGHT: 0005 APPLIED, 0006 APPLIED`.
 
 At this point production has cart tables and no cart code. The storefront is
 unchanged and unaffected — nothing reads those tables yet. **This is a safe
@@ -138,9 +155,9 @@ and ordered.
 
 ### Step 5 — Verify
 
-```bash
-DATABASE_URL=<production> node scripts/verify-bag-production.mjs \
-  https://cloud-market-ten.vercel.app --allow-production
+```powershell
+$env:DATABASE_URL = "<pooled production connection string>"
+node scripts/verify-bag-production.mjs https://cloud-market-ten.vercel.app --allow-production
 ```
 
 Full run. See §6 for what it covers and §7 for what it deliberately does not.
@@ -246,6 +263,53 @@ is published. This is stated plainly rather than papered over.
 **One temporary account is created.** Unlike a product it is invisible to other
 visitors, and it is removed by primary key along with its sessions, carts and
 audit rows, with baseline counts re-asserted afterwards.
+
+---
+
+## 7a. Incident: the pre-flight that read the wrong database
+
+On the first attempt, Step 0 returned `0005 APPLIED, 0006 APPLIED` against what
+was believed to be production. **It had read development.** No production
+credential was ever used, and nothing was written anywhere.
+
+Three defects lined up, all of them mine:
+
+1. **The script loaded `.env.local` as a fallback.** That file holds development
+   credentials. `dotenv` does not override an already-set variable, so passing
+   `DATABASE_URL` inline worked — and omitting it failed silently instead of
+   loudly.
+2. **The documented command was bash syntax given to a PowerShell operator.**
+   PowerShell has no `VAR=value command` prefix, so the variable never reached
+   the process and the fallback in (1) took over.
+3. **The plan told the operator to confirm a fingerprint the script could never
+   print.** Two different schemes exist in this repo:
+
+   | Scheme | Used by | Development | Production |
+   | --- | --- | --- | --- |
+   | `sha256(full hostname)` | `/api/health`, `verify-auth-production`, `verify-cms-production` | `eec6912eb35b` pooled / `3c503c1409d2` direct | `2b968b3cbe06` pooled |
+   | `sha256(endpoint id)` | the original `verify-bag-production` | `a5d81ac199d8` (both) | — |
+
+   The reported `a5d81ac199d8` was development under the second scheme, being
+   compared against production under the first. Two different databases *and*
+   two different algorithms.
+
+What confirmed the diagnosis: the reported journal had 7 migrations with the most
+recent at `2026-07-31T17:27:33.644Z`, which is exactly when 0006 was applied to
+the development branch during Phase 3 — along with 20 public tables and the
+seeded development catalog (12 products, 43 variants, 7 categories, 5 brands).
+Production's catalog is empty.
+
+**The fix, in the tool rather than in the instructions.** `verify-bag-production`
+no longer reads `.env.local` at all, requires `DATABASE_URL` explicitly, and
+before reading anything asks `/api/health` which database the deployed app is
+using and refuses to continue unless its own connection resolves to the same
+fingerprint under the same scheme. A wrong target now aborts with exit 1 instead
+of producing a confident report. Both failure modes were tested: missing variable,
+and development credentials aimed at the production URL.
+
+**Production's migration state is therefore still unverified.** The assumption
+that it sits at 0004 is unrefuted but also unconfirmed, and Step 0 must be run
+again — correctly — before Step 2.
 
 ---
 

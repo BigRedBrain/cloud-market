@@ -28,10 +28,21 @@
  * every table it touches are captured up front and re-asserted at the end.
  */
 import { createHash } from 'node:crypto'
-import { config as loadEnv } from 'dotenv'
 import { Pool, neonConfig } from '@neondatabase/serverless'
 
-loadEnv({ path: '.env.local', quiet: true })
+/**
+ * THIS SCRIPT DELIBERATELY DOES NOT LOAD `.env.local`.
+ *
+ * It used to, and that was a defect: `.env.local` holds DEVELOPMENT
+ * credentials, dotenv does not override an already-set variable, and PowerShell
+ * has no `VAR=value command` prefix. So an operator who ran the documented
+ * bash-style command in PowerShell got a silent fallback to development and a
+ * confident report about the wrong database.
+ *
+ * DATABASE_URL must therefore be set in the environment explicitly, and §
+ * `assertConnectedToDeployedDatabase` below proves the connection actually
+ * reaches the same database the deployed app is using before anything is read.
+ */
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
 const BASE = process.argv[2] ?? 'https://cloud-market-ten.vercel.app'
@@ -43,17 +54,89 @@ if (!ALLOW) {
   process.exit(1)
 }
 if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is required.')
+  console.error(
+    'DATABASE_URL is required and is NOT read from .env.local.\n' +
+      '  PowerShell:  $env:DATABASE_URL = "<pooled production string>"\n' +
+      '  bash:        export DATABASE_URL="<pooled production string>"\n' +
+      'Use the POOLED string here. The unpooled one is only for drizzle-kit migrate.',
+  )
   process.exit(1)
 }
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+/**
+ * Created only after the target is confirmed. Constructing a Pool up front
+ * registers libuv handles, and tearing those down inside `process.exit()` on
+ * Windows trips an assertion — so the refusal path must never have built one.
+ */
+let pool = null
 const sql = (t, p) => pool.query(t, p).then((r) => r.rows)
-const fp = (u) =>
+
+/**
+ * TWO fingerprint schemes exist in this repo, and confusing them is what turned
+ * a wrong-database reading into a confident report:
+ *
+ *   hostFp     — sha256(full hostname). What /api/health publishes, and what
+ *                verify-auth-production and verify-cms-production use.
+ *   endpointFp — sha256(endpoint id, '-pooler' stripped). Collapses the pooled
+ *                and direct hosts of one branch to a single value, which is
+ *                useful for "are these two strings the same branch?" and
+ *                useless for comparing against /api/health.
+ *
+ * Both are printed. Only hostFp is ever compared to the deployed app.
+ */
+const hostFp = (u) =>
+  createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)
+const endpointFp = (u) =>
   createHash('sha256')
     .update(new URL(u).hostname.split('.')[0].replace('-pooler', ''))
     .digest('hex')
     .slice(0, 12)
+
+/**
+ * Refuses to continue unless this script's database is the one the deployed app
+ * is actually talking to.
+ *
+ * This is the check that would have caught the development fallback: it does
+ * not trust a flag, an env file, or the operator's intent — it asks the live
+ * application which database it is using and compares.
+ */
+async function assertConnectedToDeployedDatabase() {
+  let health
+  try {
+    health = await fetch(`${BASE}/api/health`).then((r) => r.json())
+  } catch (error) {
+    console.error(`Could not reach ${BASE}/api/health — ${error.message}`)
+    process.exit(1)
+  }
+
+  const mine = hostFp(process.env.DATABASE_URL)
+  const theirs = health.database?.fingerprint
+
+  console.log(`deployed app database:  ${theirs} (environment: ${health.environment})`)
+  console.log(`this script's database: ${mine}`)
+  console.log(`                        endpoint-id scheme: ${endpointFp(process.env.DATABASE_URL)}`)
+
+  if (!theirs || mine !== theirs) {
+    console.error(
+      `\nREFUSING TO RUN: this script is connected to a different database than ${BASE}.\n` +
+        `  ${BASE} reports ${theirs}\n` +
+        `  DATABASE_URL resolves to ${mine}\n` +
+        'Set DATABASE_URL to the POOLED connection string of the branch that\n' +
+        'the deployment actually uses, then run again.',
+    )
+    /**
+     * Sets the code and returns rather than calling process.exit(). The health
+     * fetch above leaves an undici keep-alive socket open, and forcing exit
+     * while libuv tears it down aborts with an assertion on Windows — which
+     * would replace this clear refusal with a confusing crash and exit 127.
+     */
+    process.exitCode = 1
+    return false
+  }
+  console.log('target confirmed: same database as the deployed application\n')
+  pool = new Pool({ connectionString: process.env.DATABASE_URL })
+  return true
+}
 
 let passed = 0
 let failed = 0
@@ -130,10 +213,7 @@ const countOf = async (t) => (await sql(`select count(*)::int n from ${t}`))[0].
 
 async function main() {
   console.log(`Bag production verification against ${BASE}`)
-  console.log(`pooled endpoint fingerprint:  ${fp(process.env.DATABASE_URL)}`)
-  if (process.env.DATABASE_URL_UNPOOLED) {
-    console.log(`direct endpoint fingerprint:  ${fp(process.env.DATABASE_URL_UNPOOLED)}`)
-  }
+  if (!(await assertConnectedToDeployedDatabase())) return
 
   /* ================================================== 1. SCHEMA / MIGRATIONS */
   section('[1] Migration and schema state (read-only)')
@@ -505,6 +585,6 @@ async function main() {
 
 main().catch(async (error) => {
   console.error(`\nABORTED: ${error.message}`)
-  await pool.end().catch(() => {})
+  await pool?.end().catch(() => {})
   process.exit(1)
 })
