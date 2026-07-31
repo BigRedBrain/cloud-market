@@ -61,6 +61,25 @@ const nextConfig: NextConfig = {
     // Never ship a build that does not typecheck.
     ignoreBuildErrors: false,
   },
+
+  experimental: {
+    /**
+     * Enables `forbidden()` and `unauthorized()` from `next/navigation`, which
+     * render the `forbidden.tsx` / `unauthorized.tsx` segments and return real
+     * 403/401 statuses.
+     *
+     * This is the one experimental flag the project enables, and it is a
+     * considered exception to the conservatism below. The alternative — a
+     * redirect to an ordinary page — returns 200 for an authorization failure,
+     * which is wrong for API consumers, wrong for monitoring, and wrong for
+     * anything that reads status codes.
+     *
+     * The failure mode if the API changes is a build-time import error: loud,
+     * immediate, and impossible to ship past. That is an acceptable risk in a
+     * way that a silently-degrading auth path would not be.
+     */
+    authInterrupts: true,
+  },
 }
 
 export default nextConfig

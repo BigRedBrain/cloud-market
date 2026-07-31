@@ -6,4 +6,5 @@
  * be re-exported here.
  */
 export * from './_shared'
+export * from './auth'
 export * from './stores'
