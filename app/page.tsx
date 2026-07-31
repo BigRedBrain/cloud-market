@@ -12,6 +12,8 @@ import { CloudButton } from '@/components/brand/cloud-button'
 import { SmokeBackground } from '@/components/brand/smoke-background'
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
+import { getBagCount } from '@/lib/bag/core'
+import { getCurrentUser } from '@/lib/auth/dal'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -32,6 +34,9 @@ import { Card } from '@/components/ui/card'
 
 
 export default async function Home() {
+  const bagViewer = await getCurrentUser()
+  const bagCount = await getBagCount(bagViewer?.id ?? null)
+
   const [featured, categories, heroCampaign] = await Promise.all([
     listFeaturedProducts(3),
     listCategoriesWithCounts(),
@@ -55,7 +60,7 @@ export default async function Home() {
 
   return (
     <>
-      <SiteNav />
+      <SiteNav bagCount={bagCount} />
 
       <main className="flex flex-1 flex-col">
         {/* ---- Hero ---------------------------------------------------- */}

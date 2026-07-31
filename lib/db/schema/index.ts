@@ -8,6 +8,7 @@
 export * from './_shared'
 export * from './audit'
 export * from './auth'
+export * from './cart'
 export * from './catalog'
 export * from './cms'
 export * from './stores'

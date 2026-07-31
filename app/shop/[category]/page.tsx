@@ -7,6 +7,8 @@ import { PackageOpen } from 'lucide-react'
 import { CatalogFilters, CategoryChips } from '@/components/catalog/catalog-filters'
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
+import { getBagCount } from '@/lib/bag/core'
+import { getCurrentUser } from '@/lib/auth/dal'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Pagination, parseCatalogSearchParams } from '@/app/shop/page'
@@ -45,6 +47,9 @@ export async function generateMetadata({ params }: CategoryPageProps): Promise<M
  * the category instead of silently navigating out of it.
  */
 export default async function CategoryPage({ params, searchParams }: CategoryPageProps) {
+  const bagViewer = await getCurrentUser()
+  const bagCount = await getBagCount(bagViewer?.id ?? null)
+
   const { category: slug } = await params
   const query = await searchParams
 
@@ -63,7 +68,7 @@ export default async function CategoryPage({ params, searchParams }: CategoryPag
 
   return (
     <>
-      <SiteNav />
+      <SiteNav bagCount={bagCount} />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-10 sm:px-6">
         <nav aria-label="Breadcrumb" className="mb-4">

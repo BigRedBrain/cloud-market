@@ -13,6 +13,7 @@ import {
   type ActionResult,
 } from '@/lib/result'
 import { withUpdatedAt } from '@/lib/db/schema'
+import { mergeGuestBagIntoUser } from '@/lib/bag/merge'
 import { recordAuditEvent } from './audit'
 import { equalizeTimingForMissingUser, hashPassword, verifyPassword } from './crypto'
 import { requireAdmin, requireSession, requireUser } from './dal'
@@ -113,6 +114,9 @@ export async function signUpAction(
   }
 
   const sessionId = await createSession(userId)
+  // Fold any guest bag into the brand-new account before the redirect.
+  await mergeGuestBagIntoUser(userId)
+
   await recordAuditEvent({ event: 'ACCOUNT_CREATED', userId, sessionId })
   await recordAuditEvent({ event: 'LOGIN', userId, sessionId })
 
@@ -205,6 +209,13 @@ export async function signInAction(
 
   // Fresh token on every sign-in — this is what closes session fixation.
   const sessionId = await createSession(user.id)
+
+  /**
+   * Guest bag merge. Runs after the session exists so the merge is attributed
+   * to a real, authenticated user, and before the redirect so the bag count is
+   * already correct on the page the customer lands on.
+   */
+  await mergeGuestBagIntoUser(user.id)
 
   if (hadFailures) {
     await recordAuditEvent({ event: 'ACCOUNT_UNLOCKED', userId: user.id, sessionId })

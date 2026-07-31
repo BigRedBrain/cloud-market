@@ -36,6 +36,13 @@
       "when": 1785479902426,
       "tag": "0004_true_amazoness",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785517300053,
+      "tag": "0005_flimsy_shinko_yamashiro",
+      "breakpoints": true
     }
   ]
 }
