@@ -1,14 +1,17 @@
 import type { Metadata } from 'next'
 import { Flame, PackageOpen, Truck } from 'lucide-react'
 
+import { BurningCloud } from '@/components/brand/burning-cloud'
 import { CloudButton } from '@/components/brand/cloud-button'
 import { Logo } from '@/components/brand/logo'
+import { SmokeBackground } from '@/components/brand/smoke-background'
 import { ProductCard, type Product } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Alert, StatusPanel } from '@/components/ui/feedback'
 import { Field, Input, Textarea } from '@/components/ui/field'
 import { ProductCardSkeleton, Skeleton, Spinner } from '@/components/ui/skeleton'
 
@@ -23,7 +26,8 @@ const SAMPLE: Product[] = [
     id: '1',
     slug: 'midnight-runtz',
     name: 'Midnight Runtz',
-    strainType: 'Indica',
+    category: 'Indica · Flower',
+    size: '3.5g',
     thcPercent: 27.4,
     priceCents: 4500,
     inStock: true,
@@ -32,30 +36,34 @@ const SAMPLE: Product[] = [
     id: '2',
     slug: 'motor-city-haze',
     name: 'Motor City Haze',
-    strainType: 'Sativa',
+    category: 'Sativa · Flower',
+    size: '3.5g',
     thcPercent: 22.1,
     priceCents: 3800,
     inStock: true,
+    stockCount: 2,
   },
   {
     id: '3',
     slug: 'eastside-og',
     name: 'Eastside OG',
-    strainType: 'Hybrid',
+    category: 'Hybrid · Flower',
+    size: '7g',
     thcPercent: 24.9,
-    priceCents: 4200,
+    priceCents: 7200,
     inStock: false,
   },
 ]
 
 const SWATCHES = [
-  { name: 'ink', hex: '#121214', role: 'Foundation', className: 'bg-ink-900' },
-  { name: 'ink-800', hex: '#1B1B1F', role: 'Panel', className: 'bg-ink-800' },
-  { name: 'cream', hex: '#F5EEE0', role: 'Body text', className: 'bg-cream' },
-  { name: 'smoke', hex: '#8E9298', role: 'Secondary', className: 'bg-smoke' },
-  { name: 'volt', hex: '#46FF7D', role: 'Primary action', className: 'bg-volt' },
-  { name: 'ember', hex: '#FF7A18', role: 'Accent, heat', className: 'bg-ember' },
-  { name: 'flare', hex: '#FF3B2F', role: 'Destructive', className: 'bg-flare' },
+  { name: 'ink-900', hex: '#0f0f12', role: 'Foundation', className: 'bg-ink-900' },
+  { name: 'ink-800', hex: '#1a1a1e', role: 'Panel', className: 'bg-ink-800' },
+  { name: 'white', hex: '#ffffff', role: 'High-contrast text', className: 'bg-white' },
+  { name: 'cream', hex: '#f2ece0', role: 'Paper surfaces', className: 'bg-cream' },
+  { name: 'smoke', hex: '#8c8f94', role: 'Secondary text', className: 'bg-smoke' },
+  { name: 'ember', hex: '#ff8031', role: 'Primary action', className: 'bg-ember' },
+  { name: 'flare', hex: '#f93635', role: 'Destructive, urgent', className: 'bg-flare' },
+  { name: 'volt', hex: '#3ff873', role: 'Selective: in stock, success, focus', className: 'bg-volt' },
 ]
 
 function Section({
@@ -185,13 +193,32 @@ export default function DesignSystemPage() {
           </Section>
 
           <Section
+            title="Smoke and fire"
+            note="Both effects are CSS-first. The smoke layer ships zero JavaScript; only the burning cloud's draw-on uses Framer Motion, because it runs once."
+          >
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="panel relative isolate flex h-64 items-center justify-center overflow-hidden rounded-lg bg-ink-900">
+                <SmokeBackground intensity="hero" />
+                <p className="font-mono text-xs tracking-widest text-smoke uppercase">
+                  Ambient smoke · 0 KB JS
+                </p>
+              </div>
+              <Card className="flex items-center justify-center p-8">
+                <div className="w-56">
+                  <BurningCloud />
+                </div>
+              </Card>
+            </div>
+          </Section>
+
+          <Section
             title="Buttons"
-            note="The press is physical: 1px lift on hover, 2px drop on active as the ink shadow collapses. Disabled loses the shadow entirely, so it never looks pressable."
+            note="The press is physical: 1px lift on hover, 2px drop on active as the ink shadow collapses. The ember glow stacks on top of the ink shadow rather than replacing it, and it fires on keyboard focus too."
           >
             <Card className="flex flex-col gap-6 p-6">
               <div className="flex flex-wrap items-center gap-3">
                 <Button variant="primary">Add to bag</Button>
-                <Button variant="accent">Reorder</Button>
+                <Button variant="volt">Confirm order</Button>
                 <Button variant="destructive">Remove</Button>
                 <Button variant="paper">Track order</Button>
                 <Button variant="outline">Keep browsing</Button>
@@ -317,6 +344,42 @@ export default function DesignSystemPage() {
                 title="No orders yet"
                 description="Your delivery and pickup history will show up here once you place your first order."
                 action={<Button variant="outline">See the menu</Button>}
+              />
+            </div>
+          </Section>
+
+          <Section
+            title="Errors and success"
+            note="Every tone carries an icon and a heading word, so state survives greyscale. Errors are assertive; success is polite so it never interrupts typing. Success gets no celebratory motion — the order number matters more than confetti."
+          >
+            <div className="flex flex-col gap-3">
+              <Alert tone="error" title="Card declined">
+                Try another card, or pay the driver by debit or cash.
+              </Alert>
+              <Alert tone="warning" title="Only 2 left at this price">
+                Stock updates every few minutes. Your bag is held for 24 hours.
+              </Alert>
+              <Alert tone="success" title="Address confirmed">
+                We deliver to 48226. Same-day if you order before 8pm.
+              </Alert>
+              <Alert tone="info" title="ID required at handoff">
+                Bring the government ID matching the name on the order.
+              </Alert>
+            </div>
+
+            <div className="mt-2 grid gap-5 lg:grid-cols-2">
+              <StatusPanel
+                tone="success"
+                title="Order placed"
+                description="We'll text you when the driver leaves. Keep your ID handy."
+                reference={{ label: 'Order number', value: 'CM-4821-Q7' }}
+                action={<Button variant="paper">Track order</Button>}
+              />
+              <StatusPanel
+                tone="error"
+                title="We can't deliver there yet"
+                description="48912 is outside our 25-mile range. Pickup is available at our Detroit store."
+                action={<Button variant="primary">Switch to pickup</Button>}
               />
             </div>
           </Section>

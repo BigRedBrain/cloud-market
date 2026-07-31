@@ -22,23 +22,34 @@ also the correct comic-book look — dark line-art on bright colour — so the
 accessible choice and the aesthetic choice are the same choice, and the system
 does not have to trade one against the other.
 
-Measured, from the compiled stylesheet:
+Measured from the compiled stylesheet. **16 pairings, 0 failures.** Hover states
+are measured too — a button must not become unreadable at the moment it is
+about to be clicked.
 
 | Pairing | Ratio | AA text |
 | --- | --- | --- |
-| cream on ink-900 (body) | **16.27** | ✅ |
-| cream on ink-800 (panel) | **14.75** | ✅ |
-| cream on ink-700 (input) | **12.81** | ✅ |
-| smoke on ink-900 (secondary) | **5.90** | ✅ |
-| smoke on ink-800 | **5.35** | ✅ |
-| ink on volt (primary button) | **14.61** | ✅ |
-| ink on ember (accent) | **8.23** | ✅ |
-| ink on flare (destructive) | **5.50** | ✅ |
+| white on ink-900 (body) | **19.14** | ✅ |
+| white on ink-800 (panel) | **17.35** | ✅ |
+| white on ink-700 (input) | **15.07** | ✅ |
 | ink on cream (paper panel) | **17.52** | ✅ |
-| volt focus ring on ink-900 | **13.56** | ✅ |
-| flare error text on ink-800 | **4.63** | ✅ |
+| ink on volt (confirm) | **14.61** | ✅ |
+| volt in-stock text on panel | **12.30** | ✅ |
+| ink on volt hover | **9.40** | ✅ |
+| ink on ember (**primary**) | **8.23** | ✅ |
+| ember low-stock text on panel | **6.93** | ✅ |
+| smoke secondary on page | **5.90** | ✅ |
+| ink on ember hover | **5.75** | ✅ |
+| ink on flare (destructive) | **5.50** | ✅ |
+| smoke secondary on panel | **5.35** | ✅ |
+| ink on flare hover | **4.90** | ✅ |
+| flare error text on panel | **4.63** | ✅ |
+| volt focus ring on page | **13.56** | ✅ |
 | ~~cream on flare~~ | 3.18 | ❌ never |
 | ~~cream on volt~~ | 1.20 | ❌ never |
+
+`--flare-deep` is pinned at lightness 0.612 rather than the 0.556 that *looks*
+like a natural darker hover, because ink on 0.556 measures 3.94:1 and fails.
+The token carries a comment saying so, to stop it being "corrected" later.
 
 ---
 
@@ -55,11 +66,23 @@ emits hex fallbacks plus `lab()` for wide-gamut displays automatically.
 | `--ink-800` | `#1a1a1e` | Panel surface |
 | `--ink-700` | `#26262a` | Raised surface, inputs |
 | `--ink-600` | — | Hairlines on dark |
-| `--cream` | `#f2ece0` | Primary text on dark, paper panels |
+| `--white` | `#ffffff` | **High-contrast text** on dark |
+| `--cream` | `#f2ece0` | **Surfaces** — paper panels, not body text |
 | `--smoke` | `#8c8f94` | Secondary text, disabled, halftone tint |
-| `--volt` | `#3ff873` | Primary action, focus ring, success |
-| `--ember` | `#ff8031` | Accent, heat, warnings, promo |
+| `--ember` | `#ff8031` | **Primary action**, heat, low stock |
 | `--flare` | `#f93635` | Destructive, urgency, errors |
+| `--volt` | `#3ff873` | **Selective only** — see below |
+
+**White and cream do different jobs.** White is a text colour; cream is a
+surface colour. Keeping them separate is what stops the dark UI drifting into a
+muddy sepia — cream body text on charcoal reads as aged paper, which fights the
+"premium" half of the brief.
+
+**Electric green is rationed.** Volt appears only where it means something: in
+stock, success, confirm, and the focus ring. It is never decoration. Used for
+ordinary actions it would stop reading as a signal — and "in stock" is the most
+commercially important signal on a product card, so it gets the loudest colour
+in the palette and nothing else competes for it.
 
 Semantic aliases (`--primary`, `--destructive`, `--muted`…) map onto these, so
 shadcn components drop in unmodified. Brand names are also addressable directly
@@ -235,29 +258,98 @@ type steps from `text-6xl` to `text-8xl` at `sm`.
 
 ---
 
-## 7. Motion
+## 7. Motion and reduced-motion alternatives
 
-Motion is used in three places only: the button press, the card lift, and the
-cloud's smoke. Everything else is static by choice.
+Motion appears in six places, and **all of it is CSS**: ambient smoke, the
+burning-cloud entrance, the cloud button's drifting smoke and hover flames, the
+button press, and the card lift.
 
-`prefers-reduced-motion` is honoured twice over — a global CSS reset in
-`globals.css` neutralises transitions and animations, and the cloud button reads
-the same preference through Framer Motion's `useReducedMotion()` to settle its
-smoke into a static haze.
+### Reduced motion is an alternative, not a removal
 
-What **survives** reduced motion, deliberately: the fire glow, the focus ring,
-and the pressed state. Those communicate state rather than decorate, and
-removing them would cost information.
+Every keyframe in the system is declared **inside** a
+`@media (prefers-reduced-motion: no-preference)` block, and every element's
+resting CSS is its *finished* state. The consequence is that a reduced-motion
+visitor gets the complete composition immediately — the burning cloud is fully
+lit and flaming, the smoke haze is present, the glow works — it simply holds
+still. Nothing is missing, nothing races to an end frame.
+
+That is a deliberate improvement over the usual approach of neutralising
+durations globally, which leaves animations snapping to their last keyframe and
+can leave draw-on effects half-rendered.
+
+| Effect | Full motion | Reduced motion |
+| --- | --- | --- |
+| Ambient smoke | 3 layers drifting, 37/43/53s | Static haze, same composition |
+| Burning cloud | Inks on, flames grow, vents light | Fully lit, immediately |
+| Cloud button smoke | 4 puffs rising | Static puff at 12% opacity |
+| Cloud button flames | Flicker on hover | Appear on hover, no flicker |
+| Button press | 1px lift, 2px press | Instant, glow still fires |
+| Ember glow | Fades in over 150ms | **Kept** — communicates state |
+| Focus ring | Always instant | **Kept** — non-negotiable |
+
+The global reset in `globals.css` remains as a backstop for any transition added
+later without thought.
+
+### Checkout runs quieter
+
+`/checkout` has no smoke, no cloud button, no hover lift on the summary, and a
+stripped header. The brand keeps its ink outlines, panels, and type; the
+theatrics stop at the payment step.
 
 ---
 
-## 8. Performance
+## 8. Performance audit
 
-- No `feTurbulence`. Noise filters rasterise expensively across large areas and
+Measured against the production build (`next build` + `next start`), real
+transferred bytes, gzipped.
+
+| Route | HTML | CSS | JS | Total |
+| --- | --- | --- | --- | --- |
+| `/` | 11.4 KB | 9.4 KB | 199.5 KB | **220.3 KB** |
+| `/design` | 21.3 KB | 9.4 KB | 199.5 KB | **230.2 KB** |
+| `/checkout` | 5.7 KB | 9.4 KB | 185.9 KB | **201.0 KB** |
+
+### The one change the audit forced
+
+The first measurement put the homepage at **239.0 KB gzip of JS**. Framer Motion
+accounted for ~39.5 KB of it — to animate four ellipses and one draw-on.
+
+Both were rewritten as CSS keyframes. Framer Motion is now imported nowhere, and
+`SmokeBackground`, `CloudButton`, and `BurningCloud` are all **server components
+shipping zero client JavaScript**:
+
+| | Before | After |
+| --- | --- | --- |
+| Homepage JS (gzip) | 239.0 KB | **199.5 KB** |
+| Homepage total (gzip) | 258.4 KB | **220.3 KB** |
+
+`motion` remains in `package.json` for orchestrated route/panel transitions
+later, where CSS genuinely cannot do the job. It must not return to the
+homepage's critical path without a measurement justifying it.
+
+### Where the remaining bytes go
+
+~186 KB gzip is the Next 16 + React 19 App Router baseline — `/checkout` pays it
+too, and it carries almost no brand code. The visual system's **marginal** cost
+over that baseline is ~13.6 KB, nearly all of it lucide icons and the one client
+component in the app.
+
+**The entire design system's CSS is 9.4 KB gzip.**
+
+### Standing rules
+
+- **One client component**: `SiteNav`, for the mobile menu's open state. Every
+  other component in the system is RSC.
+- **No `feTurbulence`.** Noise filters rasterise expensively over large areas and
   are the first thing to stutter on a mid-range Android — the device most of
-  this storefront's traffic arrives on. Both textures are pure CSS gradients,
-  which composite for free.
-- Hard shadows are cheaper than blurred ones.
-- The only filter in the system is a `drop-shadow` on a single small element,
-  applied on hover.
-- Three font families is the ceiling. All subset to latin with `display: swap`.
+  this storefront's traffic arrives on. Every texture is a CSS gradient.
+- **No `filter: blur()` on large elements.** Smoke softness comes from the
+  gradients themselves. The only filter in the system is a `drop-shadow` on one
+  small element, on hover.
+- **Transform and opacity only** in animation. Nothing animated triggers layout
+  or paint.
+- **Hard shadows are cheaper than blurred ones**, which is convenient, because
+  they are also the look.
+- **Images** carry explicit `width`/`height`, `loading="lazy"`, and
+  `decoding="async"`. next/image lands in Phase 3 with real Blob URLs.
+- **Three font families is the ceiling**, all latin-subset with `display: swap`.

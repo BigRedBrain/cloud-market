@@ -41,32 +41,47 @@
   --ink-700: oklch(0.272 0.007 285); /* raised panel, inputs */
   --ink-600: oklch(0.338 0.008 285); /* hairlines on dark */
 
+  /* High-contrast text on dark. Cream is a SURFACE colour (paper panels);
+     white is a TEXT colour. Keeping the two jobs separate is what stops the
+     dark UI drifting into a muddy sepia. */
+  --white: oklch(1 0 0);
+
   --cream: oklch(0.945 0.018 85);
   --cream-dim: oklch(0.878 0.017 85);
   --smoke: oklch(0.648 0.008 262);
   --smoke-dim: oklch(0.512 0.008 262);
 
-  --volt: oklch(0.862 0.229 148); /* electric green — primary action */
-  --volt-deep: oklch(0.732 0.201 148);
-  --ember: oklch(0.735 0.19 48); /* fiery orange — accent, heat */
+  /* Heat drives the brand: fiery orange leads, ember red escalates.
+     Electric green is deliberately rationed — it appears only where it means
+     something (in stock, success, focus), never as decoration. Used everywhere
+     it would stop reading as a signal. */
+  --ember: oklch(0.735 0.19 48); /* fiery orange — PRIMARY action */
   --ember-deep: oklch(0.641 0.176 45);
-  --flare: oklch(0.64 0.229 27); /* red — destructive, urgency */
+  --flare: oklch(0.64 0.229 27); /* ember red — destructive, urgency */
+  /* Hover state for destructive fills. Lightness is pinned at 0.612 rather
+     than the 0.556 that "looks right" as a darker hover, because ink text on
+     0.556 measures 3.94:1 and fails AA. The hover must stay above 4.5:1 — a
+     button does not get to become unreadable at the exact moment it is about
+     to be clicked. */
+  --flare-deep: oklch(0.612 0.222 27);
+  --volt: oklch(0.862 0.229 148); /* electric green — selective only */
+  --volt-deep: oklch(0.732 0.201 148);
 
   /* ---- Semantic surfaces ----------------------------------------------- */
   --background: var(--ink-900);
-  --foreground: var(--cream);
+  --foreground: var(--white);
   --card: var(--ink-800);
-  --card-foreground: var(--cream);
+  --card-foreground: var(--white);
   --popover: var(--ink-800);
-  --popover-foreground: var(--cream);
+  --popover-foreground: var(--white);
 
-  --primary: var(--volt);
+  --primary: var(--ember);
   --primary-foreground: var(--ink-950);
   --secondary: var(--ink-700);
-  --secondary-foreground: var(--cream);
+  --secondary-foreground: var(--white);
   --muted: var(--ink-700);
   --muted-foreground: var(--smoke);
-  --accent: var(--ember);
+  --accent: var(--flare);
   --accent-foreground: var(--ink-950);
 
   --destructive: var(--flare);
@@ -89,6 +104,17 @@
   --panel-shadow: 5px 5px 0 0 var(--ink-950);
   --panel-shadow-sm: 3px 3px 0 0 var(--ink-950);
   --panel-shadow-press: 1px 1px 0 0 var(--ink-950);
+
+  /*
+   * Ember glow. Composed as box-shadow layers so it stacks with the hard ink
+   * shadow rather than replacing it — the control keeps its printed edge and
+   * gains heat, instead of trading one for the other.
+   *
+   * Negative spread keeps the bloom tight to the silhouette. A wide, soft glow
+   * reads as generic neon; a tight one reads as something actually hot.
+   */
+  --glow-ember: 0 0 10px -1px var(--ember), 0 0 22px -6px var(--flare);
+  --glow-ember-soft: 0 0 6px -2px var(--ember);
 
   --chart-1: var(--volt);
   --chart-2: var(--ember);
@@ -156,6 +182,7 @@
   --color-ink-800: var(--ink-800);
   --color-ink-700: var(--ink-700);
   --color-ink-600: var(--ink-600);
+  --color-white: var(--white);
   --color-cream: var(--cream);
   --color-cream-dim: var(--cream-dim);
   --color-smoke: var(--smoke);
@@ -164,6 +191,7 @@
   --color-ember: var(--ember);
   --color-ember-deep: var(--ember-deep);
   --color-flare: var(--flare);
+  --color-flare-deep: var(--flare-deep);
 
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
@@ -234,6 +262,131 @@
 @utility panel-sm {
   border: var(--outline-ink) solid var(--ink-950);
   box-shadow: var(--panel-shadow-sm);
+}
+
+/* ---- Ambient smoke ------------------------------------------------------
+ * Three layers drifting on different periods so they never visibly loop in
+ * sync. Transform-only, so each layer is promoted once and then composited on
+ * the GPU without a single repaint — the whole effect costs no main-thread
+ * work and, critically, no JavaScript at all.
+ *
+ * Softness comes from the radial gradients themselves, not a `filter: blur()`.
+ * Blurring a viewport-sized layer is one of the most expensive things a mobile
+ * GPU can be asked to do; a gradient is free.
+ *
+ * Declared only inside `no-preference` so that reduced-motion users get the
+ * static haze rather than an animation racing to its end frame.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes smoke-drift-a {
+    from {
+      transform: translate3d(-6%, 3%, 0) scale(1.15);
+    }
+    to {
+      transform: translate3d(9%, -5%, 0) scale(1.4);
+    }
+  }
+
+  @keyframes smoke-drift-b {
+    from {
+      transform: translate3d(7%, -2%, 0) scale(1.3);
+    }
+    to {
+      transform: translate3d(-8%, 6%, 0) scale(1.05);
+    }
+  }
+
+  @keyframes smoke-drift-c {
+    from {
+      transform: translate3d(-3%, -6%, 0) scale(1.2);
+    }
+    to {
+      transform: translate3d(5%, 8%, 0) scale(1.45);
+    }
+  }
+
+  /* Cloud button: a puff of smoke rising inside the silhouette. */
+  @keyframes smoke-rise {
+    0% {
+      transform: translateY(0) scale(0.85);
+      opacity: 0;
+    }
+    25% {
+      opacity: 0.22;
+    }
+    100% {
+      transform: translateY(-46px) scale(1.15);
+      opacity: 0;
+    }
+  }
+
+  /*
+   * Burning cloud entrance. `pathLength="1"` normalises the path so the
+   * dash maths is independent of the actual geometry — the outline can be
+   * redrawn without retuning the animation.
+   */
+  @keyframes cloud-ink-draw {
+    from {
+      stroke-dashoffset: 1;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  @keyframes cloud-fill-in {
+    from {
+      fill-opacity: 0;
+    }
+    to {
+      fill-opacity: 1;
+    }
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes flame-grow {
+    0% {
+      transform: scaleY(0.4);
+      opacity: 0;
+    }
+    45% {
+      transform: scaleY(1.1);
+      opacity: 1;
+    }
+    70% {
+      transform: scaleY(0.92);
+      opacity: 0.85;
+    }
+    100% {
+      transform: scaleY(1.02);
+      opacity: 1;
+    }
+  }
+
+  /* Flame lick on the cloud button's hover state. Scale + opacity only. */
+  @keyframes ember-flicker {
+    0%,
+    100% {
+      transform: scaleY(1) translateY(0);
+      opacity: 0.95;
+    }
+    35% {
+      transform: scaleY(1.18) translateY(-1px);
+      opacity: 1;
+    }
+    70% {
+      transform: scaleY(0.9) translateY(1px);
+      opacity: 0.8;
+    }
+  }
 }
 
 @layer base {
