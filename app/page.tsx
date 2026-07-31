@@ -6,6 +6,7 @@ import {
   listCategoriesWithCounts,
   listFeaturedProducts,
 } from '@/lib/catalog/queries'
+import { getLiveCampaign } from '@/lib/cms/queries'
 import { BurningCloud } from '@/components/brand/burning-cloud'
 import { CloudButton } from '@/components/brand/cloud-button'
 import { SmokeBackground } from '@/components/brand/smoke-background'
@@ -31,10 +32,26 @@ import { Card } from '@/components/ui/card'
 
 
 export default async function Home() {
-  const [featured, categories] = await Promise.all([
+  const [featured, categories, heroCampaign] = await Promise.all([
     listFeaturedProducts(3),
     listCategoriesWithCounts(),
+    getLiveCampaign('hero'),
   ])
+
+  /*
+   * CMS content with a built-in fallback.
+   *
+   * A live hero campaign supplies the copy; with none configured the page
+   * renders exactly the words it rendered before this phase. That is what makes
+   * "no homepage visual changes" true — layout, type and motion are untouched,
+   * only the source of the text moved.
+   */
+  const heroTitle = heroCampaign?.title ?? 'Cannabis,'
+  const heroAccent = heroCampaign?.subtitle ?? 'to your door'
+  const heroBody =
+    heroCampaign?.body ??
+    'Licensed Michigan flower, cured properly and tested twice. Order by 8pm and it lands the same day — or pick it up in twenty minutes.'
+  const heroCtaLabel = heroCampaign?.ctaLabel ?? 'Shop now'
 
   return (
     <>
@@ -56,19 +73,15 @@ export default async function Home() {
               </Badge>
 
               <h1 className="max-w-2xl font-display text-5xl leading-[0.9] tracking-tight text-white uppercase sm:text-7xl xl:text-8xl">
-                Cannabis,
+                {heroTitle}
                 <br />
-                <span className="text-ember">to your door</span>
+                <span className="text-ember">{heroAccent}</span>
               </h1>
 
-              <p className="max-w-lg text-lg leading-relaxed text-smoke">
-                Licensed Michigan flower, cured properly and tested twice. Order
-                by 8pm and it lands the same day — or pick it up in twenty
-                minutes.
-              </p>
+              <p className="max-w-lg text-lg leading-relaxed text-smoke">{heroBody}</p>
 
               <div className="flex flex-wrap items-center gap-4 pt-1">
-                <CloudButton size="lg">Shop now</CloudButton>
+                <CloudButton size="lg">{heroCtaLabel}</CloudButton>
                 <Button variant="outline" size="lg">
                   Browse categories
                 </Button>

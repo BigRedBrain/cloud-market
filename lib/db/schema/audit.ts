@@ -13,6 +13,7 @@ import { users } from './auth'
  */
 
 export const auditEvent = pgEnum('audit_event', [
+  /* --- Authentication (Phase 1) --------------------------------------- */
   'ACCOUNT_CREATED',
   'LOGIN',
   'LOGOUT',
@@ -23,6 +24,27 @@ export const auditEvent = pgEnum('audit_event', [
   'PASSWORD_RESET',
   'SESSION_REVOKED',
   'ACCOUNT_SUSPENDED',
+
+  /* --- CMS and marketing (Phase 2.5) ----------------------------------- */
+  'CAMPAIGN_CREATED',
+  'CAMPAIGN_UPDATED',
+  'CAMPAIGN_PUBLISHED',
+  'CAMPAIGN_ARCHIVED',
+  'COLLECTION_CREATED',
+  'COLLECTION_UPDATED',
+  'COLLECTION_PUBLISHED',
+  'BADGE_CREATED',
+  'BADGE_UPDATED',
+  'PRODUCT_FEATURED',
+  'PRODUCT_BADGED',
+  'HERO_UPDATED',
+  'HOMEPAGE_SECTION_UPDATED',
+  'HOMEPAGE_SECTION_PUBLISHED',
+  'ANNOUNCEMENT_PUBLISHED',
+  'MEDIA_UPLOADED',
+  'MEDIA_REPLACED',
+  'MEDIA_ARCHIVED',
+  'BRAND_ASSET_UPDATED',
 ])
 
 export const auditLog = pgTable(
@@ -60,11 +82,27 @@ export const auditLog = pgTable(
      */
     ipHash: varchar('ip_hash', { length: 64 }),
     userAgentHash: varchar('user_agent_hash', { length: 64 }),
+
+    /**
+     * What the event was about — "campaign", "collection", "media" — and its
+     * id. Deliberately NOT a foreign key: the log has to outlive the row it
+     * describes, and an ARCHIVED or deleted campaign must not take its own
+     * audit history with it. Both nullable, because auth events have no entity.
+     */
+    entityType: varchar('entity_type', { length: 40 }),
+    entityId: uuid('entity_id'),
+
+    /**
+     * Small human-readable summary — "Weekend Sale → published". Enough to read
+     * the log without joining to a row that may no longer exist.
+     */
+    summary: varchar('summary', { length: 300 }),
   },
   (table) => [
     index('audit_log_user_id_idx').on(table.userId),
     index('audit_log_event_idx').on(table.event),
     index('audit_log_occurred_at_idx').on(table.occurredAt),
+    index('audit_log_entity_idx').on(table.entityType, table.entityId),
   ],
 )
 

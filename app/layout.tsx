@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import { Anton, Archivo, Space_Mono } from 'next/font/google'
 
+import { AnnouncementBar } from '@/components/cms/announcement-bar'
 import { clientEnv } from '@/lib/env'
 import './globals.css'
 
@@ -62,6 +63,24 @@ export const metadata: Metadata = {
   },
 }
 
+/**
+ * Incremental revalidation — the piece that makes scheduled publishing real.
+ *
+ * CMS content is resolved from a publishing window at read time, but a
+ * STATICALLY prerendered page is rendered once at build and never again. A
+ * campaign scheduled for Friday 9am would therefore never appear: nothing
+ * re-renders the page when the clock passes.
+ *
+ * Sixty seconds is the trade. Admin edits are instant regardless — the actions
+ * call `revalidatePath` — so this window only bounds *time-based* transitions:
+ * a scheduled campaign goes live within a minute of its start, and an expiring
+ * one disappears within a minute of its end. Shorter would cost cache hits for
+ * precision nobody needs on a storefront banner.
+ *
+ * Set on the root layout so it covers the announcement bar on every route.
+ */
+export const revalidate = 60
+
 export const viewport: Viewport = {
   // Brand is dark-first; there is no light theme to switch to.
   themeColor: '#121214',
@@ -78,7 +97,10 @@ export default function RootLayout({
       lang="en"
       className={`dark ${display.variable} ${sans.variable} ${mono.variable} h-full`}
     >
-      <body className="flex min-h-full flex-col">{children}</body>
+      <body className="flex min-h-full flex-col">
+        <AnnouncementBar />
+        {children}
+      </body>
     </html>
   )
 }
