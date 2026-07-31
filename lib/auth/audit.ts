@@ -41,6 +41,11 @@ type AuditContext = {
   /** Supplied when the caller already has them; otherwise read from headers. */
   ipAddress?: string | null
   userAgent?: string | null
+  /** What the event was about — "campaign", "media" — and which row. */
+  entityType?: string | null
+  entityId?: string | null
+  /** Readable summary, so the log makes sense without joining. */
+  summary?: string | null
 }
 
 /**
@@ -67,6 +72,9 @@ export async function recordAuditEvent(context: AuditContext): Promise<void> {
       sessionId: context.sessionId ?? null,
       ipHash: keyedDigest(ipAddress),
       userAgentHash: keyedDigest(userAgent),
+      entityType: context.entityType ?? null,
+      entityId: context.entityId ?? null,
+      summary: context.summary?.slice(0, 300) ?? null,
     })
   } catch (error) {
     console.error('[audit] failed to record event', context.event, error)

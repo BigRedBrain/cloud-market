@@ -9,6 +9,7 @@ import {
   pgTable,
   smallint,
   text,
+  timestamp,
   uniqueIndex,
   uuid,
   varchar,
@@ -85,9 +86,42 @@ export const media = pgTable(
     height: integer('height'),
     mimeType: varchar('mime_type', { length: 100 }),
 
+    /** Editor-facing name in the media library. */
+    title: varchar('title', { length: 160 }),
+
+    /**
+     * Focal point as fractions of width/height, origin top-left, default centre.
+     *
+     * Art direction, not decoration: the same photograph is cropped to a wide
+     * hero and a 4:3 card, and without a focal point the subject drifts out of
+     * frame at one of them. Stored on the asset so every crop everywhere agrees.
+     */
+    focalX: numeric('focal_x', { precision: 4, scale: 3 }).notNull().default('0.500'),
+    focalY: numeric('focal_y', { precision: 4, scale: 3 }).notNull().default('0.500'),
+
+    /**
+     * Archive rather than delete. An asset may still be referenced by a past
+     * campaign or a historic product; hiding it from the picker is enough.
+     */
+    archivedAt: timestamp('archived_at', { withTimezone: true, mode: 'date' }),
+
+    /**
+     * Replacement lineage. "Replace" inserts a NEW row and points the old one
+     * here, instead of mutating the URL in place. That keeps the audit trail
+     * honest — what a campaign showed last month is still resolvable — and
+     * means a bad replacement can be undone.
+     */
+    replacedByMediaId: uuid('replaced_by_media_id').references(
+      (): AnyPgColumn => media.id,
+      { onDelete: 'set null' },
+    ),
+
     ...timestampColumns,
   },
-  (table) => [index('media_created_at_idx').on(table.createdAt)],
+  (table) => [
+    index('media_created_at_idx').on(table.createdAt),
+    index('media_archived_at_idx').on(table.archivedAt),
+  ],
 )
 
 /* -------------------------------------------------------------------------- */
