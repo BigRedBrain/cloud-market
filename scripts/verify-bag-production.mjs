@@ -220,6 +220,38 @@ async function submit(d, path, values, containing) {
 
 const countOf = async (t) => (await sql(`select count(*)::int n from ${t}`))[0].n
 
+/**
+ * Ids of audit rows that existed before this run. Never deleted, and asserted
+ * to still exist at the end. Populated in section [2].
+ */
+let PRE_EXISTING_AUDIT_IDS = new Set()
+
+/**
+ * Ids of audit rows this run created, captured at creation time. The ONLY rows
+ * teardown is permitted to delete.
+ */
+const CREATED_AUDIT_IDS = new Set()
+
+/**
+ * Records audit rows created by an action, by diffing ids around it.
+ *
+ * Identity, not heuristics. Anything already present is excluded by
+ * construction, so a concurrent real event cannot be mistaken for a test
+ * artifact — and if the diff is ambiguous the caller is told rather than
+ * guessing.
+ */
+async function captureNewAuditRows(label, action) {
+  const before = new Set((await sql('select id from audit_log')).map((r) => r.id))
+  const result = await action()
+  const after = await sql('select id, event, user_id from audit_log')
+  const created = after.filter((r) => !before.has(r.id))
+  for (const row of created) CREATED_AUDIT_IDS.add(row.id)
+  if (created.length) {
+    console.log(`    audit rows created by ${label}: ${created.length} (tracked for teardown)`)
+  }
+  return result
+}
+
 /* ========================================================================== */
 
 /**
@@ -286,18 +318,32 @@ async function httpSections(baseline) {
     Object.keys(actionFields(signIn.html)).length > 0)
 
   /**
-   * A wrong password must not authenticate. This writes a FAILED_LOGIN audit row
-   * with a null user id and creates nothing else, so it is safe without a
-   * cleanup path — but the row is noted so a full run can account for it.
+   * A wrong password must not authenticate.
+   *
+   * This writes a FAILED_LOGIN row with a NULL user id — the one artifact this
+   * run cannot attribute by user. In full mode its id is captured at creation
+   * so teardown can remove exactly it. In --http-only mode there is no database
+   * connection, so the row is left in place and reported: a failed sign-in
+   * attempt is genuine security telemetry, and leaving it is correct.
    */
   const attacker = device('attacker')
-  await submit(attacker, '/sign-in', {
-    email: `nobody.${Date.now()}@example.invalid`,
-    password: 'not-a-real-password',
-  })
+  const probe = async () =>
+    submit(attacker, '/sign-in', {
+      email: `nobody.${Date.now()}@example.invalid`,
+      password: 'not-a-real-password',
+    })
+
+  if (baseline) await captureNewAuditRows('the unknown-account probe', probe)
+  else await probe()
+
   check('an unknown account cannot sign in',
     ![...attacker.cookies.keys()].some((k) => k.includes('session')),
     `cookies: ${[...attacker.cookies.keys()].join(',')}`)
+
+  if (!baseline) {
+    console.log('    note: this leaves one FAILED_LOGIN audit row. It is real')
+    console.log('          telemetry and is deliberately not deleted.')
+  }
 }
 
 async function main() {
@@ -423,6 +469,25 @@ async function main() {
     baseline.products === 0 && baseline.product_variants === 0,
     `products=${baseline.products} variants=${baseline.product_variants}`)
 
+  /**
+   * EVERY pre-existing audit row's id, captured before anything is written.
+   *
+   * The audit log is security telemetry and permanent history. A verifier may
+   * add to it and must remove exactly what it added, but it must never remove
+   * anything that was already there. An earlier version of this script deleted
+   * unattributed FAILED_LOGIN rows by a ten-minute time window, which matched
+   * pre-existing rows as readily as its own — it destroyed two production rows
+   * and then reported a clean residue check, because the count it compared had
+   * been made to match by the very deletion that caused the problem.
+   *
+   * This snapshot makes that class of bug an assertion failure rather than a
+   * silent loss: at the end, every id here must still exist.
+   */
+  PRE_EXISTING_AUDIT_IDS = new Set(
+    (await sql('select id from audit_log')).map((r) => r.id),
+  )
+  console.log(`    pre-existing audit rows recorded for protection: ${PRE_EXISTING_AUDIT_IDS.size}`)
+
   await httpSections(baseline)
 
   /* ================================================== 6. CART WRITE PATH */
@@ -542,9 +607,10 @@ async function main() {
 
   try {
     const customer = device('customer')
-    await submit(customer, '/sign-up', {
-      name: 'Bag Prod Check', email, password, dateOfBirth: '1990-01-01',
-    })
+    await captureNewAuditRows('sign-up', () =>
+      submit(customer, '/sign-up', {
+        name: 'Bag Prod Check', email, password, dateOfBirth: '1990-01-01',
+      }))
     const [created] = await sql(`select id from users where email=$1`, [email])
     userId = created?.id ?? null
     check('temporary account created', Boolean(userId))
@@ -584,36 +650,80 @@ async function main() {
       !ipRow?.user_agent_hash || /^[0-9a-f]{64}$/.test(ipRow.user_agent_hash))
 
     /* ---- sign out ---- */
-    await submit(customer, '/account', {}, 'Sign out')
+    await captureNewAuditRows('sign-out', () =>
+      submit(customer, '/account', {}, 'Sign out'))
     const afterOut = await visit(customer, '/account')
     check('sign-out ends the session',
       afterOut.status === 307 || afterOut.status === 302 || afterOut.html.includes('Sign in'))
 
     /* ---- wrong password is rejected ---- */
     const attacker = device('attacker')
-    const bad = await submit(attacker, '/sign-in', { email, password: 'wrong-password' })
+    const bad = await captureNewAuditRows('the wrong-password probe', () =>
+      submit(attacker, '/sign-in', { email, password: 'wrong-password' }))
     check('wrong password issues no session',
       ![...attacker.cookies.keys()].some((k) => k.includes('session')),
       `cookies: ${[...attacker.cookies.keys()].join(',')}`)
     check('wrong password does not redirect to the account', bad.status === 200)
   } finally {
-    /* ---- teardown ---- */
+    /**
+     * TEARDOWN — deletes only artifacts identified at creation time.
+     *
+     * Three rules, each of which the previous version broke:
+     *
+     *  1. Audit rows are deleted BY ID, from the set captured as they were
+     *     created. Never by time window, never by event type, never by "looks
+     *     like ours". A row this run did not create is not this run's to remove.
+     *  2. Nothing pre-existing is touched. The delete is intersected against
+     *     PRE_EXISTING_AUDIT_IDS as a belt-and-braces guard, so even a bug in
+     *     the capture logic cannot reach protected history.
+     *  3. Counts are never "restored" by deleting extra rows. If the residue
+     *     check disagrees, it fails loudly — that is the signal, not a problem
+     *     to tidy away.
+     *
+     * Users, sessions, carts and cart_lines are still removed by the temporary
+     * user's id. That id is a UUID generated during this run, so nothing
+     * pre-existing can reference it.
+     */
     if (userId) {
       await sql(`delete from cart_lines where cart_id in (select id from carts where user_id=$1)`,
         [userId])
       await sql(`delete from carts where user_id=$1`, [userId])
-      await sql(`delete from audit_log where user_id=$1`, [userId])
       await sql(`delete from sessions where user_id=$1`, [userId])
-      await sql(`delete from users where id=$1`, [userId])
     }
-    // Unattributed FAILED_LOGIN rows from the wrong-password probe.
-    await sql(
-      `delete from audit_log where user_id is null and event='FAILED_LOGIN'
-        and occurred_at > now() - interval '10 minutes'`)
+
+    const deletable = [...CREATED_AUDIT_IDS].filter((id) => !PRE_EXISTING_AUDIT_IDS.has(id))
+    const refused = [...CREATED_AUDIT_IDS].filter((id) => PRE_EXISTING_AUDIT_IDS.has(id))
+    if (refused.length) {
+      console.log(`    REFUSED to delete ${refused.length} pre-existing audit row(s)`)
+    }
+    if (deletable.length) {
+      await sql(`delete from audit_log where id = any($1::uuid[])`, [deletable])
+      console.log(`    removed ${deletable.length} audit row(s) created by this run`)
+    }
+
+    // Last, because audit rows reference it.
+    if (userId) await sql(`delete from users where id=$1`, [userId])
   }
 
   /* ================================================== 8. RESIDUE */
-  section('[8] Residue — every count must equal its baseline')
+  section('[8] Residue and preservation')
+
+  /**
+   * PRESERVATION IS CHECKED BEFORE RESIDUE, because it is the stronger claim.
+   *
+   * A matching count proves nothing on its own: deleting one pre-existing row
+   * and leaving one test row behind balances perfectly. This asserts the actual
+   * property — every row that existed before the run still exists — by id.
+   */
+  const survivingIds = new Set((await sql('select id from audit_log')).map((r) => r.id))
+  const lost = [...PRE_EXISTING_AUDIT_IDS].filter((id) => !survivingIds.has(id))
+  check(`all ${PRE_EXISTING_AUDIT_IDS.size} pre-existing audit rows survived`,
+    lost.length === 0,
+    lost.length ? `LOST ${lost.length}: ${lost.slice(0, 5).join(', ')}` : '')
+
+  const leakedIds = [...CREATED_AUDIT_IDS].filter((id) => survivingIds.has(id))
+  check('every audit row created by this run was removed',
+    leakedIds.length === 0, `${leakedIds.length} left behind`)
 
   for (const t of TRACKED) {
     const now = await countOf(t)
