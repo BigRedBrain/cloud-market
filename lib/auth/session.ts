@@ -170,6 +170,29 @@ export async function resolveSession(): Promise<ActiveSession | null> {
   }
 }
 
+/**
+ * Cheap identity lookup — session and user id only, no join, no expiry
+ * handling. Exists so sign-out can record an audit row *before* it deletes the
+ * thing being logged; afterwards there is nothing left to attribute the event
+ * to.
+ */
+export async function getCurrentSessionId(): Promise<{
+  sessionId: string
+  userId: string
+} | null> {
+  const cookieStore = await cookies()
+  const token = cookieStore.get(SESSION_COOKIE)?.value
+  if (!token) return null
+
+  const rows = await db
+    .select({ sessionId: schema.sessions.id, userId: schema.sessions.userId })
+    .from(schema.sessions)
+    .where(eq(schema.sessions.tokenHash, hashToken(token)))
+    .limit(1)
+
+  return rows[0] ?? null
+}
+
 /** Signs out the current device only. */
 export async function destroyCurrentSession(): Promise<void> {
   const cookieStore = await cookies()

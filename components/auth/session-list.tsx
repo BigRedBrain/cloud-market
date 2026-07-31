@@ -52,8 +52,13 @@ function describeDevice(userAgent: string | null): string {
 }
 
 function RevokeAllButton() {
+  /**
+   * The server action is passed directly rather than wrapped in an inline
+   * arrow. A wrapper is a client-side closure, so Next emits no hidden action
+   * fields and the form stops working without JavaScript.
+   */
   const [state, action] = useActionState<ActionResult<void> | null, FormData>(
-    async () => revokeOtherSessionsAction(),
+    revokeOtherSessionsAction,
     null,
   )
 

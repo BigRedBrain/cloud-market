@@ -41,27 +41,40 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
  * `redirectTo` is carried through so a deep link survives the round trip to
  * sign-in. It is passed as a path only and validated on the way back out — an
  * open redirect here would be a phishing primitive.
+ *
+ * NOT wrapped in `cache()`. The guards below throw Next's control-flow signals
+ * (`redirect`, `forbidden`), and memoising a function whose "result" is a
+ * thrown navigation interrupt buys nothing — the expensive part, the session
+ * lookup, is already deduplicated inside `getCurrentSession`.
+ *
+ * NOTE ON STATUS CODES: when one of these interrupts is raised after the
+ * response has begun streaming, Next cannot set a 307/403 header and instead
+ * embeds the navigation in the stream, so the transport status is 200. This was
+ * measured, and it is framework behaviour rather than something the DAL can
+ * change — removing these `cache()` wrappers did not affect it.
+ *
+ * It is not a security weakness: the protected component never renders, and
+ * `scripts/verify-auth-e2e.mjs` asserts on *content denial* rather than status
+ * for exactly this reason. Browsers follow the embedded navigation normally.
  */
-export const requireSession = cache(
-  async (redirectTo?: string): Promise<ActiveSession> => {
-    const session = await getCurrentSession()
+export async function requireSession(redirectTo?: string): Promise<ActiveSession> {
+  const session = await getCurrentSession()
 
-    if (!session) {
-      redirect(
-        redirectTo
-          ? (`/sign-in?next=${encodeURIComponent(redirectTo)}` as Route)
-          : '/sign-in',
-      )
-    }
+  if (!session) {
+    redirect(
+      redirectTo
+        ? (`/sign-in?next=${encodeURIComponent(redirectTo)}` as Route)
+        : '/sign-in',
+    )
+  }
 
-    return session
-  },
-)
+  return session
+}
 
-export const requireUser = cache(async (redirectTo?: string): Promise<SessionUser> => {
+export async function requireUser(redirectTo?: string): Promise<SessionUser> {
   const session = await requireSession(redirectTo)
   return session.user
-})
+}
 
 /**
  * Requires a verified email address.
@@ -70,11 +83,11 @@ export const requireUser = cache(async (redirectTo?: string): Promise<SessionUse
  * a cart, but a licensed retailer cannot dispatch age-restricted product to an
  * address it has never confirmed reaches a real person.
  */
-export const requireVerifiedUser = cache(async (): Promise<SessionUser> => {
+export async function requireVerifiedUser(): Promise<SessionUser> {
   const user = await requireUser()
   if (!user.emailVerifiedAt) redirect('/account/verify-email')
   return user
-})
+}
 
 /**
  * Requires one of the given roles.
@@ -84,23 +97,23 @@ export const requireVerifiedUser = cache(async (): Promise<SessionUser> => {
  * already completed is a confusing dead end. Roles are checked against the
  * database-backed session, so a demotion takes effect on the next request.
  */
-export const requireRole = cache(
-  async (...roles: readonly UserRole[]): Promise<SessionUser> => {
-    const user = await requireUser()
-    if (!roles.includes(user.role)) forbidden()
-    return user
-  },
-)
+export async function requireRole(
+  ...roles: readonly UserRole[]
+): Promise<SessionUser> {
+  const user = await requireUser()
+  if (!roles.includes(user.role)) forbidden()
+  return user
+}
 
 /** Staff and admin. The fulfilment side of the app. */
-export const requireStaff = cache(async (): Promise<SessionUser> => {
+export async function requireStaff(): Promise<SessionUser> {
   return requireRole('staff', 'admin')
-})
+}
 
 /** Admin only. User administration, pricing, licensing. */
-export const requireAdmin = cache(async (): Promise<SessionUser> => {
+export async function requireAdmin(): Promise<SessionUser> {
   return requireRole('admin')
-})
+}
 
 /**
  * Non-redirecting permission probe, for conditionally rendering UI.

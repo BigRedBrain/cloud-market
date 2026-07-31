@@ -14,7 +14,9 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx --env-file=.env.local lib/db/seed.ts",
     "db:branch": "node scripts/neon-dev-branch.mjs",
-    "test:auth": "tsx --conditions=react-server scripts/verify-auth-primitives.ts"
+    "test:auth": "tsx --conditions=react-server scripts/verify-auth-primitives.ts",
+    "test:e2e": "node scripts/verify-auth-e2e.mjs",
+    "db:inspect": "node scripts/db-inspect.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
