@@ -331,10 +331,7 @@ export async function revokeSessionAction(
  * silently did nothing without JavaScript while every other form on the site
  * degraded correctly. Caught by the end-to-end suite.
  */
-export async function revokeOtherSessionsAction(
-  _previous?: ActionResult<void> | null,
-  _formData?: FormData,
-): Promise<ActionResult<void>> {
+export async function revokeOtherSessionsAction(): Promise<ActionResult<void>> {
   const session = await requireSession()
 
   /**

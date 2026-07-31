@@ -1,9 +1,15 @@
+import type { Route } from 'next'
 import { BadgeCheck, MapPin, ShieldCheck, Truck } from 'lucide-react'
+import Link from 'next/link'
 
+import {
+  listCategoriesWithCounts,
+  listFeaturedProducts,
+} from '@/lib/catalog/queries'
 import { BurningCloud } from '@/components/brand/burning-cloud'
 import { CloudButton } from '@/components/brand/cloud-button'
 import { SmokeBackground } from '@/components/brand/smoke-background'
-import { ProductCard, type Product } from '@/components/product-card'
+import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,54 +23,19 @@ import { Card } from '@/components/ui/card'
  * so the page is shoppable from the first frame — "Shop the menu" is clickable
  * before the animation finishes.
  *
- * Placeholder catalogue data until Phase 3. Structure and hierarchy are real;
- * the products are not.
+ * Featured products and categories come from the live catalogue — the same
+ * queries the shop uses, so the homepage cannot drift out of sync with what is
+ * actually purchasable.
  */
 
-const FEATURED: Product[] = [
-  {
-    id: '1',
-    slug: 'midnight-runtz',
-    name: 'Midnight Runtz',
-    category: 'Indica · Flower',
-    size: '3.5g',
-    thcPercent: 27.4,
-    priceCents: 4500,
-    inStock: true,
-  },
-  {
-    id: '2',
-    slug: 'motor-city-haze',
-    name: 'Motor City Haze',
-    category: 'Sativa · Flower',
-    size: '3.5g',
-    thcPercent: 22.1,
-    priceCents: 3800,
-    inStock: true,
-    stockCount: 2,
-  },
-  {
-    id: '3',
-    slug: 'eastside-og',
-    name: 'Eastside OG',
-    category: 'Hybrid · Flower',
-    size: '7g',
-    thcPercent: 24.9,
-    priceCents: 7200,
-    inStock: false,
-  },
-]
 
-const CATEGORIES = [
-  { name: 'Flower', count: 84 },
-  { name: 'Pre-rolls', count: 41 },
-  { name: 'Edibles', count: 63 },
-  { name: 'Vapes', count: 37 },
-  { name: 'Concentrates', count: 22 },
-  { name: 'Accessories', count: 18 },
-]
 
-export default function Home() {
+export default async function Home() {
+  const [featured, categories] = await Promise.all([
+    listFeaturedProducts(3),
+    listCategoriesWithCounts(),
+  ])
+
   return (
     <>
       <SiteNav />
@@ -144,16 +115,15 @@ export default function Home() {
                 Featured drops
               </h2>
             </div>
-            <Button variant="ghost">See all 84 →</Button>
+            <Link href="/shop">
+              <Button variant="ghost">See the whole menu →</Button>
+            </Link>
           </div>
 
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            <ProductCard
-              product={FEATURED[0]}
-              badge={{ label: 'Top shelf', variant: 'ember' }}
-            />
-            <ProductCard product={FEATURED[1]} badge={{ label: '20% off', variant: 'flare' }} />
-            <ProductCard product={FEATURED[2]} />
+            {featured.map((product) => (
+              <ProductCard key={product.id} product={product} />
+            ))}
           </div>
         </section>
 
@@ -165,19 +135,19 @@ export default function Home() {
             </h2>
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-              {CATEGORIES.map((category) => (
-                <a
-                  key={category.name}
-                  href="/shop"
+              {categories.map((category) => (
+                <Link
+                  key={category.slug}
+                  href={`/shop/${category.slug}` as Route}
                   className="panel-sm group flex flex-col justify-between gap-6 rounded-md bg-ink-900 p-4 transition-transform duration-150 hover:-translate-x-0.5 hover:-translate-y-0.5"
                 >
                   <span className="font-display text-lg leading-none tracking-tight text-white uppercase">
                     {category.name}
                   </span>
                   <span className="font-mono text-xs text-smoke">
-                    {category.count} items
+                    {category.productCount} item{category.productCount === 1 ? '' : 's'}
                   </span>
-                </a>
+                </Link>
               ))}
             </div>
           </div>

@@ -22,6 +22,13 @@
       "when": 1785476079829,
       "tag": "0002_quick_beyonder",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785478298807,
+      "tag": "0003_lean_starbolt",
+      "breakpoints": true
     }
   ]
 }
