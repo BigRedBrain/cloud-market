@@ -1,36 +1,101 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Cloud Market
 
-## Getting Started
+Cannabis ordering and delivery for a licensed Michigan dispensary.
 
-First, run the development server:
+Launches as a single store with a single owner/driver. The data model and
+architecture are built so that additional stores and drivers can be added
+without redesign.
+
+## Requirements
+
+- Node.js 20.9+ (Next.js 16 minimum; developed on 24.x)
+- A Neon Postgres database
+
+## Setup
 
 ```bash
+npm install
+cp .env.example .env.local   # then fill in real values
+npm run db:migrate           # apply migrations
+npm run db:seed              # create the launch store
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`lib/env.ts` validates every environment variable at startup. A missing or
+malformed value fails loudly at boot rather than surfacing as a confusing
+runtime error later.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Scripts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Script | Purpose |
+| --- | --- |
+| `npm run dev` | Development server (Turbopack) |
+| `npm run build` | Production build; fails on type errors |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run lint` | ESLint (flat config) |
+| `npm run db:generate` | Generate SQL migrations from the Drizzle schema |
+| `npm run db:migrate` | Apply pending migrations |
+| `npm run db:push` | Push schema directly — local development only |
+| `npm run db:studio` | Drizzle Studio |
+| `npm run db:seed` | Seed the launch store (idempotent) |
 
-## Learn More
+## Architecture
 
-To learn more about Next.js, take a look at the following resources:
+```
+app/                  Routes, layouts, error boundaries (Server Components by default)
+components/ui/        shadcn/ui primitives
+lib/
+  env.ts              Zod-validated environment
+  db/
+    index.ts          Drizzle client (server-only)
+    schema/           Table definitions, one module per domain area
+    seed.ts           Idempotent seed script
+  result.ts           ActionResult — the Server Action return contract
+  money.ts            Integer-cent money type and arithmetic
+  utils.ts            cn() class merger
+drizzle/              Generated SQL migrations (committed)
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Conventions
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Server Components by default.** `'use client'` is opt-in, pushed as far down
+  the tree as possible.
+- **All input is validated with Zod** at the trust boundary. Server Actions take
+  untrusted input and must funnel it through `parseInput()`.
+- **Server Actions return `ActionResult<T>`**, never throw across the boundary.
+  See `lib/result.ts`.
+- **Money is integer cents**, never floats. See `lib/money.ts`. The `Cents`
+  branded type makes a dollars/cents mix-up a compile error.
+- **Every tenant-owned table carries `store_id`** from day one, so adding a
+  second store is a data operation rather than a migration.
+- **Regulated records are soft-deleted** (`deleted_at`) for retention
+  compliance.
 
-## Deploy on Vercel
+### Notes on Next.js 16
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+This project targets Next.js 16, which differs materially from 15:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `middleware.ts` is now `proxy.ts` and runs on the **Node.js runtime only**.
+  This is why Auth.js can use database sessions directly (Phase 1).
+- `cookies()`, `headers()`, `draftMode()`, `params` and `searchParams` are
+  **async-only** — synchronous access was removed.
+- `revalidateTag(tag)` now requires a `cacheLife` profile as a second argument.
+  `updateTag()` provides read-your-writes semantics inside Server Actions.
+- Turbopack is the default bundler; `next lint` has been removed in favour of
+  the ESLint CLI.
+- PPR is configured via top-level `cacheComponents`, not `experimental.ppr`.
+
+Consult `node_modules/next/dist/docs/` — the bundled docs match the installed
+version exactly.
+
+## Build phases
+
+0. **Foundation** — tooling, database, env, design tokens ✅
+1. Authentication
+2. Admin Dashboard
+3. Product Catalog
+4. Shopping Cart
+5. Checkout
+6. Order Management
+7. Delivery Workflow
+8. Launch

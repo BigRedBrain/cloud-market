@@ -1,7 +1,85 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next'
+
+/**
+ * Cloud Market — Next.js configuration.
+ *
+ * Targets Next.js 16. Notable version-specific choices:
+ *  - Turbopack is the default bundler for `dev` and `build`; no flags needed.
+ *  - `typedRoutes` is stable in 16 (no longer under `experimental`).
+ *  - `cacheComponents` (the successor to `experimental.ppr` / `dynamicIO`) is
+ *    deliberately NOT enabled yet — see the note at the bottom of this file.
+ */
+
+const securityHeaders = [
+  // Disallow MIME sniffing.
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  // Prevent clickjacking of the storefront and admin dashboard.
+  { key: 'X-Frame-Options', value: 'DENY' },
+  // Send only the origin to third parties (e.g. Google Maps).
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  // Deny access to hardware APIs the app never uses. Geolocation stays enabled
+  // for same-origin because Phase 7 delivery tracking depends on it.
+  {
+    key: 'Permissions-Policy',
+    value: 'camera=(), microphone=(), payment=(), geolocation=(self)',
+  },
+  // Force HTTPS for two years, including subdomains.
+  {
+    key: 'Strict-Transport-Security',
+    value: 'max-age=63072000; includeSubDomains; preload',
+  },
+]
 
 const nextConfig: NextConfig = {
-  /* config options here */
-};
+  reactStrictMode: true,
 
-export default nextConfig;
+  // Statically typed `href` values for Link and router calls.
+  typedRoutes: true,
+
+  // The framework advertising its own version is free reconnaissance.
+  poweredByHeader: false,
+
+  images: {
+    remotePatterns: [
+      {
+        // Product imagery served from Vercel Blob.
+        protocol: 'https',
+        hostname: '*.public.blob.vercel-storage.com',
+        pathname: '/**',
+      },
+    ],
+    // Next 16 defaults `qualities` to [75]; declared explicitly so the
+    // storefront can serve sharper hero/product photography.
+    qualities: [75, 90],
+  },
+
+  async headers() {
+    return [{ source: '/:path*', headers: securityHeaders }]
+  },
+
+  typescript: {
+    // Never ship a build that does not typecheck.
+    ignoreBuildErrors: false,
+  },
+}
+
+export default nextConfig
+
+/**
+ * Deferred decisions, recorded so they are revisited deliberately:
+ *
+ * 1. `cacheComponents: true` — Next 16's replacement for Partial Prerendering.
+ *    It is a strong fit for the product catalog (Phase 3), where a mostly
+ *    static page shells around a dynamic cart badge. Deferred to that phase
+ *    because enabling it changes caching semantics for every route at once,
+ *    and there is not yet enough surface area to validate it against.
+ *
+ * 2. `reactCompiler: true` — stable in 16, but relies on Babel and measurably
+ *    slows builds. Revisit once there are enough Client Components for the
+ *    automatic memoization to pay for itself.
+ *
+ * 3. Content-Security-Policy — intentionally absent. A meaningful CSP for this
+ *    app needs a per-request nonce, which belongs in `proxy.ts` (Phase 1), and
+ *    must account for Google Maps. A header-only CSP now would either be too
+ *    loose to matter or break Maps in production.
+ */
