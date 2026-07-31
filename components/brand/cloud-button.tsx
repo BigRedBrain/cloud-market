@@ -1,6 +1,3 @@
-'use client'
-
-import { motion, useReducedMotion } from 'motion/react'
 import type * as React from 'react'
 
 import { cn } from '@/lib/utils'
@@ -8,29 +5,36 @@ import { cn } from '@/lib/utils'
 /**
  * The Cloud Button — Cloud Market's signature control.
  *
- * A cloud silhouette that smoulders: smoke drifts inside the shape, and the
- * outer edge catches fire on hover and on keyboard focus.
+ * A cloud silhouette that smoulders: smoke drifts inside the shape, flames lick
+ * the underside on hover, and the outer edge catches fire on hover and on
+ * keyboard focus.
  *
- * Three implementation decisions worth knowing:
+ * **Zero client JavaScript.** This is a server component. It was originally
+ * built on Framer Motion, and the performance audit measured that dependency at
+ * ~53 KB gzip on the homepage's critical path — for four drifting ellipses. All
+ * of it is now CSS keyframes, which run off the main thread and cost nothing to
+ * download. The brief's "SVG or CSS-based smoke and flame effects where
+ * possible" is doing real work here, not just aesthetics.
  *
- * 1. The glow is a CSS `drop-shadow` filter, not a `box-shadow`. drop-shadow
- *    follows the element's alpha channel, so the fire hugs the cloud's actual
- *    lobed edge instead of a rectangle around it. It is also GPU-composited,
- *    so igniting it costs no layout or paint.
+ * Three other decisions worth knowing:
+ *
+ * 1. The glow is a CSS `drop-shadow` filter, not `box-shadow`. drop-shadow
+ *    follows the element's alpha channel, so the fire hugs the cloud's lobed
+ *    edge instead of a rectangle around it, and it composites on the GPU.
  *
  * 2. The SVG stretches with `preserveAspectRatio="none"` so the button sizes to
- *    its label rather than forcing a fixed width. Non-uniform scaling would
- *    normally smear the ink outline to different weights on the horizontal and
- *    vertical, so the path carries `vector-effect="non-scaling-stroke"` and the
- *    line stays a constant 2px at every size.
+ *    its label. Non-uniform scaling would smear the ink outline to different
+ *    weights on each axis, so the path carries `vector-effect="non-scaling-stroke"`
+ *    and the line stays a constant 2px at every size.
  *
- * 3. Only the smoke uses Framer Motion. The lift and press are plain CSS
- *    transitions — cheaper, and they inherit the global reduced-motion reset in
- *    globals.css for free.
+ * 3. Flames are drawn behind the clipped fill, so only their tips show past the
+ *    cloud's lower edge — the fire reads as coming from behind the silhouette
+ *    rather than painted onto it.
  *
- * Reduced motion: the smoke stops drifting and settles into a static haze, and
- * the lift is neutralised by the global reset. The glow, focus ring, and press
- * feedback all remain, because those communicate state rather than decorate it.
+ * Reduced motion: every keyframe here is declared inside a
+ * `prefers-reduced-motion: no-preference` block, so the smoke and flames simply
+ * hold still. The glow, focus ring, and pressed state all remain, because those
+ * communicate state rather than decorate it.
  */
 
 /** Puffy four-lobe cloud with a flat base. Drawn once, reused as clip and ink. */
@@ -44,17 +48,23 @@ const SIZES = {
   lg: 'h-16 px-10 text-lg',
 } as const
 
+/** Smoke puffs. Co-prime periods so the loop never visibly repeats. */
+const PUFFS = [
+  { cx: 62, cy: 76, rx: 20, ry: 13, delay: '0s', duration: '7s' },
+  { cx: 118, cy: 82, rx: 26, ry: 15, delay: '1.6s', duration: '8.5s' },
+  { cx: 158, cy: 78, rx: 18, ry: 12, delay: '3.4s', duration: '7.9s' },
+  { cx: 92, cy: 84, rx: 22, ry: 12, delay: '5s', duration: '9.1s' },
+]
+
+const FLAMES = [
+  { d: 'M52 94 C48 84 60 80 56 70 C68 80 64 90 52 94 Z', delay: '0s' },
+  { d: 'M96 96 C91 84 105 80 100 68 C115 80 110 90 96 96 Z', delay: '0.25s' },
+  { d: 'M148 94 C144 85 155 81 151 71 C163 80 159 88 148 94 Z', delay: '0.5s' },
+]
+
 type CloudButtonProps = React.ComponentProps<'button'> & {
   size?: keyof typeof SIZES
 }
-
-/** Smoke puffs, expressed as data so the markup stays legible. */
-const PUFFS = [
-  { cx: 62, cy: 76, rx: 20, ry: 13, delay: 0, duration: 7 },
-  { cx: 118, cy: 82, rx: 26, ry: 15, delay: 1.6, duration: 8.5 },
-  { cx: 158, cy: 78, rx: 18, ry: 12, delay: 3.4, duration: 7.8 },
-  { cx: 92, cy: 84, rx: 22, ry: 12, delay: 5, duration: 9 },
-]
 
 export function CloudButton({
   className,
@@ -63,7 +73,6 @@ export function CloudButton({
   type = 'button',
   ...props
 }: CloudButtonProps) {
-  const reduceMotion = useReducedMotion()
   const gradientId = 'cloud-btn-fill'
   const clipId = 'cloud-btn-clip'
   const halftoneId = 'cloud-btn-halftone'
@@ -73,8 +82,7 @@ export function CloudButton({
       type={type}
       className={cn(
         'group relative isolate inline-flex items-center justify-center',
-        'font-display tracking-wide uppercase text-ink',
-        // The lift, and the press that overrides it.
+        'font-display tracking-wide text-ink uppercase',
         'transition-transform duration-150 ease-out',
         'hover:-translate-y-0.5 active:translate-y-px',
         'disabled:pointer-events-none disabled:opacity-50',
@@ -90,24 +98,21 @@ export function CloudButton({
         className={cn(
           'absolute inset-0 -z-10 h-full w-full',
           'transition-[filter] duration-300 ease-out',
-          // Ember core, flare halo. Ignites on pointer hover AND keyboard focus.
           'group-hover:[filter:drop-shadow(0_0_6px_var(--ember))_drop-shadow(0_0_16px_var(--flare))]',
           'group-focus-visible:[filter:drop-shadow(0_0_6px_var(--ember))_drop-shadow(0_0_16px_var(--flare))]',
-          // Pressed: the fire dims, as if pushed into the page.
           'group-active:[filter:drop-shadow(0_0_3px_var(--ember))]',
         )}
       >
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--volt)" />
-            <stop offset="100%" stopColor="var(--ember)" />
+            <stop offset="0%" stopColor="var(--ember)" />
+            <stop offset="100%" stopColor="var(--flare)" />
           </linearGradient>
 
           <clipPath id={clipId}>
             <path d={CLOUD_PATH} />
           </clipPath>
 
-          {/* Comic halftone shading, confined to the cloud interior. */}
           <pattern
             id={halftoneId}
             width="6"
@@ -118,44 +123,49 @@ export function CloudButton({
           </pattern>
         </defs>
 
+        {/* Flames behind the body — only their tips clear the lower edge. */}
+        <g className="opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100">
+          {FLAMES.map((flame) => (
+            <path
+              key={flame.d}
+              d={flame.d}
+              fill="var(--flare)"
+              className="animate-[ember-flicker_900ms_ease-in-out_infinite] motion-reduce:animate-none"
+              style={{
+                transformOrigin: 'center bottom',
+                animationDelay: flame.delay,
+              }}
+            />
+          ))}
+        </g>
+
         <g clipPath={`url(#${clipId})`}>
           <rect width="200" height="96" fill={`url(#${gradientId})`} />
 
-          {PUFFS.map((puff, index) => (
-            <motion.ellipse
-              key={index}
+          {PUFFS.map((puff) => (
+            <ellipse
+              key={puff.cx}
               cx={puff.cx}
+              cy={puff.cy}
               rx={puff.rx}
               ry={puff.ry}
               fill="var(--cream)"
-              initial={false}
-              animate={
-                reduceMotion
-                  ? { cy: puff.cy - 18, opacity: 0.14 }
-                  : {
-                      cy: [puff.cy, puff.cy - 46],
-                      opacity: [0, 0.22, 0],
-                      scale: [0.85, 1.15],
-                    }
+              opacity="0"
+              className="animate-[smoke-rise_var(--puff-duration)_ease-out_infinite] motion-reduce:animate-none motion-reduce:opacity-[0.12]"
+              style={
+                {
+                  '--puff-duration': puff.duration,
+                  animationDelay: puff.delay,
+                  transformOrigin: `${puff.cx}px ${puff.cy}px`,
+                } as React.CSSProperties
               }
-              transition={
-                reduceMotion
-                  ? { duration: 0 }
-                  : {
-                      duration: puff.duration,
-                      delay: puff.delay,
-                      repeat: Infinity,
-                      ease: 'easeOut',
-                    }
-              }
-              style={{ transformOrigin: `${puff.cx}px ${puff.cy}px` }}
             />
           ))}
 
           <rect width="200" height="96" fill={`url(#${halftoneId})`} />
         </g>
 
-        {/* Ink outline drawn last so it sits above the fill and the smoke. */}
+        {/* Ink outline last, so it sits above the fill and the smoke. */}
         <path
           d={CLOUD_PATH}
           fill="none"
