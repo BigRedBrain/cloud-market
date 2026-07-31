@@ -12,6 +12,7 @@ practical, and it drives every decision below.
 | Neon branch | Role | Lifetime |
 | --- | --- | --- |
 | `main` | **Production.** The default branch, root of the branch tree. | Permanent |
+| `development` | Shared local-development database. What `.env.local` points at. | Permanent |
 | `preview/<git-branch>` | One isolated database per preview deployment. | Created with the PR, deleted with it |
 
 `main` is production because it is the only branch guaranteed to exist: it is
@@ -76,8 +77,40 @@ Production connection strings there mean every developer's laptop holds live
 production credentials, and a stray `npm run db:seed` writes to production.
 
 Local development uses `.env.local` instead, which is gitignored
-(`.gitignore` line 34, `.env*`). Copy [`.env.example`](./.env.example) and fill
-it in. Point it at your own Neon branch — not `main`.
+(`.gitignore` line 34, `.env*`). It must point at the `development` branch — not
+`main`. See §3.1.
+
+### 3.1 The `development` branch
+
+`development` is a permanent copy-on-write branch off `main`, used by every
+local checkout. It exists so that running `npm run db:seed` — or any migration,
+or any exploratory `DELETE` — cannot touch production.
+
+Provision it, and repoint `.env.local` at it, with:
+
+```bash
+NEON_API_KEY=neon_api_... npm run db:branch
+npm run db:migrate      # apply migrations to the development branch
+npm run db:seed         # seed it
+```
+
+Create the key at <https://console.neon.tech/app/settings/api-keys>. Pass it
+inline as above rather than storing it — it is an account-scoped credential with
+authority over every project, strictly more powerful than a connection string.
+
+[`scripts/neon-dev-branch.mjs`](./scripts/neon-dev-branch.mjs) is idempotent: it
+reuses an existing `development` branch rather than creating a second one, and
+rewrites only the two `DATABASE_URL*` lines in `.env.local`, leaving comments
+and every other key intact. It refuses to run if `development` turns out to be
+the project's default branch, asserts that the pooled host contains `-pooler`
+and the direct host does not, and never writes to Vercel or to production.
+
+Confirm the switch took effect — the fingerprint must differ from production's:
+
+```bash
+npm run dev
+curl -s localhost:3000/api/health    # environment "local", new fingerprint
+```
 
 ---
 
