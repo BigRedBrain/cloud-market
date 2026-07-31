@@ -6,6 +6,8 @@ import { PackageOpen } from 'lucide-react'
 import { CatalogFilters, CategoryChips } from '@/components/catalog/catalog-filters'
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
+import { getBagCount } from '@/lib/bag/core'
+import { getCurrentUser } from '@/lib/auth/dal'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import {
@@ -57,6 +59,9 @@ export default async function ShopPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
+  const bagViewer = await getCurrentUser()
+  const bagCount = await getBagCount(bagViewer?.id ?? null)
+
   const params = await searchParams
   const filters = parseCatalogSearchParams(params)
 
@@ -72,7 +77,7 @@ export default async function ShopPage({
 
   return (
     <>
-      <SiteNav />
+      <SiteNav bagCount={bagCount} />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-10 sm:px-6">
         <header className="mb-8 flex flex-col gap-3">

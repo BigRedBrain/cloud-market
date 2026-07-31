@@ -3,11 +3,13 @@ import Link from 'next/link'
 import type { Route } from 'next'
 import { notFound } from 'next/navigation'
 
+import { AddToBagForm } from '@/components/bag/bag-controls'
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
+import { getBagCount } from '@/lib/bag/core'
+import { getCurrentUser } from '@/lib/auth/dal'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Alert } from '@/components/ui/feedback'
 import { getProductBySlug, listProducts } from '@/lib/catalog/queries'
 import { formatCents } from '@/lib/money'
 
@@ -43,19 +45,21 @@ function Spec({ label, value }: { label: string; value: string | null }) {
  * halftone washes: this is the page a customer reads carefully, and potency,
  * price and availability have to win over atmosphere.
  *
- * This phase is read-only commerce. Variants show price and stock but there is
- * no purchase control — a disabled "Add to bag" would imply a cart exists and
- * is merely broken, which is worse than saying plainly that ordering opens
- * later.
+ * Variants can be added to the bag directly from the price table. Adding does
+ * NOT reserve stock — that happens at the future order boundary, and the bag
+ * page says so plainly rather than implying a hold the system cannot honour.
+ 
  */
 export default async function ProductPage({ params }: ProductPageProps) {
+  const bagViewer = await getCurrentUser()
+  const bagCount = await getBagCount(bagViewer?.id ?? null)
+
   const { slug } = await params
   const detail = await getProductBySlug(slug)
   if (!detail) notFound()
 
   const { product, brand, category, variants, images } = detail
 
-  const inStockVariants = variants.filter((variant) => variant.inventoryQuantity > 0)
   const totalStock = variants.reduce((sum, variant) => sum + variant.inventoryQuantity, 0)
   const primary = images[0]
 
@@ -66,7 +70,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
 
   return (
     <>
-      <SiteNav />
+      <SiteNav bagCount={bagCount} />
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-10 sm:px-6">
         <nav aria-label="Breadcrumb" className="mb-6">
@@ -180,6 +184,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
                       <th scope="col" className="px-4 py-2 font-normal">Size</th>
                       <th scope="col" className="px-4 py-2 font-normal">Price</th>
                       <th scope="col" className="px-4 py-2 text-right font-normal">Stock</th>
+                      <th scope="col" className="px-4 py-2 font-normal"><span className="sr-only">Add to bag</span></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -207,19 +212,19 @@ export default async function ProductPage({ params }: ProductPageProps) {
                             <span className="text-volt">In stock</span>
                           )}
                         </td>
+                        <td className="px-4 py-3">
+                          <AddToBagForm
+                            variantId={variant.id}
+                            label={variant.label}
+                            soldOut={variant.inventoryQuantity === 0}
+                          />
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </CardContent>
             </Card>
-
-            <Alert tone="info" title="Ordering opens soon">
-              You can browse the full menu today. Cart and checkout arrive in the
-              next phase — {inStockVariants.length > 0
-                ? 'stock shown here is live.'
-                : 'this product is currently sold out.'}
-            </Alert>
           </div>
         </div>
 

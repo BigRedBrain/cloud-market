@@ -131,3 +131,24 @@ export function safeRedirectPath(
   if (candidate.includes('\\')) return fallback
   return candidate as Route
 }
+
+/**
+ * Query flag meaning "the bag changed during sign-in, tell the customer".
+ *
+ * A flag rather than a payload. The reason a line vanished lives in the merge
+ * outcome and the `CART_MERGED` audit row; putting item detail in the URL would
+ * make it forwardable, bookmarkable and stale, and none of those are true of a
+ * one-time notice.
+ */
+export const BAG_UPDATED_FLAG = 'bag=updated'
+
+/**
+ * Appends a query flag to an already-validated path.
+ *
+ * Lives beside `safeRedirectPath` so both `Route` assertions sit in the file
+ * that establishes the invariant. The input is already same-origin; adding a
+ * fixed, literal query string cannot make it otherwise.
+ */
+export function withQueryFlag(path: Route, flag: string): Route {
+  return `${path}${path.includes('?') ? '&' : '?'}${flag}` as Route
+}

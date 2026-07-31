@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import Link from 'next/link'
 
 import { ProfileForm } from '@/components/auth/auth-forms'
 import { Badge } from '@/components/ui/badge'
@@ -13,9 +14,16 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 }
 
-export default async function AccountPage() {
+export default async function AccountPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
   // Authoritative check, close to the data — not in the layout.
   const user = await requireUser('/account')
+
+  /** Sign-in lands here by default, so the bag notice has to be shown here too. */
+  const bagUpdatedOnSignIn = (await searchParams).bag === 'updated'
 
   const [details] = await db
     .select({ phone: schema.users.phone, dateOfBirth: schema.users.dateOfBirth })
@@ -40,6 +48,17 @@ export default async function AccountPage() {
           )}
         </div>
       </div>
+
+      {bagUpdatedOnSignIn && (
+        <Alert tone="warning" title="Your bag was updated">
+          Some items are no longer available and weren&apos;t carried over when
+          you signed in.{' '}
+          <Link href="/bag" className="underline">
+            Check your bag
+          </Link>
+          .
+        </Alert>
+      )}
 
       {!user.emailVerifiedAt && (
         <Alert tone="info" title="Verify your email before ordering">
