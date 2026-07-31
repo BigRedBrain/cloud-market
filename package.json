@@ -19,6 +19,7 @@
     "test:auth": "tsx --conditions=react-server scripts/verify-auth-primitives.ts",
     "test:e2e": "node scripts/verify-auth-e2e.mjs",
     "test:prod": "node scripts/verify-auth-production.mjs",
+    "test:prod:cms": "node scripts/verify-cms-production.mjs",
     "db:inspect": "node scripts/db-inspect.mjs"
   },
   "dependencies": {
