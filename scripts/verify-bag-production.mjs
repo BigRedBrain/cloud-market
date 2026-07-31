@@ -49,11 +49,22 @@ const BASE = process.argv[2] ?? 'https://cloud-market-ten.vercel.app'
 const ALLOW = process.argv.includes('--allow-production')
 const PREFLIGHT_ONLY = process.argv.includes('--preflight')
 
+/**
+ * `--http-only` runs every check observable from outside the application, with
+ * no database connection and therefore no credential.
+ *
+ * It exists because the two halves of this verification have different access
+ * requirements, and conflating them would mean either skipping the half that
+ * needs no secret or overstating what was checked. What it CANNOT cover is
+ * stated explicitly in its own summary rather than silently omitted.
+ */
+const HTTP_ONLY = process.argv.includes('--http-only')
+
 if (!ALLOW) {
   console.error('Refusing to run without --allow-production.')
   process.exit(1)
 }
-if (!process.env.DATABASE_URL) {
+if (!HTTP_ONLY && !process.env.DATABASE_URL) {
   console.error(
     'DATABASE_URL is required and is NOT read from .env.local.\n' +
       '  PowerShell:  $env:DATABASE_URL = "<pooled production string>"\n' +
@@ -211,8 +222,107 @@ const countOf = async (t) => (await sql(`select count(*)::int n from ${t}`))[0].
 
 /* ========================================================================== */
 
+/**
+ * Everything observable from outside the application.
+ *
+ * Shared by the full run and by `--http-only`, so the credential-free run is
+ * literally the same assertions rather than a reimplementation that could drift.
+ * `baseline` is null in --http-only mode; the two database cross-checks are
+ * skipped rather than faked.
+ */
+async function httpSections(baseline) {
+  section('[3] Public routes')
+
+  const health = await fetch(`${BASE}/api/health`).then((r) => r.json())
+  check('/api/health reports ok', health.status === 'ok')
+  check('/api/health database reachable', health.database?.reachable === true)
+  check('/api/health environment is production', health.environment === 'production')
+  console.log(`    health fingerprint: ${health.database?.fingerprint}`)
+
+  const guest = device('guest')
+  const home = await visit(guest, '/')
+  check('/ returns 200', home.status === 200, `got ${home.status}`)
+  const shop = await visit(guest, '/shop')
+  check('/shop returns 200', shop.status === 200, `got ${shop.status}`)
+
+  /**
+   * The catalog being empty is observable without the database: the shop
+   * renders its empty state. This is the HTTP-visible proxy for "no seed data".
+   */
+  check('/shop shows an empty catalog — production was not seeded',
+    /No products|nothing to show|empty/i.test(shop.html) || !shop.html.includes('Add to bag'),
+    'shop appears to contain products')
+
+  section('[4] Guest bag')
+
+  const bag = await visit(guest, '/bag')
+  check('/bag returns 200 for a guest', bag.status === 200, `got ${bag.status}`)
+  check('empty bag renders its empty state', bag.html.includes('Nothing in your bag yet'))
+  check('browsing alone issues NO bag cookie',
+    ![...guest.cookies.keys()].some((k) => k.includes('cloudmarket_bag')))
+  if (baseline) {
+    check('no cart row created by browsing', (await countOf('carts')) === baseline.carts)
+  }
+
+  section('[5] Route protection')
+
+  for (const path of ['/admin', '/admin/products', '/admin/campaigns', '/admin/media']) {
+    const res = await visit(device('anon'), path)
+    const denied = res.status === 307 || res.status === 302 ||
+      res.html.includes('Sign in') || !res.html.includes('New product')
+    check(`${path} denies an anonymous visitor`, denied, `status ${res.status}`)
+  }
+
+  const account = await visit(device('anon'), '/account')
+  check('/account denies an anonymous visitor',
+    account.status === 307 || account.status === 302 || account.html.includes('Sign in'),
+    `status ${account.status}`)
+
+  section('[5b] Sign-in surface')
+
+  const signIn = await visit(device('anon'), '/sign-in')
+  check('/sign-in returns 200', signIn.status === 200, `got ${signIn.status}`)
+  check('/sign-in renders a usable form without JavaScript',
+    Object.keys(actionFields(signIn.html)).length > 0)
+
+  /**
+   * A wrong password must not authenticate. This writes a FAILED_LOGIN audit row
+   * with a null user id and creates nothing else, so it is safe without a
+   * cleanup path — but the row is noted so a full run can account for it.
+   */
+  const attacker = device('attacker')
+  await submit(attacker, '/sign-in', {
+    email: `nobody.${Date.now()}@example.invalid`,
+    password: 'not-a-real-password',
+  })
+  check('an unknown account cannot sign in',
+    ![...attacker.cookies.keys()].some((k) => k.includes('session')),
+    `cookies: ${[...attacker.cookies.keys()].join(',')}`)
+}
+
 async function main() {
   console.log(`Bag production verification against ${BASE}`)
+
+  if (HTTP_ONLY) {
+    console.log('mode: --http-only (no database connection, no credential)\n')
+    await httpSections(null)
+
+    console.log('\n==========================================================')
+    console.log(`RESULT: ${passed} passed, ${failed} failed`)
+    if (failed) console.log(`Failed: ${failures.join(', ')}`)
+    console.log('\nNOT COVERED by --http-only — requires a database credential:')
+    console.log('  • schema/journal state (0005, 0006, indexes, CHECK constraint)')
+    console.log('  • cart write invariants via the rolled-back transaction')
+    console.log('  • CART_MERGED writability')
+    console.log('  • authenticated bag (needs a temporary account, which needs')
+    console.log('    database access to remove deterministically)')
+    console.log('  • baseline/residue counts')
+    console.log('Run without --http-only, with DATABASE_URL set, to cover these.')
+    console.log('==========================================================')
+    process.exitCode = failed ? 1 : 0
+    return
+  }
+
   if (!(await assertConnectedToDeployedDatabase())) return
 
   /* ================================================== 1. SCHEMA / MIGRATIONS */
@@ -313,54 +423,7 @@ async function main() {
     baseline.products === 0 && baseline.product_variants === 0,
     `products=${baseline.products} variants=${baseline.product_variants}`)
 
-  /* ================================================== 3. PUBLIC ROUTES */
-  section('[3] Public routes')
-
-  const health = await fetch(`${BASE}/api/health`).then((r) => r.json())
-  check('/api/health reports ok', health.status === 'ok')
-  check('/api/health database reachable', health.database?.reachable === true)
-  check('/api/health environment is production', health.environment === 'production')
-  console.log(`    health fingerprint: ${health.database?.fingerprint}`)
-
-  const guest = device('guest')
-  const home = await visit(guest, '/')
-  check('/ returns 200', home.status === 200, `got ${home.status}`)
-  const shop = await visit(guest, '/shop')
-  check('/shop returns 200', shop.status === 200, `got ${shop.status}`)
-
-  /* ================================================== 4. GUEST BAG */
-  section('[4] Guest bag')
-
-  const bag = await visit(guest, '/bag')
-  check('/bag returns 200 for a guest', bag.status === 200, `got ${bag.status}`)
-  check('empty bag renders its empty state',
-    bag.html.includes('Nothing in your bag yet'))
-  check('browsing alone issues NO bag cookie',
-    ![...guest.cookies.keys()].some((k) => k.includes('cloudmarket_bag')))
-  check('no cart row created by browsing', (await countOf('carts')) === baseline.carts)
-
-  /**
-   * The cookie is only issued by a mutation, and there is no purchasable
-   * product in production to mutate with. Its configuration is therefore
-   * verified from the code path that sets it plus the production-only rules:
-   * the name must carry the __Host- prefix under NODE_ENV=production.
-   */
-  console.log('    note: bag cookie issuance needs a purchasable product — see [6]')
-
-  /* ================================================== 5. PROTECTED ROUTES */
-  section('[5] Route protection')
-
-  for (const path of ['/admin', '/admin/products', '/admin/campaigns', '/admin/media']) {
-    const res = await visit(device('anon'), path)
-    const denied = res.status === 307 || res.status === 302 ||
-      res.html.includes('Sign in') || !res.html.includes('New product')
-    check(`${path} denies an anonymous visitor`, denied, `status ${res.status}`)
-  }
-
-  const account = await visit(device('anon'), '/account')
-  check('/account denies an anonymous visitor',
-    account.status === 307 || account.status === 302 || account.html.includes('Sign in'),
-    `status ${account.status}`)
+  await httpSections(baseline)
 
   /* ================================================== 6. CART WRITE PATH */
   section('[6] Cart write path — inside a transaction that is always rolled back')
