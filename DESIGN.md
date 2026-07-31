@@ -1,5 +1,11 @@
 # Cloud Market — design system
 
+> **Status: FROZEN.** This system is a product asset, not an open question.
+> From Phase 1 onward, features *consume* it — Authentication, the store
+> engine, catalogue, cart, and orders all build inside these rules rather than
+> introducing their own visual language. Changes require a bug, not a
+> preference.
+
 Urban hip-hop flyer meets comic-book panel. Charcoal foundation, thick ink
 outlines, hard zero-blur offset shadows, halftone shading.
 
@@ -9,6 +15,35 @@ why it renders fast: there is not a single blur, noise filter, or backdrop
 effect doing heavy work anywhere in the system.
 
 Live reference: **`/design`** (noindexed).
+
+---
+
+## The governing philosophy
+
+> **Brand should create emotion before a task and reinforce confidence after a
+> task. During the task itself, the interface should prioritise clarity over
+> spectacle.**
+
+Everything below is downstream of that sentence. It is why the hero smoulders
+and the checkout does not; why a success screen gets one ignition and an error
+screen gets none; why the ember glow marks the primary action and nothing else.
+
+Two mechanisms enforce it:
+
+- **§7 — the animation policy.** Where decorative motion is allowed at all.
+- **§9 — the brand intensity scale.** How much brand each screen carries.
+
+### Feedback vs. decoration
+
+This distinction is a permanent engineering principle, not a style note.
+
+| | Examples | Rule |
+| --- | --- | --- |
+| **Feedback** | hover, press, focus, keyboard focus, disabled, loading | Communicates *interaction*. **Never removed**, on any screen, at any intensity. |
+| **Decoration** | smoke, glowing backgrounds, particles, comic transitions, hero animation | Communicates *brand*. **Controlled carefully** — see §7 and §9. |
+
+When the two appear to conflict, feedback wins. A 5% admin screen has exactly
+the same focus rings, press response, and contrast ratios as a 100% hero.
 
 ---
 
@@ -281,7 +316,12 @@ is ever added globally**.
 
 Everything else — **shop, cart, checkout, account, admin** — stays calm. Those
 are task surfaces where usability beats atmosphere, and a grid of animated
-controls actively hurts scanning.
+controls actively hurts scanning. See §9 for how much brand each surface carries.
+
+**Success animation never loops.** One ignition, one ember pulse, then still.
+A looping celebration turns into a distraction the moment the customer starts
+reading their order number, which is the only thing they came to that screen
+for. Ambient loops are permitted in exactly one place: the hero's smoke.
 
 Two things are *not* decoration and therefore apply everywhere, deliberately:
 
@@ -386,3 +426,60 @@ component in the app.
 - **Images** carry explicit `width`/`height`, `loading="lazy"`, and
   `decoding="async"`. next/image lands in Phase 3 with real Blob URLs.
 - **Three font families is the ceiling**, all latin-subset with `display: swap`.
+
+---
+
+## 9. Brand intensity scale
+
+Every screen picks its intensity deliberately. This exists so the team has
+shared vocabulary: instead of "add more smoke", say **"this screen should sit
+at 20%."**
+
+| Surface | Intensity | What that permits |
+| --- | --- | --- |
+| **Landing hero** | 100% | Ambient smoke, burning-cloud entrance, cloud button, halftone bleed, display type at `text-8xl` |
+| **Marketing pages** | 90% | Smoke on hero sections only, cloud button, halftone accents, full display type |
+| **Order success** | 80% | Success ignition, halftone wash, display heading, paper panel. Reference code stays plain and copyable |
+| **Category pages** | 70% | Halftone accents, panel outlines, display headings, sticker badges. **No ambient smoke** |
+| **Product pages** | 50% | Panel outlines, display product name, one badge. No smoke, no halftone washes |
+| **Cart** | 20% | Panel outlines and type only. No halftone, no smoke, no cloud button |
+| **Checkout** | 10% | Panel outlines and type. Stripped header. Plain primary button, no cloud silhouette |
+| **Account** | 10% | As checkout. Density and legibility over character |
+| **Admin** | 5% | Type, hairlines, tabular data. Ink outlines optional. Information density wins outright |
+
+### What intensity does NOT scale
+
+Intensity governs **decoration only**. These are constant at every level, from
+5% to 100%:
+
+- Focus rings — identical treatment on an admin table and a landing hero
+- Press physics on buttons
+- **The ember glow on primary CTAs.** CTA hierarchy is *information*, not
+  decoration — a 10% checkout still marks "Place order" as the primary action.
+  Reading "checkout = 10%" as licence to strip the glow would break the rule in
+  §5 and make the most important button on the site look like "Cancel"
+- Contrast ratios and the ink-on-bright-fill rule
+- Touch target sizes (44px minimum)
+- Reduced-motion alternatives
+
+### Reading the scale
+
+The curve is deliberate: it peaks before the task, bottoms out during it, and
+rises again after. That is the governing philosophy expressed as numbers —
+emotion on the way in, clarity in the middle, confidence on the way out.
+
+```
+100 ┤ ██ hero
+ 80 ┤ ██              ██ success
+ 60 ┤    ██ category
+ 40 ┤       ██ product
+ 20 ┤          ██ cart
+ 10 ┤             ██ checkout / account
+  5 ┤                ██ admin
+    └──────────────────────────────────
+      browse  →  decide  →  buy  →  done
+```
+
+Order success sits at 80% rather than 100% for a reason: the customer's order
+number matters more than the animation, so brand reinforces the moment without
+competing with the information.
