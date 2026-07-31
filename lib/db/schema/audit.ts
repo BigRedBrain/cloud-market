@@ -45,6 +45,9 @@ export const auditEvent = pgEnum('audit_event', [
   'MEDIA_REPLACED',
   'MEDIA_ARCHIVED',
   'BRAND_ASSET_UPDATED',
+
+  /* --- Bag (Phase 3) ---------------------------------------------------- */
+  'CART_MERGED',
 ])
 
 export const auditLog = pgTable(

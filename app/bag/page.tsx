@@ -29,9 +29,20 @@ export const metadata: Metadata = {
  * live catalog on each render, so a price change in admin is reflected on the
  * next load with no reconciliation step.
  */
-export default async function BagPage() {
+export default async function BagPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
   const user = await getCurrentUser()
   const bag = await getBag(user?.id ?? null)
+
+  /**
+   * Set by sign-in when merging the guest bag dropped a line that can no longer
+   * be bought. The line is gone from the bag, so without this the change would
+   * be invisible — the customer would simply find less than they left.
+   */
+  const bagUpdatedOnSignIn = (await searchParams).bag === 'updated'
 
   return (
     <>
@@ -41,6 +52,17 @@ export default async function BagPage() {
         <h1 className="mb-6 font-display text-3xl tracking-tight text-white uppercase">
           Your bag
         </h1>
+
+        {/* Outside the empty/non-empty branch: if every merged line was dropped,
+            the bag is empty and this is the only explanation for it. */}
+        {bagUpdatedOnSignIn && (
+          <div className="mb-6">
+            <Alert tone="warning" title="Your bag was updated">
+              Some items are no longer available and weren&apos;t carried over
+              when you signed in.
+            </Alert>
+          </div>
+        )}
 
         {bag.lines.length === 0 ? (
           <EmptyState

@@ -34,14 +34,28 @@ import {
  * clicks, so it is checked on each one.
  */
 
-const MAX_LINE_QUANTITY = 99
+/**
+ * Technical bound, NOT a business rule.
+ *
+ * `quantity` is a Postgres `integer`, so a request above int4's range would be
+ * a database error rather than a validation failure. This rejects it cleanly at
+ * the edge and does nothing else — the real cap is available inventory, applied
+ * in SQL below.
+ *
+ * There is deliberately no per-line purchase limit here. A limit like "max 5 per
+ * customer" is a business rule with legal and merchandising weight (Michigan
+ * imposes daily purchase limits on adult-use cannabis), and inventing one in the
+ * validation layer would bury a policy decision where nobody would find it.
+ * See CART.md for the future purchase-limit capability.
+ */
+const INT4_MAX = 2_147_483_647
 
 const variantId = z.uuid('Unknown item')
 const quantity = z.coerce
   .number()
   .int('Quantity must be a whole number')
   .min(1, 'Quantity must be at least 1')
-  .max(MAX_LINE_QUANTITY, `Maximum ${MAX_LINE_QUANTITY} per item`)
+  .max(INT4_MAX, 'Quantity is too large')
 
 const addSchema = z.object({ variantId, quantity: quantity.default(1) })
 const updateSchema = z.object({ lineId: z.uuid(), quantity })
@@ -59,7 +73,7 @@ function revalidateBag() {
  * tell the customer rather than silently giving them less than they asked for.
  */
 function capToInventory(requested: number, available: number) {
-  const granted = Math.max(0, Math.min(requested, available, MAX_LINE_QUANTITY))
+  const granted = Math.max(0, Math.min(requested, available))
   return { granted, capped: granted < requested }
 }
 
@@ -103,7 +117,7 @@ export async function addToBagAction(
     .onConflictDoUpdate({
       target: [schema.cartLines.cartId, schema.cartLines.variantId],
       set: {
-        quantity: sql`least(${schema.cartLines.quantity} + ${parsed.data.quantity}, ${variant.inventoryQuantity}, ${MAX_LINE_QUANTITY})`,
+        quantity: sql`least(${schema.cartLines.quantity} + ${parsed.data.quantity}, ${variant.inventoryQuantity})`,
         updatedAt: new Date(),
       },
     })

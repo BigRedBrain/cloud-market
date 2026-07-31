@@ -1,0 +1,1 @@
+ALTER TYPE "public"."audit_event" ADD VALUE 'CART_MERGED';

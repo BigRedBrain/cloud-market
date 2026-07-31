@@ -26,12 +26,14 @@ import {
   revokeSession,
 } from './session'
 import {
+  BAG_UPDATED_FLAG,
   changePasswordSchema,
   revokeSessionSchema,
   safeRedirectPath,
   signInSchema,
   signUpSchema,
   updateProfileSchema,
+  withQueryFlag,
 } from './validation'
 
 /**
@@ -115,12 +117,16 @@ export async function signUpAction(
 
   const sessionId = await createSession(userId)
   // Fold any guest bag into the brand-new account before the redirect.
-  await mergeGuestBagIntoUser(userId)
+  const merge = await mergeGuestBagIntoUser(userId)
 
   await recordAuditEvent({ event: 'ACCOUNT_CREATED', userId, sessionId })
   await recordAuditEvent({ event: 'LOGIN', userId, sessionId })
 
-  redirect('/account')
+  redirect(
+    merge.unavailable.length
+      ? withQueryFlag('/account', BAG_UPDATED_FLAG)
+      : '/account',
+  )
 }
 
 export async function signInAction(
@@ -215,14 +221,23 @@ export async function signInAction(
    * to a real, authenticated user, and before the redirect so the bag count is
    * already correct on the page the customer lands on.
    */
-  await mergeGuestBagIntoUser(user.id)
+  const merge = await mergeGuestBagIntoUser(user.id)
 
   if (hadFailures) {
     await recordAuditEvent({ event: 'ACCOUNT_UNLOCKED', userId: user.id, sessionId })
   }
   await recordAuditEvent({ event: 'LOGIN', userId: user.id, sessionId })
 
-  redirect(safeRedirectPath(next))
+  /**
+   * A dropped line is the one merge result the customer must not have to
+   * discover for themselves. The generic notice is carried on the redirect;
+   * per-item detail is deferred, and remains recoverable from the merge outcome
+   * and the `CART_MERGED` audit row.
+   */
+  const destination = safeRedirectPath(next)
+  redirect(
+    merge.unavailable.length ? withQueryFlag(destination, BAG_UPDATED_FLAG) : destination,
+  )
 }
 
 export async function signOutAction(): Promise<never> {

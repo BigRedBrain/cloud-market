@@ -78,7 +78,25 @@ carts ──< cart_lines >── product_variants
 | `user_id` | Owner. Null for a guest bag. `cascade` — a bag holds intent, not history. |
 | `status` | `active` · `merged` · `converted` · `abandoned` |
 | `merged_into_cart_id`, `merged_at` | Idempotency pointer for the merge |
-| `last_activity_at` | Guest expiry today; abandoned-cart recovery later, with no schema change |
+| `created_at` | When the bag came into existence |
+| `updated_at` | When the row itself last changed |
+| `last_activity_at` | When the customer last acted on the bag. Indexed. |
+
+#### Lifecycle is on the cart, not inferred from its lines
+
+`status`, `created_at`, `updated_at` and `last_activity_at` are all explicit
+columns on `carts`, so any future cleanup can be written as a query against the
+cart alone.
+
+`last_activity_at` exists specifically to avoid `max(cart_lines.updated_at)` as a
+proxy for activity. That inference fails in the case cleanup most cares about: a
+bag emptied down to zero lines has no line timestamps at all, and would read as
+either brand new or infinitely old depending on how the join handles the null. An
+indexed column answers "abandoned since when" for a bag with lines and a bag
+without, identically.
+
+**No cleanup job exists, and none is implied by these columns.** They are here so
+that writing one later is a query, not a migration.
 
 ### `cart_lines`
 
@@ -157,14 +175,17 @@ guest bag (active, user_id null)          customer bag (active, user_id = X)
         ├── claim: UPDATE ... WHERE status='active' ──> lost race? stop
         │
         └── for each guest line:
-              skip if variant inactive / deleted / product not active / stock 0
+              unpurchasable? record in `unavailable`, omit from the bag
               INSERT ... ON CONFLICT (cart_id, variant_id) DO UPDATE
-                SET quantity = least(existing + guest, available, 99)
+                SET quantity = least(existing + guest, available)
+                reduced? record in `quantityAdjusted`
                                           │
                                           ▼
                           mark guest cart status='merged',
                           merged_into_cart_id = customer cart,
-                          clear the guest cookie
+                          clear the guest cookie,
+                          write CART_MERGED audit row,
+                          return MergeOutcome
 ```
 
 | Rule | Behaviour |
@@ -174,7 +195,46 @@ guest bag (active, user_id null)          customer bag (active, user_id = X)
 | Cap at available stock | 4 + 4 with stock 5 → **5** — verified |
 | Idempotent | Replaying a consumed token does **not** double quantities — verified |
 | Destroy guest identity | Cart flipped to `merged`, cookie cleared |
-| Skip unpurchasable lines | Sold-out, inactive or unpublished items are dropped silently rather than poisoning the bag |
+| Omit unpurchasable lines, but never silently | Dropped from the active bag, recorded in the merge outcome and the audit log, and the customer is told — verified |
+
+### The merge outcome
+
+```ts
+type MergeOutcome = {
+  merged: boolean
+  linesMerged: number
+  quantityAdjusted: { variantId, productName, label,
+                      requestedQuantity, grantedQuantity }[]
+  unavailable:      { variantId, productName, label,
+                      reason: 'out_of_stock' | 'discontinued' }[]
+}
+```
+
+A sold-out line is not carried into the active bag — a line that cannot be bought
+masquerading as buyable is worse than its absence. But it is not lost either. The
+fact survives in four independent places:
+
+1. **The return value.** `mergeGuestBagIntoUser` returns the structure above.
+2. **The retained guest cart.** `status='merged'` with its lines intact, so the
+   original contents stay reconstructable from the database.
+3. **A `CART_MERGED` audit row**, with counts and a readable summary, which
+   outlives the rows it describes.
+4. **A notice the customer actually sees.** When `unavailable` is non-empty,
+   sign-in appends `?bag=updated` to its redirect and the destination renders
+   *"Your bag was updated — some items are no longer available and weren't
+   carried over when you signed in."* on `/account` and `/bag`.
+
+`quantityAdjusted` is captured on the same footing but is not currently surfaced,
+because the bag page already shows the reduced quantity next to live stock.
+
+**Item-level messaging is deferred**, not discarded. Naming each dropped item in
+the UI is a design decision this phase was told not to make; the data needed to
+make it later is already being collected and stored.
+
+**Not a Server Action.** `mergeGuestBagIntoUser` lives in `lib/bag/merge.ts`
+behind `import 'server-only'`, not in the `'use server'` actions module. It takes
+a `userId`, and a Server Action export is a public network endpoint — exposing it
+would let any caller merge an arbitrary guest bag into an arbitrary account.
 
 **Idempotency mechanism.** The claim is an `UPDATE … WHERE status='active'`
 returning the row. Only one caller can win. A retry — double-submitted sign-in,
@@ -217,7 +277,7 @@ contention is genuinely resolved — with row locking and a real reservation.
 ```sql
 INSERT INTO cart_lines (...) VALUES (...)
 ON CONFLICT (cart_id, variant_id) DO UPDATE
-  SET quantity = least(cart_lines.quantity + $n, $available, 99)
+  SET quantity = least(cart_lines.quantity + $n, $available)
 ```
 
 There is no window between reading stock and writing quantity in which another
@@ -288,6 +348,9 @@ segment rather than in each page.
 | Constraints | `cart_lines_quantity_positive` — `CHECK (quantity > 0)`, hand-added |
 | Existing tables touched | **none** |
 
+**`0006_normal_darwin.sql`** — one line: `ALTER TYPE audit_event ADD VALUE
+'CART_MERGED'`. Additive; no table touched.
+
 **Applied to the development branch only.** Production remains on 0004, and was
 verified as development before every write:
 
@@ -300,10 +363,14 @@ is production? no      (both pooled and direct)
 ## 9. Test results
 
 ```
-npm run test:bag    48 passed, 0 failed
+npm run test:bag    63 passed, 0 failed
 npm run test:auth   28 passed, 0 failed   (regression)
 npm run test:e2e    89 passed, 0 failed   (regression — sign-in/up changed)
 ```
+
+Both HTTP suites were run against `next start` on the production build, which is
+what the auth suite's cookie section requires: under `next dev` its two `Secure`
+/ `__Host-` assertions fail by construction, because the prefix needs HTTPS.
 
 Driven over real HTTP with per-device cookie jars, submitting hidden `$ACTION`
 fields as a no-JS browser would.
@@ -320,6 +387,8 @@ fields as a no-JS browser would.
 | Draft / archived product | ✅ |
 | Out-of-stock variant | ✅ |
 | Quantity > available | ✅ capped, customer told |
+| No arbitrary quantity cap | ✅ 5000 caps at stock; 500 against 1000 stock granted in full |
+| Quantity beyond `int4` | ✅ rejected as validation, not a database error |
 | Price changes after add | ✅ bag follows live; old price gone |
 | Guest persistence | ✅ across requests |
 | Authenticated persistence | ✅ bound to user, no guest token |
@@ -327,6 +396,7 @@ fields as a no-JS browser would.
 | Same variant in both bags | ✅ sums to 4 |
 | Combined quantity > stock | ✅ capped at 5 |
 | Repeated merge idempotent | ✅ no doubling |
+| Sold-out line during merge | ✅ omitted from the bag, retained on the guest cart, audited, and the customer is told |
 | Suspended account | ✅ signed out of the bag |
 | Forged guest identity | ✅ 3 attacks, all yield empty bag |
 | No client price influences totals | ✅ price fields ignored |
@@ -348,16 +418,31 @@ that only shows up against a real database with real rows.
 2. **No guest-bag garbage collection job.** `last_activity_at` and a 30-day
    cookie exist, but nothing prunes expired guest carts yet. A scheduled delete
    is one query; it has not been written.
-3. **Merge drops unpurchasable guest lines silently.** A guest whose item sold
-   out before sign-in is not told it was dropped. Telling them needs somewhere to
-   surface it on the post-sign-in page, which is a UI decision I did not want to
-   make unilaterally.
+3. **Merge messaging is generic, not item-level.** The customer is told their bag
+   changed; they are not told *which* item went. The per-item data is collected
+   and stored (§4), so this is a presentation gap, not an information loss.
 4. **Bag count adds one query per page** that renders the nav.
 5. **`revalidate = 60` on the root layout is inherited.** `/bag` is dynamic
    (verified `ƒ` in the build), so it is unaffected — but any future bag-adjacent
    page must confirm the same, because a cached bag would be a serious bug.
-6. **The 99-per-line cap is arbitrary.** It prevents absurd quantities; it is not
-   a business rule and should be replaced by one.
-7. **No optimistic UI.** Every action is a round trip. Correct and simple, but a
+6. **No optimistic UI.** Every action is a round trip. Correct and simple, but a
    slow connection feels slow — worth revisiting with `useOptimistic` once the
    flows settle.
+
+### Purchase limits — a future commerce capability, deliberately absent
+
+There is **no per-line purchase limit**. The only cap on quantity is currently
+available inventory, applied in SQL. The single numeric bound in the validation
+layer is `INT4_MAX`, which exists so a request outside `integer` range fails as a
+validation error rather than a database error — a technical bound, not a policy.
+
+This is deliberate. Michigan imposes daily purchase limits on adult-use cannabis,
+and a real limit has legal and merchandising weight: it varies by product class,
+by customer type (adult-use vs. medical), and by what the customer has already
+bought that day. A number invented in a Zod schema could satisfy none of those,
+and would bury a policy decision somewhere nobody would look for it.
+
+When purchase limits are decided, they belong in a commerce/business-rule layer
+that can express them properly — per variant or product class, per customer, per
+day — and be enforced at the order boundary as well as the bag. `CHECK (quantity
+> 0)` on `cart_lines` stays regardless; zero is not a quantity.

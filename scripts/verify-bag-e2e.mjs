@@ -216,12 +216,32 @@ async function main() {
     !(await linesOf(gCart.id)).some((l) => l.variant_id === lowStock.id))
   await sql(`update product_variants set active=true where id=$1`, [lowStock.id])
 
-  // Over-request is capped, not rejected outright.
-  await submit(guest, `/product/${lowStock.slug}`, { variantId: lowStock.id, quantity: '99' }, lowStock.id)
+  /**
+   * Over-request is capped at STOCK, and stock is the only cap.
+   *
+   * 5000 is deliberately far above the 99 that used to be hard-coded: if any
+   * arbitrary per-line limit came back, this line would land on it instead of
+   * on inventory and the assertion would fail.
+   */
+  await submit(guest, `/product/${lowStock.slug}`, { variantId: lowStock.id, quantity: '5000' }, lowStock.id)
   const capped = (await linesOf(gCart.id)).find((l) => l.variant_id === lowStock.id)
-  check('over-requested quantity is capped at available stock',
+  check('over-requested quantity is capped at available stock, not at an arbitrary limit',
     capped?.quantity === lowStock.inventory_quantity,
     `got ${capped?.quantity}, stock ${lowStock.inventory_quantity}`)
+
+  // A quantity above int4 is a validation failure, not a database error.
+  await submit(guest, `/product/${inStock.slug}`, { variantId: inStock.id, quantity: '2147483648' }, inStock.id)
+  check('quantity beyond int4 is rejected cleanly',
+    !(await linesOf(gCart.id)).some((l) => l.variant_id === inStock.id))
+
+  // Deep stock accepts a large request without any policy cap intervening.
+  await sql(`update product_variants set inventory_quantity=1000 where id=$1`, [inStock.id])
+  await submit(guest, `/product/${inStock.slug}`, { variantId: inStock.id, quantity: '500' }, inStock.id)
+  const deep = (await linesOf(gCart.id)).find((l) => l.variant_id === inStock.id)
+  check('a 500-unit request against 1000 stock is granted in full',
+    deep?.quantity === 500, `got ${deep?.quantity}`)
+  await sql(`update product_variants set inventory_quantity=$1 where id=$2`,
+    [inStock.inventory_quantity, inStock.id])
 
   await sql(`delete from cart_lines where cart_id=$1`, [gCart.id])
 
@@ -336,6 +356,73 @@ async function main() {
   check('merge caps combined quantity at available stock (4+4 -> 5)',
     cappedLine?.quantity === 5, `got ${cappedLine?.quantity}`)
 
+  /* ---- unpurchasable guest lines are omitted, but NOT silently ---- */
+  await sql(`delete from cart_lines where cart_id=$1`, [mergedCart.id])
+  await sql(`delete from audit_log where user_id=$1 and event='CART_MERGED'`, [user.id])
+
+  const guest4 = device('guest4')
+  await submit(guest4, `/product/${inStock.slug}`, { variantId: inStock.id, quantity: '1' }, inStock.id)
+  await submit(guest4, `/product/${lowStock.slug}`, { variantId: lowStock.id, quantity: '1' }, lowStock.id)
+  const g4Token = guest4.cookies.get(bagCookieName(guest4))
+  const g4Cart = await guestCartByToken(g4Token)
+  check('guest bag has both lines before the item sells out',
+    (await linesOf(g4Cart.id)).length === 2)
+
+  // It sells out between the guest adding it and the guest signing in.
+  await sql(`update product_variants set inventory_quantity=0 where id=$1`, [lowStock.id])
+
+  const signedIn = await submit(guest4, '/sign-in', { email, password })
+  const afterMerge = await linesOf(mergedCart.id)
+
+  check('in-stock guest line still merges',
+    afterMerge.some((l) => l.variant_id === inStock.id))
+  check('sold-out guest line is NOT carried into the active bag',
+    !afterMerge.some((l) => l.variant_id === lowStock.id))
+
+  // The three ways the fact survives: the retained guest cart, the audit row,
+  // and the notice the customer actually sees.
+  const g4After = (await sql(`select * from carts where id=$1`, [g4Cart.id]))[0]
+  check('guest cart is retained, not deleted', Boolean(g4After))
+  check('retained guest cart still holds the dropped line',
+    (await linesOf(g4Cart.id)).some((l) => l.variant_id === lowStock.id))
+
+  const [mergeAudit] = await sql(
+    `select * from audit_log where user_id=$1 and event='CART_MERGED' order by occurred_at desc limit 1`,
+    [user.id])
+  check('merge writes a CART_MERGED audit row', Boolean(mergeAudit))
+  check('audit summary records the omitted line',
+    /unavailable and omitted/.test(mergeAudit?.summary ?? ''),
+    `summary: ${mergeAudit?.summary}`)
+  check('audit row points at the destination cart', mergeAudit?.entity_id === mergedCart.id)
+
+  /**
+   * The sign-in response is the 303 itself — `visit` does not follow redirects,
+   * which is also the only place the flag is observable in transit.
+   */
+  const signInTarget = signedIn.headers.get('location') ?? ''
+  check('sign-in redirect carries the bag-changed flag',
+    signInTarget.includes('bag=updated'), `location: ${signInTarget || '(none)'}`)
+
+  check('the destination page surfaces the notice',
+    (await visit(guest4, '/account?bag=updated')).html.includes('Your bag was updated'))
+  check('the bag page surfaces the notice too',
+    (await visit(guest4, '/bag?bag=updated')).html.includes('Your bag was updated'))
+  check('the notice is not shown without the flag',
+    !(await visit(guest4, '/bag')).html.includes('Your bag was updated'))
+
+  await sql(`update product_variants set inventory_quantity=$1 where id=$2`,
+    [lowStock.inventory_quantity, lowStock.id])
+
+  /* ---- a clean merge does not raise the notice ---- */
+  await submit(guest4, '/account', {}, 'Sign out')
+  const guest5 = device('guest5')
+  await submit(guest5, `/product/${inStock.slug}`, { variantId: inStock.id, quantity: '1' }, inStock.id)
+  const g5Token = guest5.cookies.get(bagCookieName(guest5))
+  const cleanSignIn = await submit(guest5, '/sign-in', { email, password })
+  check('a merge with nothing dropped raises no flag',
+    !(cleanSignIn.headers.get('location') ?? '').includes('bag=updated'),
+    `location: ${cleanSignIn.headers.get('location')}`)
+
   /* ============================================== 7. SUSPENDED ACCOUNT */
   section('[7] Suspended account')
   await sql(`update users set status='suspended' where id=$1`, [user.id])
@@ -350,7 +437,8 @@ async function main() {
     [inStock.inventory_quantity, inStock.id])
   await sql(`delete from carts where user_id=$1`, [user.id])
   await sql(`delete from carts where guest_token_hash = any($1)`,
-    [[token, g2Token].filter(Boolean).map((t) => createHash('sha256').update(t).digest('hex'))])
+    [[token, g2Token, g4Token, g5Token].filter(Boolean)
+      .map((t) => createHash('sha256').update(t).digest('hex'))])
   await sql(`delete from audit_log where user_id=$1`, [user.id])
   await sql(`delete from users where id=$1`, [user.id])
   const leftover = await sql(`select count(*)::int n from carts where user_id is null and status='active'`)

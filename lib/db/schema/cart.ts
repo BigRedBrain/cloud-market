@@ -37,6 +37,24 @@ import { users } from './auth'
  * nothing. Two customers can each hold the last unit. That is deliberate for
  * this phase and is surfaced honestly in the UI rather than hidden behind a
  * reassuring "reserved for you" that the schema cannot back.
+ *
+ * LIFECYCLE IS ON THE CART, NOT INFERRED FROM ITS LINES. Four columns carry it:
+ *
+ *   `status`           — where the cart is in its life (see `cartStatus`).
+ *   `created_at`       — when it came into existence.
+ *   `updated_at`       — when the row itself last changed.
+ *   `last_activity_at` — when the customer last did something to it.
+ *
+ * `last_activity_at` exists specifically so that a future cleanup job never has
+ * to reason about `max(cart_lines.updated_at)`. That inference breaks in the
+ * exact case cleanup cares about: a cart emptied to zero lines has no line
+ * timestamps at all, and would look either brand new or infinitely old
+ * depending on how the query handles the null. An indexed column on the cart
+ * answers "abandoned since when" directly, for a cart with lines and a cart
+ * without.
+ *
+ * No cleanup job exists yet, and none is implied. These columns make one
+ * writable later as a query rather than a migration.
  */
 
 /**

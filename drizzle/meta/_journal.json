@@ -43,6 +43,13 @@
       "when": 1785517300053,
       "tag": "0005_flimsy_shinko_yamashiro",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785518853644,
+      "tag": "0006_normal_darwin",
+      "breakpoints": true
     }
   ]
 }
