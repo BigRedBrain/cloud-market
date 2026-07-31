@@ -21,7 +21,9 @@
     "test:bag": "node scripts/verify-bag-e2e.mjs",
     "test:prod": "node scripts/verify-auth-production.mjs",
     "test:prod:cms": "node scripts/verify-cms-production.mjs",
-    "db:inspect": "node scripts/db-inspect.mjs"
+    "db:inspect": "node scripts/db-inspect.mjs",
+    "test:recovery": "node scripts/verify-recovery-e2e.mjs",
+    "test:email": "tsx --conditions=react-server scripts/verify-email-config.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

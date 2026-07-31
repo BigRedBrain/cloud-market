@@ -497,7 +497,15 @@ async function main() {
 
   // Verified-customer tier.
   const unverifiedHtml = await (await visit(customer, '/account/verify-email')).text()
-  check('unverified customer sees verify-email page', unverifiedHtml.includes('Email verification is coming'))
+  /**
+   * Phase 3.5 replaced the placeholder ("Email verification is coming") with a
+   * working resend flow, so this now asserts the control exists rather than the
+   * apology that stood in for it.
+   */
+  check('unverified customer sees the verify-email prompt',
+    unverifiedHtml.includes('Confirm your email'))
+  check('and can request a confirmation email without JavaScript',
+    unverifiedHtml.includes('Send the confirmation email'))
 
   await sql('update users set email_verified_at = now() where id=$1', [user.id])
   const verifiedHtml = await (await visit(customer, '/account/verify-email')).text()

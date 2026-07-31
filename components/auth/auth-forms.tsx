@@ -8,6 +8,11 @@ import {
   signUpAction,
   updateProfileAction,
 } from '@/lib/auth/actions'
+import {
+  completePasswordResetAction,
+  requestPasswordResetAction,
+  resendVerificationAction,
+} from '@/lib/auth/email-actions'
 import { MINIMUM_AGE_YEARS, PASSWORD_MIN_LENGTH } from '@/lib/auth/validation'
 
 /**
@@ -206,6 +211,97 @@ export function ProfileForm({
           </Field>
         </>
       )}
+    </AuthForm>
+  )
+}
+
+/**
+ * Requests a password reset link.
+ *
+ * Deliberately has no success/failure branch of its own: the action always
+ * redirects to the same confirmation page, so this form cannot become the place
+ * where a difference between "sent" and "no such account" leaks out.
+ */
+export function ForgotPasswordForm() {
+  return (
+    <AuthForm
+      action={requestPasswordResetAction}
+      submitLabel="Email me a reset link"
+      pendingLabel="Sending"
+    >
+      {(errors) => (
+        <Field id="email" label="Email" error={errors?.email?.[0]} required>
+          {(props) => (
+            <Input type="email" name="email" autoComplete="email" autoFocus {...props} />
+          )}
+        </Field>
+      )}
+    </AuthForm>
+  )
+}
+
+/**
+ * Sets a new password from a reset link.
+ *
+ * The token rides in a hidden field because a Server Action receives form data,
+ * not route params. It is not a leak — it is already in the address bar of the
+ * page being looked at.
+ */
+export function ResetPasswordForm({ token }: { token: string }) {
+  return (
+    <AuthForm
+      action={completePasswordResetAction}
+      submitLabel="Set new password"
+      pendingLabel="Saving"
+    >
+      {(errors) => (
+        <>
+          <input type="hidden" name="token" value={token} />
+
+          <Field
+            id="password"
+            label="New password"
+            error={errors?.password?.[0]}
+            hint={`At least ${PASSWORD_MIN_LENGTH} characters.`}
+            required
+          >
+            {(props) => (
+              <Input
+                type="password"
+                name="password"
+                autoComplete="new-password"
+                autoFocus
+                {...props}
+              />
+            )}
+          </Field>
+
+          <Field
+            id="confirmPassword"
+            label="Confirm new password"
+            error={errors?.confirmPassword?.[0]}
+            required
+          >
+            {(props) => (
+              <Input type="password" name="confirmPassword" autoComplete="new-password" {...props} />
+            )}
+          </Field>
+        </>
+      )}
+    </AuthForm>
+  )
+}
+
+/** Resends the confirmation email. One button, no fields. */
+export function ResendVerificationForm() {
+  return (
+    <AuthForm
+      action={resendVerificationAction}
+      submitLabel="Send the confirmation email"
+      pendingLabel="Sending"
+      successMessage="Confirmation email sent. Check your inbox, and your spam folder."
+    >
+      {() => null}
     </AuthForm>
   )
 }

@@ -152,3 +152,32 @@ export const BAG_UPDATED_FLAG = 'bag=updated'
 export function withQueryFlag(path: Route, flag: string): Route {
   return `${path}${path.includes('?') ? '&' : '?'}${flag}` as Route
 }
+
+/* -------------------------------------------------------------------------- */
+/* Account recovery (Phase 3.5)                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Reset request. Only an address, and it is normalised by the shared `email`
+ * schema above so the lookup matches what the unique index stores.
+ */
+export const requestResetSchema = z.object({ email })
+
+/**
+ * Completing a reset.
+ *
+ * The token travels in a hidden field rather than being re-read from the URL by
+ * the action, because a Server Action does not get the page's route params. It
+ * is not a secret the form is leaking — it is already in the address bar of the
+ * page the user is looking at.
+ */
+export const completeResetSchema = z
+  .object({
+    token: z.string().min(1, 'Missing reset token').max(200),
+    password,
+    confirmPassword: z.string(),
+  })
+  .refine((value) => value.password === value.confirmPassword, {
+    message: 'Both passwords must match',
+    path: ['confirmPassword'],
+  })

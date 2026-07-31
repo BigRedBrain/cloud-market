@@ -228,6 +228,26 @@ export async function revokeOtherSessions(
     .where(and(eq(schema.sessions.userId, userId), ne(schema.sessions.id, keepSessionId)))
 }
 
+/**
+ * Destroys EVERY session for a user, including the caller's own.
+ *
+ * The password-reset counterpart to `revokeOtherSessions`. Reset is the remedy
+ * for "someone else may be in my account", and it is worth nothing if the
+ * intruder's cookie outlives it. Unlike a password change, the person
+ * completing a reset has proved control of the mailbox but has NOT proved
+ * knowledge of the old password — so nothing that existed beforehand is
+ * trusted, and no replacement session is created here.
+ *
+ * Returns how many were destroyed, so the caller can record it.
+ */
+export async function revokeAllSessions(userId: string): Promise<number> {
+  const removed = await db
+    .delete(schema.sessions)
+    .where(eq(schema.sessions.userId, userId))
+    .returning({ id: schema.sessions.id })
+  return removed.length
+}
+
 /** Lists a user's live sessions for the account security screen. */
 export async function listSessions(userId: string) {
   return db
