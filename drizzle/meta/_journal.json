@@ -8,6 +8,20 @@
       "when": 1785452519283,
       "tag": "0000_keen_raider",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785474903384,
+      "tag": "0001_friendly_morlocks",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785476079829,
+      "tag": "0002_quick_beyonder",
+      "breakpoints": true
     }
   ]
 }
