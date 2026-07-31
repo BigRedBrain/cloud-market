@@ -1,7 +1,13 @@
 # Incident — the production verifier deleted two pre-existing audit rows
 
-**Date:** 2026-07-31 · **Severity:** low impact, high principle · **Status:** fixed,
-regression-tested, production not yet re-run, two rows pending a recovery decision.
+**Date:** 2026-07-31 · **Severity:** low impact, high principle · **Status:** CLOSED.
+Fixed, regression-tested, and confirmed in production: the re-run recorded and
+protected 1 pre-existing audit row, tracked and removed the 5 rows it created,
+and returned audit_log exactly to baseline.
+
+Recorded as a verification-harness incident. It did **not** block Phase 3
+closure. The two rows deleted on 2026-07-31 remain unrecovered pending a
+decision on §4 — the recovery plan there is still valid and unexecuted.
 
 Production `audit_log` went from **2 rows to 0** during the full post-deployment
 verification. Two rows that existed before the run were destroyed.

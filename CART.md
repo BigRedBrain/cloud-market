@@ -1,5 +1,20 @@
 # Cart & Bag Foundation (Phase 3)
 
+> **v0.9.0 — PRODUCTION DEPLOYED AND FULLY VERIFIED** (2026-07-31)
+>
+> Migrations 0005 and 0006 applied to production/main; code deployed after the
+> schema, never before. Full production verification passed: schema and
+> constraints correct, cart write invariants correct via rolled-back
+> transaction, authenticated bag healthy, catalog still empty, no residue, and
+> every pre-existing audit row preserved.
+>
+> One verification-harness incident occurred and is closed:
+> [INCIDENT-2026-07-31-audit-cleanup.md](INCIDENT-2026-07-31-audit-cleanup.md).
+> It concerned the test harness, never the application.
+>
+> No HTTP cart mutation path was production-tested — that requires a real,
+> publicly visible product. See §10.
+
 Persistent shopping bag for guests and customers. **No checkout, no orders, no
 payments, no delivery, no discounts, no taxes, no inventory reservation.**
 
