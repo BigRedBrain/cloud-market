@@ -1,6 +1,4 @@
-import { sql } from 'drizzle-orm'
-
-import { db } from '@/lib/db'
+import { createHash } from 'node:crypto'
 
 /**
  * Liveness/readiness probe — `GET /api/health`.
@@ -13,6 +11,9 @@ import { db } from '@/lib/db'
  * Reports on the pooled endpoint (`DATABASE_URL`) specifically, because that is
  * the path application traffic actually takes. The direct endpoint is only used
  * by drizzle-kit at migration time and is deliberately not probed here.
+ *
+ * Also reports which database it reached, which is how preview-branch isolation
+ * is verified — see DATABASE.md.
  */
 
 /**
@@ -25,8 +26,34 @@ export const dynamic = 'force-dynamic'
 
 type HealthBody = {
   status: 'ok' | 'degraded'
-  database: { reachable: boolean; latencyMs: number | null }
+  environment: string
+  database: {
+    configured: boolean
+    reachable: boolean
+    /** See `fingerprint()` — identifies the branch without naming it. */
+    fingerprint: string | null
+    latencyMs: number | null
+  }
   timestamp: string
+}
+
+/**
+ * A stable, non-reversible identifier for the database this instance is talking
+ * to, derived from the connection host.
+ *
+ * The raw Neon hostname is deliberately NOT returned: this endpoint is
+ * unauthenticated, and publishing the exact endpoint hostname hands an attacker
+ * a target for free. A truncated digest is enough for the only question being
+ * asked — "is preview pointed somewhere different from production?" — which is
+ * answered by comparing two fingerprints, never by reading either one.
+ */
+function fingerprint(connectionString: string): string | null {
+  try {
+    const { hostname } = new URL(connectionString)
+    return createHash('sha256').update(hostname).digest('hex').slice(0, 12)
+  } catch {
+    return null
+  }
 }
 
 function json(body: HealthBody, status: number): Response {
@@ -39,14 +66,56 @@ function json(body: HealthBody, status: number): Response {
 
 export async function GET(): Promise<Response> {
   const startedAt = Date.now()
+  const environment = process.env.VERCEL_ENV ?? 'local'
+
+  /**
+   * Read `process.env` directly rather than through `serverEnv()`. A preview
+   * deployment with no Neon branch attached has no `DATABASE_URL` at all, and
+   * the goal is to report that as structured JSON rather than let validation
+   * throw and surface a generic 500.
+   */
+  const connectionString = process.env.DATABASE_URL
+
+  if (!connectionString) {
+    return json(
+      {
+        status: 'degraded',
+        environment,
+        database: {
+          configured: false,
+          reachable: false,
+          fingerprint: null,
+          latencyMs: null,
+        },
+        timestamp: new Date().toISOString(),
+      },
+      503,
+    )
+  }
+
+  const fp = fingerprint(connectionString)
 
   try {
+    /**
+     * Imported lazily: `lib/db` builds its connection pool at module scope, so
+     * a static import would throw during module evaluation on a misconfigured
+     * deployment — before this handler could turn it into a 503.
+     */
+    const { sql } = await import('drizzle-orm')
+    const { db } = await import('@/lib/db')
+
     await db.execute(sql`select 1`)
 
     return json(
       {
         status: 'ok',
-        database: { reachable: true, latencyMs: Date.now() - startedAt },
+        environment,
+        database: {
+          configured: true,
+          reachable: true,
+          fingerprint: fp,
+          latencyMs: Date.now() - startedAt,
+        },
         timestamp: new Date().toISOString(),
       },
       200,
@@ -62,7 +131,13 @@ export async function GET(): Promise<Response> {
     return json(
       {
         status: 'degraded',
-        database: { reachable: false, latencyMs: null },
+        environment,
+        database: {
+          configured: true,
+          reachable: false,
+          fingerprint: fp,
+          latencyMs: null,
+        },
         timestamp: new Date().toISOString(),
       },
       503,
