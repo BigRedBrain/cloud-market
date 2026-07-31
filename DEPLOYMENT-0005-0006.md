@@ -1,12 +1,17 @@
 # Production rollout — migrations 0005 & 0006
 
-Status: **not started.** Nothing has been pushed and nothing has been applied to
-production. This document is the plan to be reviewed before either happens.
+Status: **Step 0 complete.** Pre-flight passed against a confirmed production
+target: 5 journal entries (`0000`–`0004`), `carts` absent, `cart_lines` absent,
+`CART_MERGED` absent. Production is at 0004 as assumed. Nothing has been pushed
+and nothing has been written to production.
 
-A first pre-flight attempt read the **development** database rather than
-production and must be re-run. Production's migration state is still unverified.
-The cause, and the tooling change that makes the mistake impossible to repeat,
-are in §7a — read that before running Step 0.
+An earlier pre-flight attempt read the **development** database by mistake. The
+cause and the tooling change that makes it impossible to repeat are in §7a.
+
+**Steps 2a and 2b must be run by the operator.** Production connection strings
+are marked Sensitive in Vercel and cannot be retrieved by tooling in this
+workspace, so the assistant has no production credential and cannot perform the
+write.
 
 ---
 
@@ -110,11 +115,36 @@ only to restore it.
 
 ### Step 2 — Apply the migrations
 
-Use the **unpooled** connection string. Drizzle migrations run DDL in a
-transaction; a pooled connection can hand you a different backend mid-session.
+> **Set `DATABASE_URL_UNPOOLED`, not `DATABASE_URL`.** `drizzle.config.ts` loads
+> `.env.local` and then resolves `DATABASE_URL_UNPOOLED ?? DATABASE_URL`. dotenv
+> does not override a variable that is already set, but it *does* fill in one
+> that is unset — so setting only `DATABASE_URL` leaves `.env.local`'s
+> **development** `DATABASE_URL_UNPOOLED` in place, and it wins on precedence.
+> The migration would run against development while appearing to succeed.
+
+Use the **direct/unpooled** string: DDL runs in a transaction, and a pooled
+connection can hand you a different backend mid-run.
+
+**2a — verify the write target, in the shell that will do the write:**
 
 ```powershell
-$env:DATABASE_URL = "<UNPOOLED production connection string>"
+$env:DATABASE_URL_UNPOOLED = "<production DIRECT string>"
+$env:PRODUCTION_POOLED_URL = "<production POOLED string>"
+node scripts/verify-migration-target.mjs https://cloud-market-ten.vercel.app
+```
+
+This does not check what you set. It replicates the config's resolution and
+reports the connection drizzle-kit will actually open, then proves it is
+production three ways: same Neon branch as the pooled string; that pooled string
+matches what the live app publishes at `/api/health`; and the data signature read
+*through the write connection itself* — 5 journal entries, empty catalog, no cart
+objects. Read-only. Ends in `GO` or `NO-GO` with reasons, exit 1 on NO-GO.
+
+**Gate:** `GO`.
+
+**2b — migrate, in the same shell:**
+
+```powershell
 npx drizzle-kit migrate
 ```
 
