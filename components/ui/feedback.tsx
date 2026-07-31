@@ -97,10 +97,16 @@ type StatusPanelProps = {
 /**
  * Full-panel outcome — order confirmed, payment failed, address unserviceable.
  *
- * Success states get NO celebratory motion. Confetti on an order confirmation
- * is the single most common way to make a checkout feel unserious, and it
- * delays the one thing the customer actually wants: their order number, in
- * text they can copy.
+ * Success is the one outcome that animates: the mark settles into place and a
+ * single ember ring expands once behind it, ~700ms, then permanently still.
+ *
+ * What it is NOT is confetti. Success screens are where celebration usually
+ * gets overdone, and the customer is here for their order number — so the
+ * motion confirms completion and then gets out of the way. It never loops, it
+ * never covers the reference code, and it delays nothing.
+ *
+ * Error and warning panels stay completely static. Motion on a failure reads
+ * as the interface being pleased with itself.
  */
 export function StatusPanel({
   tone,
@@ -126,7 +132,28 @@ export function StatusPanel({
         className="halftone-lg pointer-events-none absolute inset-0 text-smoke opacity-20 [mask-image:linear-gradient(to_bottom,black,transparent_70%)]"
       />
 
-      <Icon aria-hidden="true" className={cn('relative size-12', accent)} />
+      <span className="relative inline-flex items-center justify-center">
+        {/* Single ember ring, success only. Purely decorative. */}
+        {tone === 'success' && (
+          <span
+            aria-hidden="true"
+            className={cn(
+              'absolute size-12 rounded-full border-2 border-volt',
+              'animate-[success-ring_700ms_ease-out_both] motion-reduce:animate-none',
+              'motion-reduce:opacity-0',
+            )}
+          />
+        )}
+        <Icon
+          aria-hidden="true"
+          className={cn(
+            'relative size-12',
+            accent,
+            tone === 'success' &&
+              'animate-[success-settle_600ms_cubic-bezier(0.2,0.8,0.2,1)_both] motion-reduce:animate-none',
+          )}
+        />
+      </span>
 
       <div className="relative flex flex-col gap-2">
         <h2 className="font-display text-3xl tracking-tight text-white uppercase">

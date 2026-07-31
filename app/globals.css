@@ -371,6 +371,40 @@
     }
   }
 
+  /*
+   * Success confirmation. One-shot, ~700ms, then permanently still.
+   *
+   * Deliberately restrained: this fires on order-placed and address-confirmed,
+   * where the customer wants their order number, not a performance. The mark
+   * settles rather than bounces, and a single ember ring expands once behind
+   * it. No loop, no confetti, nothing that delays reading the reference code.
+   */
+  @keyframes success-settle {
+    0% {
+      transform: scale(0.7);
+      opacity: 0;
+    }
+    60% {
+      transform: scale(1.06);
+      opacity: 1;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  @keyframes success-ring {
+    0% {
+      transform: scale(0.65);
+      opacity: 0.5;
+    }
+    100% {
+      transform: scale(1.9);
+      opacity: 0;
+    }
+  }
+
   /* Flame lick on the cloud button's hover state. Scale + opacity only. */
   @keyframes ember-flicker {
     0%,

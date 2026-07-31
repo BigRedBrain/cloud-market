@@ -43,6 +43,7 @@ export function BurningCloud({ className }: { className?: string }) {
       className={cn(
         'h-auto w-full',
         'animate-[fade-in_400ms_ease-out_both] motion-reduce:animate-none',
+        className,
       )}
       style={{
         filter:

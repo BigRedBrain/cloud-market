@@ -148,11 +148,15 @@ The press is physical: 1px lift on hover, then on `:active` the control travels
 2px — enough to feel like a stamp hitting paper, never enough to cause a
 mis-tap.
 
-- Variants: `primary` (volt), `accent` (ember), `destructive` (flare), `paper`
-  (cream), `outline`, `ghost`.
+- Variants: `primary` (**ember** — the default call to action), `destructive`
+  (flare), `volt` (**confirm/success only**), `paper` (cream), `outline`,
+  `ghost`.
 - Sizes: `sm` 36px, `md` **44px — the default**, `lg` 52px, `icon` 44px.
   Default is 44px because most of this storefront is used one-handed on a phone.
 - Disabled loses the shadow entirely, so it never looks pressable.
+- **The ember glow fires on `primary` only** — see the animation policy in §7.
+  Press physics apply to every variant, because that is feedback rather than
+  decoration.
 - No `asChild` — Radix Slot is not a dependency. For links, spread
   `buttonVariants({ variant, size })` onto an anchor.
 
@@ -260,9 +264,37 @@ type steps from `text-6xl` to `text-8xl` at `sm`.
 
 ## 7. Motion and reduced-motion alternatives
 
-Motion appears in six places, and **all of it is CSS**: ambient smoke, the
-burning-cloud entrance, the cloud button's drifting smoke and hover flames, the
-button press, and the card lift.
+**All motion in the system is CSS.** No JavaScript animation runtime ships.
+
+### Animation policy — where motion is allowed
+
+Decorative motion is confined to four surfaces. This is a whitelist: anything
+not on it does not get ambient or decorative animation, and **no visual effect
+is ever added globally**.
+
+| Allowed | What runs there |
+| --- | --- |
+| **Hero** | Ambient smoke (3 drifting layers) |
+| **Logo** | Burning-cloud entrance — inks on, catches fire |
+| **Primary CTAs** | Cloud button smoke + hover flames; ember glow on `variant="primary"` |
+| **Success screens** | One-shot settle + single ember ring, ~700ms |
+
+Everything else — **shop, cart, checkout, account, admin** — stays calm. Those
+are task surfaces where usability beats atmosphere, and a grid of animated
+controls actively hurts scanning.
+
+Two things are *not* decoration and therefore apply everywhere, deliberately:
+
+- **Press physics.** The 1px lift and 2px press are interaction feedback. A
+  button that does not respond to touch feels broken.
+- **Focus rings.** Non-negotiable on every surface.
+
+The ember glow is scoped to `variant="primary"` only. It previously fired on
+every elevated button, which meant "Cancel" and "Keep browsing" glowed as hard
+as "Place order" — so nothing did. Restricting it restores the signal.
+
+Error and warning panels are completely static. Motion on a failure reads as
+the interface being pleased with itself.
 
 ### Reduced motion is an alternative, not a removal
 
@@ -283,6 +315,7 @@ can leave draw-on effects half-rendered.
 | Burning cloud | Inks on, flames grow, vents light | Fully lit, immediately |
 | Cloud button smoke | 4 puffs rising | Static puff at 12% opacity |
 | Cloud button flames | Flicker on hover | Appear on hover, no flicker |
+| Success screen | Mark settles, ring expands once | Mark static, ring hidden |
 | Button press | 1px lift, 2px press | Instant, glow still fires |
 | Ember glow | Fades in over 150ms | **Kept** — communicates state |
 | Focus ring | Always instant | **Kept** — non-negotiable |
@@ -305,9 +338,9 @@ transferred bytes, gzipped.
 
 | Route | HTML | CSS | JS | Total |
 | --- | --- | --- | --- | --- |
-| `/` | 11.4 KB | 9.4 KB | 199.5 KB | **220.3 KB** |
-| `/design` | 21.3 KB | 9.4 KB | 199.5 KB | **230.2 KB** |
-| `/checkout` | 5.7 KB | 9.4 KB | 185.9 KB | **201.0 KB** |
+| `/` | 11.4 KB | 9.6 KB | 199.5 KB | **220.3 KB** |
+| `/design` | 21.3 KB | 9.6 KB | 199.5 KB | **230.2 KB** |
+| `/checkout` | 5.7 KB | 9.6 KB | 185.9 KB | **201.0 KB** |
 
 ### The one change the audit forced
 
@@ -334,7 +367,7 @@ too, and it carries almost no brand code. The visual system's **marginal** cost
 over that baseline is ~13.6 KB, nearly all of it lucide icons and the one client
 component in the app.
 
-**The entire design system's CSS is 9.4 KB gzip.**
+**The entire design system's CSS is 9.6 KB gzip.**
 
 ### Standing rules
 

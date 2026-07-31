@@ -59,20 +59,43 @@ const buttonVariants = cva(
         lg: 'h-13 px-7 text-base [&_svg]:size-5',
         icon: 'size-11 [&_svg]:size-5',
       },
+      /**
+       * Press physics. Applies to every variant — this is interaction
+       * feedback, not decoration, and stripping it would cost usability.
+       */
       elevated: {
         true: [
           'shadow-panel-sm',
           'hover:-translate-x-px hover:-translate-y-px',
-          'hover:shadow-[var(--panel-shadow-sm),var(--glow-ember)]',
-          'focus-visible:shadow-[var(--panel-shadow-sm),var(--glow-ember-soft)]',
           'active:translate-x-[2px] active:translate-y-[2px]',
-          'active:shadow-[var(--panel-shadow-press),var(--glow-ember-soft)]',
+          'active:shadow-press',
         ],
         false: 'shadow-none',
       },
     },
     compoundVariants: [
-      // Ghost has no outline, so it has nothing to cast a shadow or glow from.
+      /**
+       * The ember glow is reserved for PRIMARY calls to action.
+       *
+       * It used to fire on every elevated button, which meant "Cancel",
+       * "Keep browsing" and the quantity steppers all glowed as hard as
+       * "Place order" — so nothing did. Scoping it to `primary` restores the
+       * signal and keeps cart, checkout, account and admin screens calm,
+       * where a grid of glowing secondary controls actively hurts scanning.
+       *
+       * Focus gets the same treatment at lower intensity: keyboard users see
+       * the ember, not a lesser version of it.
+       */
+      {
+        variant: 'primary',
+        elevated: true,
+        class: [
+          'hover:shadow-[var(--panel-shadow-sm),var(--glow-ember)]',
+          'focus-visible:shadow-[var(--panel-shadow-sm),var(--glow-ember-soft)]',
+          'active:shadow-[var(--panel-shadow-press),var(--glow-ember-soft)]',
+        ],
+      },
+      // Ghost has no outline, so it has nothing to cast a shadow from.
       {
         variant: 'ghost',
         elevated: true,
