@@ -164,11 +164,36 @@ export const verificationTokens = pgTable(
      */
     consumedAt: timestamp('consumed_at', { withTimezone: true, mode: 'date' }),
 
+    /**
+     * Retired because a NEWER token was issued for the same purpose — not
+     * because anyone used it.
+     *
+     * Kept distinct from `consumed_at` deliberately. Folding both into one
+     * column would make "the customer clicked their link" and "the customer
+     * asked for a second link" indistinguishable afterwards, and those mean
+     * very different things when reading a security log. It is the same reason
+     * `consumed_at` is a timestamp rather than a boolean.
+     *
+     * A token is usable only while all three hold: not consumed, not
+     * superseded, not expired.
+     */
+    supersededAt: timestamp('superseded_at', { withTimezone: true, mode: 'date' }),
+
     createdAt: timestampColumns.createdAt,
   },
   (table) => [
     uniqueIndex('verification_tokens_token_hash_unique').on(table.tokenHash),
     index('verification_tokens_user_id_idx').on(table.userId),
+    /**
+     * Throttling reads "how many tokens has this account been issued for this
+     * purpose recently", which is exactly this index. It is what lets the send
+     * limits work without a rate-limit store.
+     */
+    index('verification_tokens_user_purpose_created_idx').on(
+      table.userId,
+      table.purpose,
+      table.createdAt,
+    ),
   ],
 )
 
@@ -196,3 +221,5 @@ export type NewUser = typeof users.$inferInsert
 export type Session = typeof sessions.$inferSelect
 export type UserRole = (typeof userRole.enumValues)[number]
 export type UserStatus = (typeof userStatus.enumValues)[number]
+export type TokenPurpose = (typeof tokenPurpose.enumValues)[number]
+export type VerificationToken = typeof verificationTokens.$inferSelect

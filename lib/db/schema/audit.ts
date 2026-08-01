@@ -48,6 +48,26 @@ export const auditEvent = pgEnum('audit_event', [
 
   /* --- Bag (Phase 3) ---------------------------------------------------- */
   'CART_MERGED',
+
+  /**
+   * --- Account recovery (Phase 3.5) -------------------------------------
+   *
+   * PRIVACY RULE FOR EVERY EVENT BELOW: no raw token, no reset link, no
+   * password, no API key, and no email address ever reaches `summary` or any
+   * other column. `PASSWORD_RESET_REQUESTED` in particular is written for
+   * addresses that do not exist, with `user_id` NULL and nothing identifying in
+   * the row — so the log records that a request happened without becoming the
+   * account-enumeration oracle the response itself refuses to be.
+   */
+  'EMAIL_VERIFICATION_REQUESTED',
+  'EMAIL_VERIFIED',
+  'EMAIL_VERIFICATION_FAILED',
+  'PASSWORD_RESET_REQUESTED',
+  'PASSWORD_RESET_COMPLETED',
+  'PASSWORD_RESET_FAILED',
+  'SESSIONS_REVOKED',
+  /** Transport-level delivery failure. Operational, not security. */
+  'EMAIL_SEND_FAILED',
 ])
 
 export const auditLog = pgTable(

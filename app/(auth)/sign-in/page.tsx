@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 
 import { SignInForm } from '@/components/auth/auth-forms'
 import { Card } from '@/components/ui/card'
+import { Alert } from '@/components/ui/feedback'
 import { getCurrentUser } from '@/lib/auth/dal'
 import { safeRedirectPath } from '@/lib/auth/validation'
 
@@ -15,9 +16,9 @@ export const metadata: Metadata = {
 export default async function SignInPage({
   searchParams,
 }: {
-  searchParams: Promise<{ next?: string }>
+  searchParams: Promise<{ next?: string; reset?: string; verified?: string }>
 }) {
-  const { next } = await searchParams
+  const { next, reset, verified } = await searchParams
 
   /**
    * Authoritative check. proxy.ts already bounces visitors who merely *have* a
@@ -39,9 +40,35 @@ export default async function SignInPage({
         </p>
       </div>
 
+      {/* Set by confirmEmailAction, which redirects here so the token never
+          appears in the URL the customer is left looking at. */}
+      {verified === '1' && (
+        <Alert tone="success" title="Email confirmed">
+          Your email address is confirmed. Sign in to continue.
+        </Alert>
+      )}
+
+      {/* Set by completePasswordResetAction. The reset deliberately does not
+          sign anyone in, so this is the only confirmation that it worked. */}
+      {reset === 'done' && (
+        <Alert tone="success" title="Password updated">
+          Your password has been changed and every device has been signed out.
+          Sign in with your new password to continue.
+        </Alert>
+      )}
+
       <Card className="p-6">
         <SignInForm next={next} />
       </Card>
+
+      <p className="text-center text-sm text-smoke">
+        <Link
+          href="/forgot-password"
+          className="font-semibold text-white underline underline-offset-4 hover:text-ember"
+        >
+          Forgot your password?
+        </Link>
+      </p>
 
       <p className="text-center text-sm text-smoke">
         New here?{' '}

@@ -27,6 +27,9 @@ const SESSION_COOKIE =
 const PROTECTED_PREFIXES = ['/account', '/admin'] as const
 const AUTH_PAGES = ['/sign-in', '/sign-up'] as const
 
+/** Routes whose path carries a one-time token. See the note in `proxy` below. */
+const TOKEN_BEARING_PREFIXES = ['/verify-email/', '/reset-password/'] as const
+
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
 
@@ -53,7 +56,31 @@ export function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL('/account', request.url))
   }
 
-  return NextResponse.next()
+  const response = NextResponse.next()
+
+  /**
+   * Token-bearing URLs are never stored.
+   *
+   * `Cache-Control` for these has to be set HERE rather than in next.config's
+   * `headers()`. Next owns that header for App Router routes and overwrites
+   * whatever the config says — a dynamic page comes back as
+   * `no-cache, must-revalidate`, which still permits a store. Setting it on the
+   * response as it leaves is the only place the value survives.
+   * (`Referrer-Policy` from next.config does apply; it is repeated here so both
+   * headers for these routes are visible in one place.)
+   *
+   * Neither header makes the URL secret — browser history, proxy logs and
+   * corporate TLS inspection can still record it. That is exactly why the TTL
+   * is short and the token single-use: exposure is assumed, and what is being
+   * controlled is how long it matters.
+   */
+  if (TOKEN_BEARING_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+    response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+    response.headers.set('Pragma', 'no-cache')
+    response.headers.set('Referrer-Policy', 'no-referrer')
+  }
+
+  return response
 }
 
 export const config = {

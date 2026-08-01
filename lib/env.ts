@@ -39,6 +39,23 @@ const serverSchema = z.object({
 
   /** Server-side Google Maps key (geocoding, distance matrix). */
   GOOGLE_MAPS_SERVER_API_KEY: z.string().optional(),
+
+  /**
+   * Transactional email (Phase 3.5).
+   *
+   * Defaults to `console` so a fresh checkout and CI need no credential — the
+   * link is printed to the terminal instead of sent. That default is safe
+   * because `lib/email/index.ts` refuses anything but `resend` when NODE_ENV is
+   * production, rather than silently falling back.
+   *
+   * These are validated as optional here, and required *at the point of use*,
+   * because a missing email key must not stop the storefront from booting.
+   * Browsing, the bag and sign-in do not need email; only recovery does.
+   */
+  EMAIL_PROVIDER: z.enum(['resend', 'console', 'capture']).default('console'),
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().optional(),
+  EMAIL_REPLY_TO: z.string().optional(),
 })
 
 const clientSchema = z.object({
