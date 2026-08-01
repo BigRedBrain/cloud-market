@@ -50,6 +50,13 @@ const DAY_MS = 24 * 60 * 60 * 1000
 
 export type TokenPurpose = schema.TokenPurpose
 
+/**
+ * `db` or a transaction handle. Drizzle's transaction callback receives an
+ * object with the same query surface, so anything written against this type
+ * works identically inside and outside a transaction.
+ */
+export type DbExecutor = Pick<typeof db, 'update' | 'select' | 'insert' | 'delete'>
+
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex')
 
 /* -------------------------------------------------------------------------- */
@@ -170,9 +177,99 @@ export async function issueToken(
 /* Consume                                                                     */
 /* -------------------------------------------------------------------------- */
 
+export type TokenFailure = 'not_found' | 'already_consumed' | 'expired' | 'superseded'
+
 export type ConsumeResult =
   | { ok: true; userId: string }
-  | { ok: false; reason: 'not_found' | 'already_consumed' | 'expired' | 'superseded' }
+  | { ok: false; reason: TokenFailure }
+
+/**
+ * Looks at a token WITHOUT consuming it.
+ *
+ * This is what a GET is allowed to do. A link in an email is opened by things
+ * that are not the customer — corporate mail security, link-preview bots,
+ * browser prefetchers, antivirus appliances — and every one of them issues a
+ * GET. If arriving at a URL performed the state change, those systems would
+ * verify addresses and burn reset links on the customer's behalf, and the
+ * customer would find a dead link and a confirmed account they never
+ * confirmed.
+ *
+ * So the rule is: GET inspects, POST consumes. This function is the inspect
+ * half. It reads, decides nothing, and writes nothing.
+ */
+export async function inspectToken(
+  rawToken: string,
+  purpose: TokenPurpose,
+): Promise<{ usable: true; userId: string } | { usable: false; reason: TokenFailure }> {
+  const [row] = await db
+    .select({
+      userId: schema.verificationTokens.userId,
+      consumedAt: schema.verificationTokens.consumedAt,
+      supersededAt: schema.verificationTokens.supersededAt,
+      expiresAt: schema.verificationTokens.expiresAt,
+    })
+    .from(schema.verificationTokens)
+    .where(
+      and(
+        eq(schema.verificationTokens.tokenHash, hashToken(rawToken)),
+        eq(schema.verificationTokens.purpose, purpose),
+      ),
+    )
+    .limit(1)
+
+  if (!row) return { usable: false, reason: 'not_found' }
+  if (row.consumedAt) return { usable: false, reason: 'already_consumed' }
+  if (row.supersededAt) return { usable: false, reason: 'superseded' }
+  if (row.expiresAt.getTime() <= Date.now()) return { usable: false, reason: 'expired' }
+  return { usable: true, userId: row.userId }
+}
+
+/**
+ * The atomic claim, executable inside a caller's transaction.
+ *
+ * Takes an executor rather than using `db` directly, so consumption can share a
+ * transaction with the mutation it authorises. That is what makes "the token is
+ * spent" and "the password changed" a single all-or-nothing fact: if the
+ * password write fails, the ROLLBACK un-consumes the token and the customer's
+ * link still works. Without it, a failure in between would leave someone locked
+ * out holding a link that no longer opens anything.
+ *
+ * The UPDATE remains the check — validity and consumption in one statement, so
+ * two concurrent POSTs cannot both claim the same token.
+ */
+export async function claimTokenWithin(
+  tx: DbExecutor,
+  rawToken: string,
+  purpose: TokenPurpose,
+): Promise<{ userId: string } | null> {
+  const [claimed] = await tx
+    .update(schema.verificationTokens)
+    .set({ consumedAt: new Date() })
+    .where(
+      and(
+        eq(schema.verificationTokens.tokenHash, hashToken(rawToken)),
+        eq(schema.verificationTokens.purpose, purpose),
+        isNull(schema.verificationTokens.consumedAt),
+        isNull(schema.verificationTokens.supersededAt),
+        gt(schema.verificationTokens.expiresAt, new Date()),
+      ),
+    )
+    .returning({ userId: schema.verificationTokens.userId })
+
+  return claimed ?? null
+}
+
+/** Removes a token that was issued but never delivered. See `issueAndSend`. */
+export async function discardToken(rawToken: string, purpose: TokenPurpose): Promise<void> {
+  await db
+    .delete(schema.verificationTokens)
+    .where(
+      and(
+        eq(schema.verificationTokens.tokenHash, hashToken(rawToken)),
+        eq(schema.verificationTokens.purpose, purpose),
+      ),
+    )
+}
 
 /**
  * Consumes a token, atomically.

@@ -1,17 +1,20 @@
 'use server'
 
 import { and, eq, isNull } from 'drizzle-orm'
+import { headers } from 'next/headers'
 import { after } from 'next/server'
 import { redirect } from 'next/navigation'
 
 import { recordAuditEvent } from '@/lib/auth/audit'
 import { requireUser } from '@/lib/auth/dal'
 import { hashPassword } from '@/lib/auth/crypto'
-import { revokeAllSessions } from '@/lib/auth/session'
+
 import {
   checkSendThrottle,
-  consumeToken,
+  claimTokenWithin,
+  discardToken,
   findConsumedToken,
+  inspectToken,
   issueToken,
   MAX_SENDS_PER_DAY,
   type TokenPurpose,
@@ -29,6 +32,7 @@ import {
 } from '@/lib/result'
 import {
   completeResetSchema,
+  confirmEmailSchema,
   requestResetSchema,
 } from '@/lib/auth/validation'
 
@@ -90,17 +94,70 @@ async function issueAndSend(
 
   if (!result.ok) {
     /**
+     * DELIVERY FAILED, SO THE TOKEN IS DISCARDED.
+     *
+     * The response already told the customer to check their inbox — it had to,
+     * because saying anything else would leak whether the address exists. That
+     * promise is now known to be false, and the only thing left to get right is
+     * what happens when they try again.
+     *
+     * Issuing the token cost them one of five daily sends and started a 60s
+     * cooldown. Leaving it in place would mean a provider outage locks people
+     * out of recovery for a day — the throttle punishing them for our failure.
+     * Removing the row returns both budgets immediately, so "try again" works
+     * straight away.
+     *
+     * The link is dropped with it. If the message did somehow arrive despite
+     * the error, its link is dead and the customer requests another; that is
+     * the safe direction to be wrong in.
+     *
+     * No queue and no retry loop: this phase does not need one, and a queue
+     * that silently retries a message we already told the customer about would
+     * make the state harder to reason about, not easier.
+     */
+    await discardToken(token, purpose)
+
+    /**
      * The transport's message can name the recipient, so it is not stored.
      * Only the fact of failure and the purpose are recorded — enough to alert
-     * on, nothing that turns the audit log into a mailing list.
+     * on, nothing that turns the audit log into a mailing list. `user_id` is
+     * attached because by this point an account is known to exist; this event
+     * is never written for an unknown address, so it cannot enumerate.
      */
     await recordAuditEvent({
       event: 'EMAIL_SEND_FAILED',
       userId,
       entityType: 'email',
-      summary: `${purpose} delivery failed`,
+      summary: `${purpose} delivery failed; token discarded so the customer can retry`,
     })
   }
+}
+
+/**
+ * Test-only failure injection, for proving the transaction boundary holds.
+ *
+ * Item 2 of the hardening review asks for a test that forces a failure between
+ * token consumption and password persistence. There is no way to provoke that
+ * from outside the process, so the seam is here — and it is inert unless
+ * explicitly switched on outside production.
+ */
+async function faultRequested(stage: 'after_consume'): Promise<boolean> {
+  /**
+   * THREE independent conditions, all required:
+   *
+   *   1. not production,
+   *   2. the server was started with the seam enabled, and
+   *   3. this specific request asked for it via a header.
+   *
+   * The header matters. An env-var-only switch fires on every request, which
+   * makes the whole flow unusable and means the suite cannot test the fault and
+   * the happy path in one run. Scoping it per-request keeps the seam inert for
+   * everything except the one submission that opts in.
+   */
+  if (process.env.NODE_ENV === 'production') return false
+  if (process.env.RECOVERY_FAULT_INJECTION !== stage) return false
+  const requestHeaders = await headers()
+  return requestHeaders.get('x-recovery-fault') === stage
 }
 
 /* -------------------------------------------------------------------------- */
@@ -149,55 +206,30 @@ export async function resendVerificationAction(
   return ok()
 }
 
-export type VerificationOutcome =
-  | { status: 'verified' }
+export type VerificationView =
+  | { status: 'ready'; token: string }
   | { status: 'already_verified' }
   | { status: 'invalid' }
   | { status: 'expired' }
 
 /**
- * Consumes a verification token. Called from the link's page, not a form.
+ * READ-ONLY inspection, for the GET that the emailed link points at.
  *
- * TOLERANT OF LINK SCANNERS. Corporate mail security and some clients prefetch
- * every URL in a message, which can consume the token before the human clicks.
- * When consumption fails but the token is one we issued and that account is now
- * verified, the honest answer is `already_verified` — the address really is
- * confirmed, and showing a failure would be both confusing and untrue. Nothing
- * is re-verified and no token becomes reusable; only the wording changes.
+ * Nothing here consumes a token and nothing here changes an account. A mail
+ * scanner, link-preview bot, browser prefetcher or security appliance may open
+ * that URL any number of times; each one gets a page, and the token is exactly
+ * as usable afterwards as it was before.
+ *
+ * `already_verified` is reported when the token was legitimately spent earlier
+ * and the address is confirmed, so someone reopening their own link sees the
+ * truth rather than an alarming failure.
  */
-export async function verifyEmailToken(token: string): Promise<VerificationOutcome> {
-  const result = await consumeToken(token, 'email_verification')
+export async function inspectVerificationToken(token: string): Promise<VerificationView> {
+  const result = await inspectToken(token, 'email_verification')
 
-  if (result.ok) {
-    /**
-     * `is null` in the WHERE clause makes this idempotent: the timestamp is set
-     * exactly once, so a second success can never move it and the record of
-     * when the address was confirmed stays true.
-     */
-    const [updated] = await db
-      .update(schema.users)
-      .set({ emailVerifiedAt: new Date(), updatedAt: new Date() })
-      .where(
-        and(eq(schema.users.id, result.userId), isNull(schema.users.emailVerifiedAt)),
-      )
-      .returning({ id: schema.users.id })
+  if (result.usable) return { status: 'ready', token }
 
-    await recordAuditEvent({
-      event: 'EMAIL_VERIFIED',
-      userId: result.userId,
-      entityType: 'user',
-      entityId: result.userId,
-    })
-
-    return { status: updated ? 'verified' : 'already_verified' }
-  }
-
-  /**
-   * The scanner case. If this token is one we issued and that account is now
-   * verified, report success — the address genuinely is confirmed, and the only
-   * thing that went "wrong" is that something followed the link first.
-   */
-  if (result.reason === 'already_consumed') {
+  if (result.reason === 'already_consumed' || result.reason === 'superseded') {
     const owner = await findConsumedToken(token, 'email_verification')
     if (owner) {
       const [row] = await db
@@ -205,18 +237,88 @@ export async function verifyEmailToken(token: string): Promise<VerificationOutco
         .from(schema.users)
         .where(eq(schema.users.id, owner.userId))
         .limit(1)
-
       if (row?.verifiedAt) return { status: 'already_verified' }
     }
   }
 
+  return { status: result.reason === 'expired' ? 'expired' : 'invalid' }
+}
+
+/**
+ * Confirms the address. THE ONLY PLACE VERIFICATION STATE CHANGES.
+ *
+ * Reached by an explicit POST from a form the customer submitted, so nothing
+ * that merely opens the URL can trigger it.
+ *
+ * ONE TRANSACTION. Consuming the token and setting `email_verified_at` commit
+ * together or not at all. Were the update to fail after the claim, the rollback
+ * puts the token back — a customer must never be left holding a spent link and
+ * an unverified address.
+ *
+ * The claim is also what serialises concurrent submits: two simultaneous POSTs
+ * run the same conditional UPDATE, exactly one matches a row, and the other
+ * gets nothing.
+ */
+export async function confirmEmailAction(
+  _previous: ActionResult<void> | null,
+  formData: FormData,
+): Promise<ActionResult<void>> {
+  const parsed = parseInput(confirmEmailSchema, formDataToObject(formData))
+  if (!parsed.ok) return parsed
+
+  const injectFault = await faultRequested('after_consume')
+  let verifiedUserId: string | null = null
+
+  try {
+    verifiedUserId = await db.transaction(async (tx) => {
+      const claimed = await claimTokenWithin(tx, parsed.data.token, 'email_verification')
+      if (!claimed) return null
+
+      if (injectFault) throw new Error('injected fault after token consumption')
+
+      /**
+       * `is null` keeps this idempotent: the timestamp is written once, so the
+       * record of when the address was confirmed can never be moved later.
+       */
+      await tx
+        .update(schema.users)
+        .set({ emailVerifiedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(schema.users.id, claimed.userId), isNull(schema.users.emailVerifiedAt)))
+
+      return claimed.userId
+    })
+  } catch {
+    /**
+     * Rolled back, so the token is unconsumed and the account unchanged. The
+     * customer's link still works and retrying is safe — which is precisely
+     * what the transaction boundary exists to guarantee.
+     */
+    await recordAuditEvent({
+      event: 'EMAIL_VERIFICATION_FAILED',
+      entityType: 'token',
+      summary: 'verification rolled back; token remains usable',
+    })
+    return fail('internal_error', 'Something went wrong confirming your email. Please try again.')
+  }
+
+  if (!verifiedUserId) {
+    await recordAuditEvent({
+      event: 'EMAIL_VERIFICATION_FAILED',
+      entityType: 'token',
+      summary: 'verification token rejected at confirmation',
+    })
+    return fail('unauthenticated', 'That confirmation link is no longer valid.')
+  }
+
   await recordAuditEvent({
-    event: 'EMAIL_VERIFICATION_FAILED',
-    entityType: 'token',
-    summary: `verification token rejected: ${result.reason}`,
+    event: 'EMAIL_VERIFIED',
+    userId: verifiedUserId,
+    entityType: 'user',
+    entityId: verifiedUserId,
   })
 
-  return { status: result.reason === 'expired' ? 'expired' : 'invalid' }
+  /** A clean URL with no token in it. See ACCOUNT-RECOVERY.md §3. */
+  redirect('/sign-in?verified=1')
 }
 
 /* -------------------------------------------------------------------------- */
@@ -312,13 +414,67 @@ export async function completePasswordResetAction(
   const parsed = parseInput(completeResetSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
 
-  const result = await consumeToken(parsed.data.token, 'password_reset')
+  /**
+   * Hashed BEFORE the transaction opens. scrypt is deliberately slow — holding
+   * a database transaction open for the duration would pin a connection for no
+   * reason and widen the window in which the row is locked.
+   */
+  const passwordHash = await hashPassword(parsed.data.password)
 
-  if (!result.ok) {
+  const injectFault = await faultRequested('after_consume')
+  let outcome: { userId: string; revoked: number } | null = null
+
+  try {
+    outcome = await db.transaction(async (tx) => {
+      const claimed = await claimTokenWithin(tx, parsed.data.token, 'password_reset')
+      if (!claimed) return null
+
+      if (injectFault) throw new Error('injected fault after token consumption')
+
+      await tx
+        .update(schema.users)
+        .set({
+          passwordHash,
+          /** A reset also clears a lockout — the account has been recovered. */
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.users.id, claimed.userId))
+
+      /**
+       * Session revocation joins the same transaction. If the password write
+       * committed but revocation did not, an intruder's session would survive a
+       * reset performed specifically to evict them — the one outcome this flow
+       * exists to prevent.
+       */
+      const removed = await tx
+        .delete(schema.sessions)
+        .where(eq(schema.sessions.userId, claimed.userId))
+        .returning({ id: schema.sessions.id })
+
+      return { userId: claimed.userId, revoked: removed.length }
+    })
+  } catch {
+    /**
+     * ROLLED BACK AS ONE UNIT. The token is unconsumed, the password unchanged,
+     * the sessions intact. The customer's link still works, so they are not
+     * stranded holding a spent link and an old password they came here because
+     * they could not use.
+     */
     await recordAuditEvent({
       event: 'PASSWORD_RESET_FAILED',
       entityType: 'token',
-      summary: `reset token rejected: ${result.reason}`,
+      summary: 'reset rolled back; token remains usable',
+    })
+    return fail('internal_error', 'Something went wrong. Your reset link still works — please try again.')
+  }
+
+  if (!outcome) {
+    await recordAuditEvent({
+      event: 'PASSWORD_RESET_FAILED',
+      entityType: 'token',
+      summary: 'reset token rejected at completion',
     })
     return fail(
       'unauthenticated',
@@ -326,32 +482,20 @@ export async function completePasswordResetAction(
     )
   }
 
-  await db
-    .update(schema.users)
-    .set({
-      passwordHash: await hashPassword(parsed.data.password),
-      /** A reset also clears a lockout — the account has been recovered. */
-      failedLoginAttempts: 0,
-      lockedUntil: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.users.id, result.userId))
-
-  const revoked = await revokeAllSessions(result.userId)
-
   await recordAuditEvent({
     event: 'SESSIONS_REVOKED',
-    userId: result.userId,
+    userId: outcome.userId,
     entityType: 'user',
-    entityId: result.userId,
-    summary: `${revoked} session(s) revoked by password reset`,
+    entityId: outcome.userId,
+    summary: `${outcome.revoked} session(s) revoked by password reset`,
   })
   await recordAuditEvent({
     event: 'PASSWORD_RESET_COMPLETED',
-    userId: result.userId,
+    userId: outcome.userId,
     entityType: 'user',
-    entityId: result.userId,
+    entityId: outcome.userId,
   })
 
+  /** A clean URL: the token never appears in the destination. */
   redirect('/sign-in?reset=done')
 }

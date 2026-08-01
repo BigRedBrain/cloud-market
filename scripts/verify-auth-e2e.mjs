@@ -604,6 +604,28 @@ async function main() {
   check('device D survives', await servedProtectedContent(devD, '/account', MARKER.account))
 
   // =================================================== 10. AUDIT COVERAGE
+  /* ---- token-bearing URL headers (production build only) ---- */
+  section('[9b] Token-URL response headers')
+
+  /**
+   * Asserted HERE rather than in the recovery suite because this file runs
+   * against a PRODUCTION build. The dev server rewrites `Cache-Control` for App
+   * Router pages after middleware runs, so `no-store` is only observable once
+   * the app is built the way it actually ships.
+   *
+   * These URLs carry a one-time token in the path. The headers do not make the
+   * URL secret — history, proxy logs and TLS inspection can still see it — they
+   * keep the response out of shared caches and stop the full URL leaking in a
+   * Referer header. Short TTL and single use remain the real defence.
+   */
+  for (const path of ['/verify-email/probe-token', '/reset-password/probe-token']) {
+    const res = await visit(newDevice('headers'), path)
+    const cacheControl = res.headers.get('cache-control') ?? ''
+    const referrer = res.headers.get('referrer-policy') ?? ''
+    check(`${path} is no-store`, /no-store/i.test(cacheControl), cacheControl || 'absent')
+    check(`${path} is no-referrer`, referrer === 'no-referrer', referrer || 'absent')
+  }
+
   section('[10] Audit coverage')
 
   const allEvents = new Set(await auditEvents(user.id))

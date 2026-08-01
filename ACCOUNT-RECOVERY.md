@@ -33,7 +33,34 @@ riskier than leaving them.
 
 ---
 
-## 2. Token lifecycle
+## 2. GET is inert — POST changes state
+
+**No security-sensitive state change happens on a GET.** A URL in an email is
+opened by things that are not the customer: corporate mail security following
+every link, antivirus appliances, link-preview bots, browser prefetchers. Every
+one of them issues a GET; none of them submits a form.
+
+| Route | GET does | POST does |
+| --- | --- | --- |
+| `/verify-email/[token]` | Inspects the token and renders a **Confirm** button. No consumption, no `email_verified_at`, no audit event implying an account changed. | Consumes atomically, sets `email_verified_at`, audits `EMAIL_VERIFIED`, redirects to `/sign-in?verified=1`. |
+| `/reset-password/[token]` | Renders the form. No consumption, no password change, no session revocation. | Consumes atomically, writes the password, revokes every session, audits, redirects to `/sign-in?reset=done`. |
+
+Both POSTs are ordinary HTML forms and work with JavaScript disabled.
+
+Verification originally consumed on GET, and the hardening review was right to
+reject it. A scanner would have confirmed addresses on behalf of people who
+never clicked, and the customer would then arrive at a spent link for an account
+something else had already "confirmed". Now tested with five GETs from distinct
+user agents before the POST, asserting the token is still unconsumed and the
+account still unverified afterwards.
+
+Re-opening a spent verification link reports **already confirmed** rather than a
+failure — the address genuinely is confirmed, and that is the truthful thing to
+say.
+
+---
+
+## 3. Token lifecycle
 
 ```
 issueToken(userId, purpose)
@@ -42,21 +69,23 @@ issueToken(userId, purpose)
   ├── store sha256(token) only
   └── return the raw token, used once to build a link, then gone
 
-consumeToken(rawToken, purpose)
+claimTokenWithin(tx, rawToken, purpose)          ← runs inside the caller's transaction
   └── UPDATE ... SET consumed_at = now()
        WHERE token_hash = $1 AND purpose = $2
          AND consumed_at IS NULL AND superseded_at IS NULL AND expires_at > now()
      RETURNING user_id
+
+inspectToken(rawToken, purpose)                  ← read-only, used by GET
 ```
 
 | Property | How |
 | --- | --- |
-| Stored hashed only | SHA-256, 64 hex. Verified in tests by recomputing the digest of the emailed token and by asserting the raw value matches no row. |
+| Stored hashed only | SHA-256, 64 hex. Tested by recomputing the digest of the emailed token, and by asserting the raw value matches no row. |
 | Raw token's lifetime | One function call. Never persisted, never logged, never audited, never returned by a read path. |
 | Verification TTL | 24 hours |
 | Reset TTL | 1 hour |
-| One-time use | The UPDATE *is* the check. Two simultaneous clicks cannot both win. |
-| Purpose enforced | Part of every lookup — a verification token presented at the reset endpoint simply does not match. |
+| One-time use | The UPDATE *is* the check. Two simultaneous POSTs cannot both win. |
+| Purpose enforced | Part of every lookup — a verification token presented at the reset endpoint does not match. |
 | Re-issue invalidates | Both purposes. A second reset request kills the first link. |
 
 **Why SHA-256 and not scrypt.** Passwords are low-entropy and need a slow hash.
@@ -65,7 +94,62 @@ a fast hash lets the lookup use the unique index instead of scanning.
 
 ---
 
-## 3. Anti-enumeration
+## 4. Transaction boundaries and failure semantics
+
+The security-critical mutations of each flow commit together or not at all.
+
+**Password reset — one transaction:**
+
+```
+BEGIN
+  claim the token   (conditional UPDATE; also the concurrency guard)
+  write the new password hash, clear lockout state
+  DELETE every session for the user
+COMMIT
+→ audit SESSIONS_REVOKED, PASSWORD_RESET_COMPLETED
+→ redirect /sign-in?reset=done
+```
+
+**Email verification — one transaction:**
+
+```
+BEGIN
+  claim the token
+  set email_verified_at WHERE email_verified_at IS NULL
+COMMIT
+→ audit EMAIL_VERIFIED
+→ redirect /sign-in?verified=1
+```
+
+**Why session revocation is inside the reset transaction.** If the password
+write committed but revocation did not, an intruder's session would survive a
+reset performed specifically to evict them — the one outcome this flow exists to
+prevent. It is not a tidiness concern; it is the whole point.
+
+**scrypt runs before `BEGIN`.** Hashing is deliberately slow, and holding a
+transaction open across it would pin a connection and widen the window in which
+the user row is locked, for no benefit.
+
+### Failure semantics
+
+| Failure point | Result |
+| --- | --- |
+| Anywhere inside the transaction | Full rollback. Token **unconsumed**, password unchanged, sessions intact. The customer's link still works and retrying is safe. |
+| After commit, before audit | The mutation stands and one audit row is missing. Accepted: the alternative is letting a logging failure roll back a completed password change, which is worse. Audit writes are a single insert with no dependencies and have not failed in any run. |
+| Provider delivery, after the response | See §8. |
+
+The customer-facing message on rollback says so explicitly: *"Something went
+wrong. Your reset link still works — please try again."*
+
+**This is tested, not asserted.** `RECOVERY_FAULT_INJECTION=after_consume` opens
+a seam that throws immediately after the token is claimed, scoped per-request by
+an `x-recovery-fault` header so the rest of the suite is unaffected, and inert in
+production. The suite then proves the token is unconsumed, the password
+unchanged, and the link still usable.
+
+---
+
+## 5. Anti-enumeration
 
 The reset request has **one outcome**: `redirect('/forgot-password/sent')`. Real
 address, unknown address, suspended account, throttled request, and even a
@@ -74,11 +158,10 @@ status, same location.
 
 **Timing is part of it.** Everything that could differ happens inside Next's
 `after()`, which runs once the response is already on its way. The lookup, the
-token write and the provider call are all after the redirect, so "no account"
-and "account found, token issued, mail sent" cannot be told apart by a stopwatch.
-This is why `after()` was used rather than a fire-and-forget promise: it is the
-supported way to keep work alive past the response without the platform killing
-it mid-flight.
+token write and the provider call all happen after the redirect, so "no account"
+and "account found, token issued, mail sent" cannot be told apart with a
+stopwatch. `after()` rather than a floating promise, because it is the supported
+way to keep work alive past the response without the platform killing it.
 
 The confirmation page says *"If an account exists for that address, we've sent a
 link"*. The vaguer "we've sent you an email" would be a lie in the cases where
@@ -86,12 +169,40 @@ nothing was sent. Stating the condition tells the truth and still leaks nothing.
 
 **Where specificity is safe, it is used.** The signed-in resend page names the
 address and says exactly how many seconds to wait, because the visitor already
-proved they hold that account. Being vague with someone about their own account
-is unhelpful, not secure.
+proved they hold that account.
 
 ---
 
-## 4. Throttling
+## 6. Token URL exposure
+
+The token has to travel in the URL — it arrives by email and there is nowhere
+else to put it. Everything downstream of that is controlled:
+
+| Control | Where |
+| --- | --- |
+| `Cache-Control: no-store, no-cache, must-revalidate, max-age=0` | `proxy.ts`, for `/verify-email/` and `/reset-password/` |
+| `Referrer-Policy: no-referrer` | `next.config.ts` + `proxy.ts` |
+| `X-Robots-Tag: noindex, nofollow, noarchive` | `next.config.ts` |
+| No third-party scripts, images, fonts or analytics on either page | asserted in the suite |
+| Token never logged, never in audit metadata, never in client telemetry | asserted in the suite |
+| Redirect to a clean URL after consumption | `/sign-in?verified=1`, `/sign-in?reset=done` |
+
+**`Cache-Control` is set in `proxy.ts`, not `next.config.ts`.** Next owns that
+header for App Router pages and overwrites what the config says; the dev server
+returns `no-cache, must-revalidate`, which still permits storing. Setting it on
+the response as it leaves is the only place the value survives. The production
+build is where `no-store` is observable, so that assertion lives in the
+production-build suite (`verify-auth-e2e.mjs` §9b) rather than the dev-server
+recovery suite.
+
+**None of this makes the URL secret.** Browser history, proxy logs and corporate
+TLS inspection can still record it. That is precisely why the TTL is short and
+the token single-use: exposure is assumed, and what is being minimised is how
+long it matters.
+
+---
+
+## 7. Throttling
 
 Per account, per purpose, computed from rows the system already writes — no
 Redis, no rate-limit table.
@@ -112,11 +223,11 @@ long to wait, for the reason in §3.
 **Not covered, and deliberately so:** aggregate volume across many different
 addresses. That is a provider-quota concern rather than an account-security one,
 and the fix is IP-scoped limiting, which needs a shared store. Recorded as
-production hardening in §10 rather than shipped ahead of evidence.
+production hardening in §14 rather than shipped ahead of evidence.
 
 ---
 
-## 5. Session handling
+## 8. Session handling
 
 | Event | Sessions | New session? |
 | --- | --- | --- |
@@ -130,17 +241,15 @@ because completing a reset proves control of the mailbox, not knowledge of the
 old password — requiring a fresh sign-in keeps "every session was destroyed"
 true without an immediate exception carved into it.
 
-Order matters: consume the token, write the password, revoke, audit, redirect.
-Consuming first means a later failure leaves the link spent rather than
-reusable. Revoking after the write means there is no window where the old
-password still works against a live session.
+Ordering and atomicity are covered in §4: the claim, the password write and the
+revocation are one transaction, so none of them can land without the others.
 
 Verification does not touch sessions — confirming an address is not an
 authentication event.
 
 ---
 
-## 6. Account state
+## 9. Account state
 
 New accounts stay `status = 'active'` with `email_verified_at` null.
 
@@ -157,7 +266,7 @@ disagree. `pending_verification` remains in the enum, unused.
 
 ---
 
-## 7. Provider abstraction
+## 10. Provider abstraction
 
 ```
 lib/email/
@@ -199,7 +308,7 @@ need email.
 
 ---
 
-## 8. Accessibility and no-JS
+## 11. Accessibility and no-JS
 
 Every flow is a plain `<form>` posting to a Server Action, and the entire
 journey works with JavaScript disabled:
@@ -241,14 +350,17 @@ success, because the address genuinely is confirmed.
 
 ---
 
-## 9. Security review
+## 12. Security review
 
 | Concern | Handling |
 | --- | --- |
 | **Host-header link forgery** | Links are built from `NEXT_PUBLIC_APP_URL`. `Host` and `X-Forwarded-Host` are attacker-controlled; a reset link assembled from them would deliver a live credential to a domain of the attacker's choosing, inside a genuine email from us. The request's opinion of its own hostname is never in scope. |
 | Token disclosure at rest | SHA-256 only. A database dump yields nothing replayable. |
-| Token in logs | Asserted: no audit summary contains a token, password, URL, or `@`. |
-| Token replay | Atomic single-use, plus supersession on re-issue. |
+| Token in logs | Asserted: no audit summary contains a token, password, URL, or an address. |
+| Token URL exposure | See §6 — no-store, no-referrer, no third-party assets, clean redirect after use. |
+| GET side effects | None. See §2. |
+| Partial mutation | Impossible: §4, proven by fault injection. |
+| Token replay | Atomic single-use, plus supersession on re-issue. Verified under concurrency: exactly one of two simultaneous POSTs succeeds. |
 | Cross-purpose replay | `purpose` is part of every lookup. |
 | Account enumeration | §3, including timing. |
 | Audit as an enumeration oracle | `PASSWORD_RESET_REQUESTED` is written for unknown addresses with `user_id` NULL and **nothing identifying** — no summary, no entity id. The log shows reset traffic exists without becoming the oracle the response refuses to be. |
@@ -267,69 +379,100 @@ success, because the address genuinely is confirmed.
 
 ---
 
-## 10. Test results
+## 13. Test results
 
 ```
-npm run test:recovery   86 passed, 0 failed   (dev server, EMAIL_PROVIDER=capture)
-npm run test:email      12 passed, 0 failed   (transport config, process-isolated)
-npm run test:e2e        90 passed, 0 failed   (regression, production build)
-npm run test:bag        63 passed, 0 failed   (regression, production build)
-npm run test:auth       28 passed, 0 failed   (regression)
-lint                    0 errors, 1 pre-existing warning
-typecheck               clean
-build                   clean
+npm run test:recovery   116 passed, 0 failed   (dev server, EMAIL_PROVIDER=capture,
+                                                RECOVERY_FAULT_INJECTION=after_consume)
+npm run test:email       12 passed, 0 failed   (transport config, process-isolated)
+npm run test:e2e         94 passed, 0 failed   (regression, production build)
+npm run test:bag         63 passed, 0 failed   (regression, production build)
+npm run test:auth        28 passed, 0 failed   (regression)
+lint                     0 errors, 1 pre-existing warning
+typecheck                clean
+build                    clean
 ```
 
-Every required case from the brief is covered, including: token stored hashed;
-raw token never persisted; purpose enforced; expired rejected; consumed rejected
-on replay; resend supersedes the previous link; both throttles; unknown email
-produces an identical public response; no reset token created for an unknown
-address; `email_verified_at` set exactly once; password changed; old password
-dead; new password works; all sessions revoked; **reset does not authenticate**;
-change preserves the current session and revokes the others; no raw token in any
-audit row; production refuses missing configuration; console transport never
-runs in production; no-JS forms work.
+Without the fault-injection seam enabled the recovery suite reports 112 and
+skips the four atomicity assertions, saying so rather than passing silently:
 
-**Harness discipline.** Every row the suites create is captured by id at
-creation and deleted by id. There are no shape-based deletes anywhere — no time
-windows, no `WHERE event = …`. Pre-existing audit rows are snapshotted and
-asserted to survive: `all 601 pre-existing audit rows survived`.
+```
+skipped: run with RECOVERY_FAULT_INJECTION=after_consume on the server
+```
 
-### Two bugs the suites caught
+### Hardening coverage
 
-**The capture transport did not work.** It was an in-memory array, and a Server
+| Requirement | Assertion |
+| --- | --- |
+| Scanner GET does not verify | 5 GETs from distinct agents, then `email_verified_at` still null |
+| Repeated verification GET does not consume | `consumed_at` still null after 5 GETs |
+| Verification POST consumes exactly once | replayed POST rejected; `email_verified_at` unmoved |
+| Reset GET does not consume | `consumed_at` and `superseded_at` both null after 5 GETs |
+| Repeated reset GET does not invalidate | sessions intact, old password still works after the GETs |
+| Reset POST consumes exactly once | replay rejected, password unchanged by the replay |
+| Forced failure between consume and password write | token unconsumed, password unchanged, link still usable |
+| Concurrent verification POSTs | exactly one succeeds; exactly one consumed row |
+| Concurrent reset POSTs | exactly one succeeds |
+| Consumption redirects away from the token URL | `Location` carries no token |
+| Responses are `no-store` | production build, `verify-auth-e2e.mjs` §9b |
+| `Referrer-Policy: no-referrer` | both suites |
+| No raw token in audit or logs | no summary contains a token, password, URL or `@` |
+| Provider failure observable without enumeration | `EMAIL_SEND_FAILED` present, carrying no address and no token |
+
+### Harness discipline
+
+Every row the suites create is captured by id at creation and deleted by id.
+There are no shape-based deletes anywhere — no time windows, no `WHERE event =
+…`. Pre-existing audit rows are snapshotted and asserted to survive.
+
+### Three bugs the suites caught
+
+**The capture transport did not work.** It was an in-memory array, but a Server
 Action and a Route Handler are separate bundles with separate module instances —
 the action pushed into one array while the debug route read a different, always
-empty one. Tokens were being issued correctly and the outbox looked broken. Now
-a newline-delimited file, which is the boundary both sides genuinely share.
+empty one. Now a newline-delimited file, which is the boundary both sides share.
 
-**The confirmation link was unreachable without a session** (§8).
+**The confirmation link was unreachable without a session.** It sat under
+`/account`, which the proxy bounces when there is no session cookie — the normal
+case for a phone's mail app. Moved to `/verify-email/[token]`.
+
+**`Cache-Control` was silently overridden.** Set in `next.config.ts` it looked
+correct and was replaced by Next's own value for App Router pages. Caught by the
+header assertion, moved to `proxy.ts`.
 
 ---
 
-## 11. Production rollout requirements
+## 14. Production rollout requirements
 
 **Not started. Nothing below has been done.**
 
-1. **Choose and verify a sending domain** — SPF and DKIM records, and a real
-   monitored `EMAIL_REPLY_TO`. Deliverability for a licensed cannabis retailer
-   depends on the domain being clean and the mail being unambiguously
-   transactional.
-2. **Create the Resend API key** and set, in Vercel **Production only**, marked
+1. **Rotate the DEVELOPMENT Neon credential.** Exposed repeatedly during
+   debugging, including once by this assistant printing a connection string to
+   its own console. Not a production incident — the dev branch holds seed data
+   and cannot reach production — but it should be rotated before this phase
+   ships. Requires Neon console access, which the assistant does not have.
+   Afterwards: restore `.env.local` with the new development strings, confirm
+   the old credential is rejected, and confirm the new one cannot reach
+   production. Neither string should be pasted into chat.
+2. **Choose and verify a sending domain** — SPF and DKIM, plus a real monitored
+   `EMAIL_REPLY_TO`.
+3. **Create the Resend API key** and set, in Vercel **Production only**, marked
    Sensitive: `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM`,
    `EMAIL_REPLY_TO`. Preview must stay without them — it has no `DATABASE_URL`
    either and is fail-closed by construction.
-3. **Confirm `NEXT_PUBLIC_APP_URL`** is the canonical public origin. Every link
-   in every email is built from it.
-4. **Apply migration 0007** before deploying the code, using the same gated
-   sequence as 0005/0006: `verify-migration-target.mjs` → `GO` → `drizzle-kit
-   migrate` → confirm. The code tolerates the enum values being absent only in
-   the sense that nothing writes them yet; deploying code first would fail on
-   the first audit insert.
-5. **Smoke-test delivery** with Resend's `delivered@resend.dev` and
+4. **Confirm `NEXT_PUBLIC_APP_URL`** is the canonical public origin. Every link
+   in every email is built from it, never from a request header.
+5. **Apply migration 0007 before deploying the code**, through the same gated
+   sequence as 0005/0006: `verify-migration-target.mjs` → `GO` →
+   `drizzle-kit migrate` → confirm. Code-first would fail on the first audit
+   insert, because the enum values would not exist.
+6. **Confirm `RECOVERY_FAULT_INJECTION` is unset in production.** It is inert
+   there regardless — the seam checks `NODE_ENV` first — but it should not be
+   present.
+7. **Smoke-test delivery** with Resend's `delivered@resend.dev` and
    `bounced@resend.dev` before pointing a real customer at it.
-6. **Then** decide on IP-scoped rate limiting (§4) — Postgres bucket table
-   preferred over a new vendor.
+8. **Then** decide on IP-scoped rate limiting (§7) — a Postgres bucket table is
+   preferred over adding a vendor.
 
 **Out of scope, unchanged:** checkout, orders, payments, 2FA, magic links,
 OAuth, email-address change, marketing email, bounce/webhook processing.

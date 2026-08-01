@@ -16,9 +16,9 @@ export const metadata: Metadata = {
 export default async function SignInPage({
   searchParams,
 }: {
-  searchParams: Promise<{ next?: string; reset?: string }>
+  searchParams: Promise<{ next?: string; reset?: string; verified?: string }>
 }) {
-  const { next, reset } = await searchParams
+  const { next, reset, verified } = await searchParams
 
   /**
    * Authoritative check. proxy.ts already bounces visitors who merely *have* a
@@ -39,6 +39,14 @@ export default async function SignInPage({
           Order history, saved addresses, and faster checkout.
         </p>
       </div>
+
+      {/* Set by confirmEmailAction, which redirects here so the token never
+          appears in the URL the customer is left looking at. */}
+      {verified === '1' && (
+        <Alert tone="success" title="Email confirmed">
+          Your email address is confirmed. Sign in to continue.
+        </Alert>
+      )}
 
       {/* Set by completePasswordResetAction. The reset deliberately does not
           sign anyone in, so this is the only confirmation that it worked. */}

@@ -1,34 +1,43 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 
+import { ConfirmEmailForm } from '@/components/auth/auth-forms'
 import { buttonVariants } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { StatusPanel } from '@/components/ui/feedback'
-import { verifyEmailToken } from '@/lib/auth/email-actions'
+import { inspectVerificationToken } from '@/lib/auth/email-actions'
 
 export const metadata: Metadata = {
-  title: 'Email confirmation',
+  title: 'Confirm your email',
   robots: { index: false, follow: false },
 }
 
 /**
- * Confirms an email address from the link in the message.
+ * The confirmation link's landing page.
  *
- * THIS ONE DOES CONSUME ON GET, unlike the reset page, and the difference is
- * deliberate. A verification link has no follow-up step to attach the write to
- * — asking someone to click a link and then press a button to confirm that they
- * clicked the link is friction for no gain.
+ * THIS GET CHANGES NOTHING. It reads the token, decides what to show, and
+ * writes nothing — no consumption, no `email_verified_at`, no audit event
+ * implying an account changed.
  *
- * The cost is that a link scanner can consume the token before the human does.
- * `verifyEmailToken` handles exactly that: if the token was already consumed
- * and the account is verified, this reports success, because the address really
- * is confirmed. Nothing is re-verified and no token becomes reusable.
+ * That is not caution for its own sake. A URL in an email is opened by things
+ * that are not the customer: corporate mail security following every link,
+ * antivirus appliances, link-preview bots, browser prefetchers. If arriving
+ * here performed the verification, those systems would confirm addresses on
+ * behalf of people who never clicked, and the customer would then find a spent
+ * link for an account something else had already "confirmed". Every one of
+ * those openers issues a GET; none of them submits a form.
  *
- * DELIBERATELY OUTSIDE /account. The proxy bounces every /account/* request
- * that arrives without a session cookie, and someone confirming from their
- * phone's mail app
- * usually has no session there, and forcing a sign-in first would strand them.
- * The token is the proof — it is 256 bits of CSPRNG output, single-use, and
- * scoped to one purpose.
+ * So the link renders a button and the button POSTs. The state change lives in
+ * `confirmEmailAction`, behind an explicit human action, and it works with
+ * JavaScript disabled because it is an ordinary HTML form.
+ *
+ * DELIBERATELY OUTSIDE /account. The proxy bounces every `/account/*` request
+ * arriving without a session cookie, and someone confirming from their phone's
+ * mail app usually has no session there. The token is the proof — 256 bits of
+ * CSPRNG output, single-use, scoped to one purpose.
+ *
+ * Response headers for this route are `no-store` and `no-referrer`; see
+ * next.config.ts.
  */
 export default async function VerifyEmailTokenPage({
   params,
@@ -36,21 +45,43 @@ export default async function VerifyEmailTokenPage({
   params: Promise<{ token: string }>
 }) {
   const { token } = await params
-  const outcome = await verifyEmailToken(token)
+  const view = await inspectVerificationToken(token)
 
-  if (outcome.status === 'verified' || outcome.status === 'already_verified') {
+  if (view.status === 'already_verified') {
     return (
       <StatusPanel
         tone="success"
-        title="Email confirmed"
+        title="Email already confirmed"
+        description="Your email address is confirmed. Nothing more is needed."
+        action={
+          <Link href="/sign-in" className={buttonVariants({ variant: 'primary' })}>
+            Sign in
+          </Link>
+        }
+      />
+    )
+  }
+
+  if (view.status !== 'ready') {
+    return (
+      <StatusPanel
+        tone="warning"
+        title={
+          view.status === 'expired'
+            ? 'That confirmation link has expired'
+            : "That confirmation link isn't valid"
+        }
         description={
-          outcome.status === 'verified'
-            ? "Your email address is confirmed. You're all set to order when checkout opens."
-            : 'Your email address was already confirmed. Nothing more to do.'
+          view.status === 'expired'
+            ? 'Confirmation links work for 24 hours. Sign in and request a new one.'
+            : 'Confirmation links can only be used once. Sign in and request a new one.'
         }
         action={
-          <Link href="/account" className={buttonVariants({ variant: 'primary' })}>
-            Go to your account
+          <Link
+            href="/account/verify-email"
+            className={buttonVariants({ variant: 'primary' })}
+          >
+            Request a new link
           </Link>
         }
       />
@@ -58,26 +89,20 @@ export default async function VerifyEmailTokenPage({
   }
 
   return (
-    <StatusPanel
-      tone="warning"
-      title={
-        outcome.status === 'expired'
-          ? 'That confirmation link has expired'
-          : "That confirmation link isn't valid"
-      }
-      description={
-        outcome.status === 'expired'
-          ? 'Confirmation links work for 24 hours. Sign in and request a new one.'
-          : 'Confirmation links can only be used once. Sign in and request a new one.'
-      }
-      action={
-        <Link
-          href="/account/verify-email"
-          className={buttonVariants({ variant: 'primary' })}
-        >
-          Request a new link
-        </Link>
-      }
-    />
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <h1 className="font-display text-3xl tracking-tight text-white uppercase">
+          Confirm your email
+        </h1>
+        <p className="text-sm text-smoke">
+          One more step. Confirm below and your address is set — you won&apos;t
+          need this link again.
+        </p>
+      </div>
+
+      <Card className="p-6">
+        <ConfirmEmailForm token={view.token} />
+      </Card>
+    </div>
   )
 }

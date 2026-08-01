@@ -10,6 +10,7 @@ import {
 } from '@/lib/auth/actions'
 import {
   completePasswordResetAction,
+  confirmEmailAction,
   requestPasswordResetAction,
   resendVerificationAction,
 } from '@/lib/auth/email-actions'
@@ -302,6 +303,25 @@ export function ResendVerificationForm() {
       successMessage="Confirmation email sent. Check your inbox, and your spam folder."
     >
       {() => null}
+    </AuthForm>
+  )
+}
+
+/**
+ * Confirms an email address.
+ *
+ * A form, not a link. The emailed URL only ever renders this button; the
+ * verification happens when the customer submits it. That is what keeps a mail
+ * scanner's GET from confirming an address nobody has looked at yet.
+ */
+export function ConfirmEmailForm({ token }: { token: string }) {
+  return (
+    <AuthForm
+      action={confirmEmailAction}
+      submitLabel="Confirm my email address"
+      pendingLabel="Confirming"
+    >
+      {() => <input type="hidden" name="token" value={token} />}
     </AuthForm>
   )
 }

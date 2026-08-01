@@ -181,3 +181,14 @@ export const completeResetSchema = z
     message: 'Both passwords must match',
     path: ['confirmPassword'],
   })
+
+/**
+ * Confirming an email address.
+ *
+ * A schema of its own rather than reusing the reset one, because the two POSTs
+ * authorise different things and sharing a shape is how a token for one ends up
+ * accepted by the other.
+ */
+export const confirmEmailSchema = z.object({
+  token: z.string().min(1, 'Missing confirmation token').max(200),
+})

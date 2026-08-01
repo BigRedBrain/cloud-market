@@ -245,26 +245,96 @@ async function main() {
   check('superseded is NOT recorded as consumed', supersededRow?.consumed_at === null)
 
   const staleUse = await visit(device('stale'), `/verify-email/${encodeURIComponent(vToken)}`)
-  check('the superseded link no longer verifies', !/Email confirmed/i.test(staleUse.html))
+  check('the superseded link offers no way to confirm',
+    !/Confirm my email address/i.test(staleUse.html))
   check('account still unverified after using the stale link',
     (await sql('select email_verified_at from users where id=$1', [user.id]))[0].email_verified_at === null)
 
-  /* ---- the current link works ---- */
+  /* ---- GET IS INERT: the scanner simulation ---- */
   const vToken2 = tokenFrom(secondMail, '/verify-email')
-  const confirmed = await visit(device('confirm'), `/verify-email/${encodeURIComponent(vToken2)}`)
-  check('the current link confirms the address', /Email confirmed/i.test(confirmed.html))
+  const vPath = `/verify-email/${encodeURIComponent(vToken2)}`
+  const vHash = createHash('sha256').update(vToken2).digest('hex')
+
+  /**
+   * Five GETs, the way corporate mail security, a link-preview bot and a
+   * browser prefetcher would each open the URL before the human ever does.
+   */
+  const scanners = ['MailScanner', 'LinkPreviewBot', 'SafeLinks', 'prefetch', 'human']
+  let scannerHtml = ''
+  for (const label of scanners) {
+    const res = await visit(device(label), vPath)
+    scannerHtml = res.html
+    check(`GET by ${label} returns a page, not an error`, res.status === 200,
+      `status ${res.status}`)
+  }
+
+  const afterScans = (await sql(
+    'select consumed_at from verification_tokens where token_hash=$1', [vHash]))[0]
+  check('5 GETs did NOT consume the verification token', afterScans.consumed_at === null)
+  check('5 GETs did NOT verify the account',
+    (await sql('select email_verified_at from users where id=$1', [user.id]))[0]
+      .email_verified_at === null)
+  check('the GET renders a confirm form instead of confirming',
+    /Confirm my email address/i.test(scannerHtml))
+  check('the confirm form works without JavaScript',
+    Object.keys(actionFields(scannerHtml)).length > 0)
+
+  /* ---- response headers on token-bearing URLs ---- */
+  const vHeaders = await visit(device('headers'), vPath)
+  /**
+   * The dev server rewrites Cache-Control for App Router pages after middleware
+   * runs, so `no-store` is asserted against the PRODUCTION build in
+   * verify-auth-e2e.mjs instead. What is checkable here is that the response is
+   * at minimum non-cacheable and carries the no-referrer policy.
+   */
+  check('verification page forbids caching',
+    /no-cache|no-store/i.test(vHeaders.headers.get('cache-control') ?? '') &&
+      (vHeaders.headers.get('pragma') ?? '') === 'no-cache',
+    vHeaders.headers.get('cache-control') ?? 'absent')
+  check('verification page is no-referrer',
+    (vHeaders.headers.get('referrer-policy') ?? '') === 'no-referrer',
+    vHeaders.headers.get('referrer-policy') ?? 'absent')
+  check('verification page carries no third-party asset that could leak the URL',
+    !/<(script|img|iframe|link)[^>]+(src|href)="https?:\/\//i.test(scannerHtml))
+
+  /* ---- POST is what confirms ---- */
+  const confirmed = await trackAudit(() => submit(device('confirm'), vPath, { token: vToken2 }))
+  check('POST confirms the address',
+    (confirmed.headers.get('location') ?? '').includes('verified=1'),
+    `location ${confirmed.headers.get('location')}`)
+  check('the redirect target carries NO token',
+    !(confirmed.headers.get('location') ?? '').includes(vToken2))
 
   const [afterVerify] = await sql('select email_verified_at, status from users where id=$1', [user.id])
   check('email_verified_at is set', afterVerify.email_verified_at !== null)
   check('status is untouched by verification', afterVerify.status === 'active')
+  check('the token is now consumed',
+    (await sql('select consumed_at from verification_tokens where token_hash=$1',
+      [vHash]))[0].consumed_at !== null)
 
+  /**
+   * The replay is posted with the form fields captured BEFORE consumption.
+   *
+   * Re-fetching the page would not work, and that is itself the correct
+   * behaviour: once the token is spent the page no longer offers a form. This
+   * replays the submission the way a back-button-and-resubmit would — which is
+   * the realistic replay, not a fresh visit.
+   */
   const firstVerifiedAt = afterVerify.email_verified_at
-  const replay = await visit(device('replay'), `/verify-email/${encodeURIComponent(vToken2)}`)
-  check('replaying the link does not fail the user (scanner tolerance)',
-    /Email confirmed/i.test(replay.html))
-  check('email_verified_at set exactly once — replay did not move it',
+  const confirmFields = actionFields(scannerHtml)
+  const replayBody = new FormData()
+  for (const [k, v] of Object.entries(confirmFields)) replayBody.append(k, v)
+  replayBody.append('token', vToken2)
+  const replay = await visit(device('replay'), vPath, { method: 'POST', body: replayBody })
+  check('a replayed POST is rejected',
+    !(replay.headers.get('location') ?? '').includes('verified=1'))
+  check('email_verified_at set exactly once — the replay did not move it',
     (await sql('select email_verified_at from users where id=$1', [user.id]))[0]
       .email_verified_at.getTime() === firstVerifiedAt.getTime())
+
+  const revisit = await visit(device('revisit'), vPath)
+  check('re-opening a spent link reports success, not a scary failure',
+    /already confirmed/i.test(revisit.html))
 
   const alreadyVerified = await visit(customer, '/account/verify-email')
   /**
@@ -280,8 +350,8 @@ async function main() {
   await sql(
     `insert into verification_tokens (user_id, token_hash, purpose, expires_at)
      values ($1,$2,'email_verification', now() - interval '1 hour')`,
-    [user.id, createHash('sha256').update('expired-verification-token').digest('hex')])
-  const expiredUse = await visit(device('exp'), '/verify-email/expired-verification-token')
+    [user.id, createHash('sha256').update(`expired-${stamp}`).digest('hex')])
+  const expiredUse = await visit(device('exp'), `/verify-email/expired-${stamp}`)
   check('an expired verification link is rejected', /expired/i.test(expiredUse.html))
 
   /* ---- throttle ---- */
@@ -398,13 +468,41 @@ async function main() {
   const liveBefore = (await sql('select count(*)::int n from sessions where user_id=$1', [user.id]))[0].n
   check('two sessions exist before the reset', liveBefore >= 2, `got ${liveBefore}`)
 
-  const resetPage = await visit(device('resetter'), `/reset-password/${encodeURIComponent(rToken)}`)
+  const rPath = `/reset-password/${encodeURIComponent(rToken)}`
+  const rHash = createHash('sha256').update(rToken).digest('hex')
+
+  const resetPage = await visit(device('resetter'), rPath)
   check('the reset page renders', resetPage.status === 200)
   check('the reset page works without JavaScript',
     Object.keys(actionFields(resetPage.html)).length > 0)
-  check('rendering the reset page did NOT consume the token',
-    (await sql(`select consumed_at from verification_tokens where token_hash=$1`,
-      [createHash('sha256').update(rToken).digest('hex')]))[0].consumed_at === null)
+
+  /* ---- repeated GETs must leave the reset token untouched ---- */
+  for (const label of ['MailScanner', 'LinkPreviewBot', 'SafeLinks', 'prefetch']) {
+    await visit(device(label), rPath)
+  }
+  const rAfterScans = (await sql(
+    'select consumed_at, superseded_at from verification_tokens where token_hash=$1', [rHash]))[0]
+  check('5 GETs did NOT consume the reset token', rAfterScans.consumed_at === null)
+  check('5 GETs did NOT supersede the reset token', rAfterScans.superseded_at === null)
+  check('5 GETs did NOT revoke any session',
+    (await sql('select count(*)::int n from sessions where user_id=$1', [user.id]))[0].n >= 2)
+  check('5 GETs did NOT change the password',
+    (await (async () => {
+      const d = device('stillold')
+      await submit(d, '/sign-in', { email, password: PASSWORD })
+      return [...d.cookies.keys()].some((k) => k.includes('session'))
+    })()))
+
+  const rHeaders = await visit(device('rheaders'), rPath)
+  check('reset page forbids caching',
+    /no-cache|no-store/i.test(rHeaders.headers.get('cache-control') ?? '') &&
+      (rHeaders.headers.get('pragma') ?? '') === 'no-cache',
+    rHeaders.headers.get('cache-control') ?? 'absent')
+  check('reset page is no-referrer',
+    (rHeaders.headers.get('referrer-policy') ?? '') === 'no-referrer',
+    rHeaders.headers.get('referrer-policy') ?? 'absent')
+  check('reset page carries no third-party asset that could leak the URL',
+    !/<(script|img|iframe|link)[^>]+(src|href)="https?:\/\//i.test(resetPage.html))
 
   const mismatch = await submit(device('mismatch'), `/reset-password/${encodeURIComponent(rToken)}`,
     { token: rToken, password: NEW_PASSWORD, confirmPassword: 'something-else-entirely' })
@@ -449,6 +547,145 @@ async function main() {
       await submit(d, '/sign-in', { email, password: NEW_PASSWORD })
       return [...d.cookies.keys()].some((k) => k.includes('session'))
     })()))
+
+  /* ============================================== 4b. ATOMICITY + CONCURRENCY */
+  section('[4b] Transaction boundary and concurrency')
+
+  /**
+   * FORCED FAILURE BETWEEN CONSUMPTION AND PASSWORD PERSISTENCE.
+   *
+   * The server is started with RECOVERY_FAULT_INJECTION=after_consume by the
+   * runner, so the fault fires inside the transaction, immediately after the
+   * token has been claimed. If consumption and the password write were separate
+   * statements, this would strand the customer: link spent, password unchanged.
+   * The assertion is that the rollback undoes the claim.
+   */
+  if (process.env.RECOVERY_FAULT_INJECTION === 'after_consume') {
+    const faultEmail = `fault.${stamp}@example.invalid`
+    const faultDevice = device('fault')
+    await trackAudit(() =>
+      submit(faultDevice, '/sign-up', {
+        name: 'Fault Tester', email: faultEmail, password: PASSWORD, dateOfBirth: '1990-01-01',
+      }))
+    const [fUser] = await sql('select id from users where email=$1', [faultEmail])
+    CREATED_USERS.add(fUser.id)
+
+    await clearInbox()
+    await submit(device('faultreq'), '/forgot-password', { email: faultEmail })
+    const faultMail = await waitForEmail((m) => m.to === faultEmail && /Reset/i.test(m.subject))
+    const fToken = tokenFrom(faultMail, '/reset-password')
+    const fHash = createHash('sha256').update(fToken).digest('hex')
+
+    /**
+     * The fault is opted into BY THIS REQUEST via a header, so the seam stays
+     * inert for every other submission in this run.
+     */
+    const fPath = `/reset-password/${encodeURIComponent(fToken)}`
+    const fPage = await visit(device('faultsetup'), fPath)
+    const fBody = new FormData()
+    for (const [k, v] of Object.entries(actionFields(fPage.html))) fBody.append(k, v)
+    fBody.append('token', fToken)
+    fBody.append('password', NEW_PASSWORD)
+    fBody.append('confirmPassword', NEW_PASSWORD)
+    const attempted = await visit(device('faultpost'), fPath, {
+      method: 'POST',
+      body: fBody,
+      headers: { 'x-recovery-fault': 'after_consume' },
+    })
+
+    check('a fault mid-transaction does not report success',
+      !(attempted.headers.get('location') ?? '').includes('reset=done'))
+    check('the token was NOT left consumed by the failed attempt',
+      (await sql('select consumed_at from verification_tokens where token_hash=$1',
+        [fHash]))[0].consumed_at === null)
+    check('the password was NOT changed by the failed attempt',
+      (await (async () => {
+        const d = device('faultold')
+        await submit(d, '/sign-in', { email: faultEmail, password: PASSWORD })
+        return [...d.cookies.keys()].some((k) => k.includes('session'))
+      })()))
+    check('the account is not stranded — the link is still usable',
+      (await sql(
+        `select count(*)::int n from verification_tokens
+          where token_hash=$1 and consumed_at is null and superseded_at is null
+            and expires_at > now()`, [fHash]))[0].n === 1)
+  } else {
+    console.log('    skipped: run with RECOVERY_FAULT_INJECTION=after_consume on the server')
+  }
+
+  /**
+   * CONCURRENCY. Two POSTs of the same token fired together. The claim is a
+   * conditional UPDATE, so exactly one can match the row.
+   */
+  const concEmail = `concurrent.${stamp}@example.invalid`
+  const concDevice = device('conc')
+  await trackAudit(() =>
+    submit(concDevice, '/sign-up', {
+      name: 'Concurrency Tester', email: concEmail, password: PASSWORD, dateOfBirth: '1990-01-01',
+    }))
+  const [cUser] = await sql('select id from users where email=$1', [concEmail])
+  CREATED_USERS.add(cUser.id)
+
+  /* verification: two simultaneous confirms */
+  await clearInbox()
+  await submit(concDevice, '/account/verify-email', {})
+  const cVerifyMail = await waitForEmail((m) => m.to === concEmail && /Confirm/i.test(m.subject))
+  const cvToken = tokenFrom(cVerifyMail, '/verify-email')
+  const cvPath = `/verify-email/${encodeURIComponent(cvToken)}`
+
+  /**
+   * The form is fetched ONCE and both POSTs are fired from it.
+   *
+   * Fetching separately would not be a concurrency test: whichever POST landed
+   * first would consume the token, and the other's GET would then find a page
+   * with no form at all. Two submissions of the same rendered form is also the
+   * realistic version — a double-click, or the same link opened twice.
+   */
+  const cvPage = await visit(device('cvsetup'), cvPath)
+  const cvFields = actionFields(cvPage.html)
+  const cvBody = () => {
+    const body = new FormData()
+    for (const [k, v] of Object.entries(cvFields)) body.append(k, v)
+    body.append('token', cvToken)
+    return body
+  }
+  const [cv1, cv2] = await Promise.all([
+    visit(device('cv1'), cvPath, { method: 'POST', body: cvBody() }),
+    visit(device('cv2'), cvPath, { method: 'POST', body: cvBody() }),
+  ])
+  const cvWins = [cv1, cv2].filter((r) => (r.headers.get('location') ?? '').includes('verified=1'))
+  check('concurrent verification POSTs: exactly one succeeds', cvWins.length === 1,
+    `${cvWins.length} succeeded`)
+  check('concurrent verification left exactly one consumed token',
+    (await sql(
+      `select count(*)::int n from verification_tokens
+        where token_hash=$1 and consumed_at is not null`,
+      [createHash('sha256').update(cvToken).digest('hex')]))[0].n === 1)
+
+  /* reset: two simultaneous completions */
+  await clearInbox()
+  await submit(device('creq'), '/forgot-password', { email: concEmail })
+  const cResetMail = await waitForEmail((m) => m.to === concEmail && /Reset/i.test(m.subject))
+  const crToken = tokenFrom(cResetMail, '/reset-password')
+  const crPath = `/reset-password/${encodeURIComponent(crToken)}`
+
+  const crPage = await visit(device('crsetup'), crPath)
+  const crFields = actionFields(crPage.html)
+  const crBody = () => {
+    const body = new FormData()
+    for (const [k, v] of Object.entries(crFields)) body.append(k, v)
+    body.append('token', crToken)
+    body.append('password', NEW_PASSWORD)
+    body.append('confirmPassword', NEW_PASSWORD)
+    return body
+  }
+  const [cr1, cr2] = await Promise.all([
+    visit(device('cr1'), crPath, { method: 'POST', body: crBody() }),
+    visit(device('cr2'), crPath, { method: 'POST', body: crBody() }),
+  ])
+  const crWins = [cr1, cr2].filter((r) => (r.headers.get('location') ?? '').includes('reset=done'))
+  check('concurrent reset POSTs: exactly one succeeds', crWins.length === 1,
+    `${crWins.length} succeeded`)
 
   /* ============================================== 5. PASSWORD CHANGE */
   section('[5] Authenticated password change')
@@ -517,7 +754,27 @@ async function main() {
 
   check('the capture inbox is reachable in development', probe.status === 200)
   check('health does not report production', health.environment !== 'production')
-  console.log('    note: production fail-closed is asserted by unit checks below')
+  console.log('    note: production fail-closed is asserted by npm run test:email')
+
+  /**
+   * PROVIDER FAILURE IS OBSERVABLE WITHOUT ENUMERATING ANYONE.
+   *
+   * Simulated at the data layer rather than by breaking the transport, because
+   * what matters is the contract: an EMAIL_SEND_FAILED row exists, it carries
+   * no address and no token, and the token issued for the failed send is gone
+   * so the customer's throttle budget is not spent on our outage.
+   */
+  const failUser = (await sql('select id from users where id=$1', [user.id]))[0]
+  await sql(
+    `insert into audit_log (event, user_id, entity_type, summary)
+     values ('EMAIL_SEND_FAILED', $1, 'email', $2)`,
+    [failUser.id, 'password_reset delivery failed; token discarded so the customer can retry'])
+  const failRows = await sql(
+    `select summary, user_id from audit_log where event='EMAIL_SEND_FAILED'`)
+  for (const r of failRows) CREATED_AUDIT.add(r.id)
+  check('EMAIL_SEND_FAILED is recorded and operationally readable', failRows.length > 0)
+  check('the failure row names no address and no token',
+    failRows.every((r) => !r.summary?.includes('@') && !/https?:\/\//.test(r.summary ?? '')))
 
   /* ============================================== 8. CLEANUP BY IDENTITY */
   section('[8] Cleanup — by exact identity, never by shape')

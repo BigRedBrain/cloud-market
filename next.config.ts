@@ -30,6 +30,19 @@ const securityHeaders = [
   },
 ]
 
+/**
+ * Applied only to routes whose path carries a one-time token. `Referrer-Policy`
+ * overrides the site-wide `strict-origin-when-cross-origin`, which would still
+ * emit the origin — harmless generally, but these URLs deserve the strictest
+ * setting available.
+ */
+const TOKEN_URL_HEADERS = [
+  { key: 'Cache-Control', value: 'no-store, no-cache, must-revalidate, max-age=0' },
+  { key: 'Pragma', value: 'no-cache' },
+  { key: 'Referrer-Policy', value: 'no-referrer' },
+  { key: 'X-Robots-Tag', value: 'noindex, nofollow, noarchive' },
+]
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
 
@@ -54,7 +67,37 @@ const nextConfig: NextConfig = {
   },
 
   async headers() {
-    return [{ source: '/:path*', headers: securityHeaders }]
+    return [
+      { source: '/:path*', headers: securityHeaders },
+      /**
+       * Routes whose URL contains a bearer token.
+       *
+       * The token has to travel in the URL — it arrives by email, and there is
+       * nowhere else to put it. What can be controlled is everything downstream
+       * of that:
+       *
+       *  - `no-store` keeps the page out of the browser's disk cache and out of
+       *    any intermediary's, so the token-bearing response is not sitting on
+       *    a shared machine after the fact.
+       *  - `no-referrer` stops the full URL leaking in a `Referer` header. A
+       *    single third-party asset on one of these pages would otherwise hand
+       *    a live credential to someone else's server. There are no third-party
+       *    assets on them, and this is the belt to that braces.
+       *
+       * Neither header makes the URL a secret — browser history, proxy logs and
+       * corporate TLS inspection can still record it. That is precisely why the
+       * TTL is short and the token is single-use: exposure is assumed, and the
+       * window is what gets minimised.
+       */
+      {
+        source: '/verify-email/:token*',
+        headers: TOKEN_URL_HEADERS,
+      },
+      {
+        source: '/reset-password/:token*',
+        headers: TOKEN_URL_HEADERS,
+      },
+    ]
   },
 
   typescript: {
