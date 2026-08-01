@@ -37,25 +37,30 @@ riskier than leaving them.
 
 | Trigger | Sends |
 | --- | --- |
-| Sign-up completes | Verification email, automatically, from  |
-|  resend button | Verification email, manual fallback |
-|  submit | Reset email, from  |
+| Sign-up completes | Verification email, automatically, from `after()` |
+| `/account/verify-email` resend button | Verification email, manual fallback |
+| `/forgot-password` submit | Reset email, from `after()` |
 
-Sign-up dispatches after the response, so a slow or unreachable provider cannot
-delay account creation and cannot fail it. Someone who has just passed the age
-gate and had a password hashed ends up with an account whatever the provider is
-doing; the email is a follow-up, not a precondition.
+Sign-up dispatches **after** the response, so a slow or unreachable provider
+cannot delay account creation and cannot fail it. Someone who has just passed
+the age gate and had a password hashed ends up with an account whatever the
+provider is doing; the email is a follow-up, not a precondition.
 
 The automatic send starts the 60-second cooldown, so pressing resend immediately
 is refused — correct, and the behaviour a customer actually meets, since
- is one click from where they land. If delivery fails the
+`/account/verify-email` is one click from where they land. If delivery fails the
 token is discarded, which hands the cooldown and the daily budget straight back.
 
- lives in  behind , not in
-a  module. It takes a userId and an address; exported as a Server
-Action it would let any caller mail a verification or reset link for an arbitrary
-account to an arbitrary address — a phishing primitive wearing our sending
-domain. Same boundary as .
+**This was missing for one release.** Sign-up created the account and sent
+nothing, so a customer only received a confirmation email if they found the
+resend button — which the specified flow never asked them to do. Production
+surfaced it: an account was created and no request ever reached the provider.
+
+`issueAndSend` lives in `lib/auth/email-dispatch.ts` behind `server-only`, not
+in a `'use server'` module. It takes a userId and an address; exported as a
+Server Action it would let any caller mail a verification or reset link for an
+arbitrary account to an arbitrary address — a phishing primitive wearing our own
+sending domain. Same boundary `mergeGuestBagIntoUser` sits behind.
 
 ---
 
@@ -408,7 +413,7 @@ success, because the address genuinely is confirmed.
 ## 13. Test results
 
 ```
-npm run test:recovery   116 passed, 0 failed   (dev server, EMAIL_PROVIDER=capture,
+npm run test:recovery   130 passed, 0 failed   (dev server, EMAIL_PROVIDER=capture,
                                                 RECOVERY_FAULT_INJECTION=after_consume)
 npm run test:email       12 passed, 0 failed   (transport config, process-isolated)
 npm run test:e2e         94 passed, 0 failed   (regression, production build)
@@ -419,7 +424,7 @@ typecheck                clean
 build                    clean
 ```
 
-Without the fault-injection seam enabled the recovery suite reports 112 and
+Without the fault-injection seam enabled the recovery suite reports 126 and
 skips the four atomicity assertions, saying so rather than passing silently:
 
 ```
