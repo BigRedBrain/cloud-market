@@ -33,7 +33,38 @@ riskier than leaving them.
 
 ---
 
-## 2. GET is inert — POST changes state
+## 2. When email is dispatched
+
+| Trigger | Sends |
+| --- | --- |
+| Sign-up completes | Verification email, automatically, from `after()` |
+| `/account/verify-email` resend button | Verification email, manual fallback |
+| `/forgot-password` submit | Reset email, from `after()` |
+
+Sign-up dispatches **after** the response, so a slow or unreachable provider
+cannot delay account creation and cannot fail it. Someone who has just passed
+the age gate and had a password hashed ends up with an account whatever the
+provider is doing; the email is a follow-up, not a precondition.
+
+The automatic send starts the 60-second cooldown, so pressing resend immediately
+is refused — correct, and the behaviour a customer actually meets, since
+`/account/verify-email` is one click from where they land. If delivery fails the
+token is discarded, which hands the cooldown and the daily budget straight back.
+
+**This was missing for one release.** Sign-up created the account and sent
+nothing, so a customer only received a confirmation email if they found the
+resend button — which the specified flow never asked them to do. Production
+surfaced it: an account was created and no request ever reached the provider.
+
+`issueAndSend` lives in `lib/auth/email-dispatch.ts` behind `server-only`, not
+in a `'use server'` module. It takes a userId and an address; exported as a
+Server Action it would let any caller mail a verification or reset link for an
+arbitrary account to an arbitrary address — a phishing primitive wearing our own
+sending domain. Same boundary `mergeGuestBagIntoUser` sits behind.
+
+---
+
+## 3. GET is inert — POST changes state
 
 **No security-sensitive state change happens on a GET.** A URL in an email is
 opened by things that are not the customer: corporate mail security following
@@ -60,7 +91,7 @@ say.
 
 ---
 
-## 3. Token lifecycle
+## 4. Token lifecycle
 
 ```
 issueToken(userId, purpose)
@@ -94,7 +125,7 @@ a fast hash lets the lookup use the unique index instead of scanning.
 
 ---
 
-## 4. Transaction boundaries and failure semantics
+## 5. Transaction boundaries and failure semantics
 
 The security-critical mutations of each flow commit together or not at all.
 
@@ -136,7 +167,7 @@ the user row is locked, for no benefit.
 | --- | --- |
 | Anywhere inside the transaction | Full rollback. Token **unconsumed**, password unchanged, sessions intact. The customer's link still works and retrying is safe. |
 | After commit, before audit | The mutation stands and one audit row is missing. Accepted: the alternative is letting a logging failure roll back a completed password change, which is worse. Audit writes are a single insert with no dependencies and have not failed in any run. |
-| Provider delivery, after the response | See §8. |
+| Provider delivery, after the response | See §9. |
 
 The customer-facing message on rollback says so explicitly: *"Something went
 wrong. Your reset link still works — please try again."*
@@ -149,7 +180,7 @@ unchanged, and the link still usable.
 
 ---
 
-## 5. Anti-enumeration
+## 6. Anti-enumeration
 
 The reset request has **one outcome**: `redirect('/forgot-password/sent')`. Real
 address, unknown address, suspended account, throttled request, and even a
@@ -173,7 +204,7 @@ proved they hold that account.
 
 ---
 
-## 6. Token URL exposure
+## 7. Token URL exposure
 
 The token has to travel in the URL — it arrives by email and there is nowhere
 else to put it. Everything downstream of that is controlled:
@@ -192,7 +223,7 @@ header for App Router pages and overwrites what the config says; the dev server
 returns `no-cache, must-revalidate`, which still permits storing. Setting it on
 the response as it leaves is the only place the value survives. The production
 build is where `no-store` is observable, so that assertion lives in the
-production-build suite (`verify-auth-e2e.mjs` §9b) rather than the dev-server
+production-build suite (`verify-auth-e2e.mjs` §10b) rather than the dev-server
 recovery suite.
 
 **None of this makes the URL secret.** Browser history, proxy logs and corporate
@@ -202,7 +233,7 @@ long it matters.
 
 ---
 
-## 7. Throttling
+## 8. Throttling
 
 Per account, per purpose, computed from rows the system already writes — no
 Redis, no rate-limit table.
@@ -218,16 +249,16 @@ source addresses still cannot mail any one person more than 5 times a day.
 
 A throttled *reset* request is silently not sent — saying "you already requested
 one" would confirm the address exists. A throttled *resend* says plainly how
-long to wait, for the reason in §3.
+long to wait, for the reason in §4.
 
 **Not covered, and deliberately so:** aggregate volume across many different
 addresses. That is a provider-quota concern rather than an account-security one,
 and the fix is IP-scoped limiting, which needs a shared store. Recorded as
-production hardening in §14 rather than shipped ahead of evidence.
+production hardening in §15 rather than shipped ahead of evidence.
 
 ---
 
-## 8. Session handling
+## 9. Session handling
 
 | Event | Sessions | New session? |
 | --- | --- | --- |
@@ -241,7 +272,7 @@ because completing a reset proves control of the mailbox, not knowledge of the
 old password — requiring a fresh sign-in keeps "every session was destroyed"
 true without an immediate exception carved into it.
 
-Ordering and atomicity are covered in §4: the claim, the password write and the
+Ordering and atomicity are covered in §5: the claim, the password write and the
 revocation are one transaction, so none of them can land without the others.
 
 Verification does not touch sessions — confirming an address is not an
@@ -249,7 +280,7 @@ authentication event.
 
 ---
 
-## 9. Account state
+## 10. Account state
 
 New accounts stay `status = 'active'` with `email_verified_at` null.
 
@@ -266,7 +297,7 @@ disagree. `pending_verification` remains in the enum, unused.
 
 ---
 
-## 10. Provider abstraction
+## 11. Provider abstraction
 
 ```
 lib/email/
@@ -308,7 +339,7 @@ need email.
 
 ---
 
-## 11. Accessibility and no-JS
+## 12. Accessibility and no-JS
 
 Every flow is a plain `<form>` posting to a Server Action, and the entire
 journey works with JavaScript disabled:
@@ -350,19 +381,19 @@ success, because the address genuinely is confirmed.
 
 ---
 
-## 12. Security review
+## 13. Security review
 
 | Concern | Handling |
 | --- | --- |
 | **Host-header link forgery** | Links are built from `NEXT_PUBLIC_APP_URL`. `Host` and `X-Forwarded-Host` are attacker-controlled; a reset link assembled from them would deliver a live credential to a domain of the attacker's choosing, inside a genuine email from us. The request's opinion of its own hostname is never in scope. |
 | Token disclosure at rest | SHA-256 only. A database dump yields nothing replayable. |
 | Token in logs | Asserted: no audit summary contains a token, password, URL, or an address. |
-| Token URL exposure | See §6 — no-store, no-referrer, no third-party assets, clean redirect after use. |
-| GET side effects | None. See §2. |
-| Partial mutation | Impossible: §4, proven by fault injection. |
+| Token URL exposure | See §7 — no-store, no-referrer, no third-party assets, clean redirect after use. |
+| GET side effects | None. See §3. |
+| Partial mutation | Impossible: §5, proven by fault injection. |
 | Token replay | Atomic single-use, plus supersession on re-issue. Verified under concurrency: exactly one of two simultaneous POSTs succeeds. |
 | Cross-purpose replay | `purpose` is part of every lookup. |
-| Account enumeration | §3, including timing. |
+| Account enumeration | §4, including timing. |
 | Audit as an enumeration oracle | `PASSWORD_RESET_REQUESTED` is written for unknown addresses with `user_id` NULL and **nothing identifying** — no summary, no entity id. The log shows reset traffic exists without becoming the oracle the response refuses to be. |
 | IP / user-agent in audit | HMAC-SHA256 keyed with `AUTH_SECRET`, never plain. |
 | Lockout interaction | A completed reset clears `failed_login_attempts` and `locked_until` — the account has been recovered. |
@@ -371,7 +402,7 @@ success, because the address genuinely is confirmed.
 
 **Residual risks, stated rather than hidden:**
 
-1. No per-IP rate limiting (§4).
+1. No per-IP rate limiting (§5).
 2. A verification link consumed by a mail scanner is spent; the page reports
    success correctly, but the customer never sees the "just verified" state.
 3. Reset emails go to the address on file; there is no change-of-address flow,
@@ -379,10 +410,10 @@ success, because the address genuinely is confirmed.
 
 ---
 
-## 13. Test results
+## 14. Test results
 
 ```
-npm run test:recovery   116 passed, 0 failed   (dev server, EMAIL_PROVIDER=capture,
+npm run test:recovery   130 passed, 0 failed   (dev server, EMAIL_PROVIDER=capture,
                                                 RECOVERY_FAULT_INJECTION=after_consume)
 npm run test:email       12 passed, 0 failed   (transport config, process-isolated)
 npm run test:e2e         94 passed, 0 failed   (regression, production build)
@@ -393,7 +424,7 @@ typecheck                clean
 build                    clean
 ```
 
-Without the fault-injection seam enabled the recovery suite reports 112 and
+Without the fault-injection seam enabled the recovery suite reports 126 and
 skips the four atomicity assertions, saying so rather than passing silently:
 
 ```
@@ -414,7 +445,7 @@ skipped: run with RECOVERY_FAULT_INJECTION=after_consume on the server
 | Concurrent verification POSTs | exactly one succeeds; exactly one consumed row |
 | Concurrent reset POSTs | exactly one succeeds |
 | Consumption redirects away from the token URL | `Location` carries no token |
-| Responses are `no-store` | production build, `verify-auth-e2e.mjs` §9b |
+| Responses are `no-store` | production build, `verify-auth-e2e.mjs` §10b |
 | `Referrer-Policy: no-referrer` | both suites |
 | No raw token in audit or logs | no summary contains a token, password, URL or `@` |
 | Provider failure observable without enumeration | `EMAIL_SEND_FAILED` present, carrying no address and no token |
@@ -442,7 +473,7 @@ header assertion, moved to `proxy.ts`.
 
 ---
 
-## 14. Production rollout requirements
+## 15. Production rollout requirements
 
 **Not started. Nothing below has been done.**
 
@@ -471,7 +502,7 @@ header assertion, moved to `proxy.ts`.
    present.
 7. **Smoke-test delivery** with Resend's `delivered@resend.dev` and
    `bounced@resend.dev` before pointing a real customer at it.
-8. **Then** decide on IP-scoped rate limiting (§7) — a Postgres bucket table is
+8. **Then** decide on IP-scoped rate limiting (§8) — a Postgres bucket table is
    preferred over adding a vendor.
 
 **Out of scope, unchanged:** checkout, orders, payments, 2FA, magic links,

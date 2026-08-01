@@ -62,6 +62,23 @@ export default async function VerifyEmailTokenPage({
     )
   }
 
+  /**
+   * Replaced by a newer link.
+   *
+   * No action button on purpose. The remedy is an email the customer already
+   * has, so pointing them at "request a new link" would cause the very thing
+   * that brought them here. Nothing is sent from this page.
+   */
+  if (view.status === 'superseded') {
+    return (
+      <StatusPanel
+        tone="info"
+        title="A newer confirmation link was requested"
+        description="This link was replaced when you requested another confirmation email. Use the most recent link in your inbox. You can safely delete the older email."
+      />
+    )
+  }
+
   if (view.status !== 'ready') {
     return (
       <StatusPanel

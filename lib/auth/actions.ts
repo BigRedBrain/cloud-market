@@ -2,6 +2,7 @@
 
 import { and, eq, isNull } from 'drizzle-orm'
 import { redirect } from 'next/navigation'
+import { after } from 'next/server'
 import { revalidatePath } from 'next/cache'
 
 import { db, schema } from '@/lib/db'
@@ -16,6 +17,7 @@ import { withUpdatedAt } from '@/lib/db/schema'
 import { mergeGuestBagIntoUser } from '@/lib/bag/merge'
 import { recordAuditEvent } from './audit'
 import { equalizeTimingForMissingUser, hashPassword, verifyPassword } from './crypto'
+import { issueAndSend } from './email-dispatch'
 import { requireAdmin, requireSession, requireUser } from './dal'
 import {
   createSession,
@@ -121,6 +123,38 @@ export async function signUpAction(
 
   await recordAuditEvent({ event: 'ACCOUNT_CREATED', userId, sessionId })
   await recordAuditEvent({ event: 'LOGIN', userId, sessionId })
+
+  /**
+   * Dispatch the confirmation email.
+   *
+   * AFTER THE RESPONSE, NOT DURING IT. `after()` runs once the redirect is
+   * already on its way, so a slow or unreachable provider cannot delay account
+   * creation and — more importantly — cannot fail it. Someone who has just
+   * typed their details, passed the age gate and had a password hashed must end
+   * up with an account whatever Resend is doing; the email is a follow-up, not
+   * a precondition.
+   *
+   * If delivery fails, `issueAndSend` discards the token it issued and audits
+   * `EMAIL_SEND_FAILED`. That hands back both the 60-second cooldown and the
+   * daily send budget, so the customer can use the resend button on
+   * /account/verify-email immediately rather than being locked out of
+   * verification by our outage.
+   *
+   * The request is audited HERE, before the response, so the log records the
+   * intent even if the process is torn down before `after()` finishes. Delivery
+   * has its own event; this one means "we decided to send", not "it arrived".
+   */
+  await recordAuditEvent({
+    event: 'EMAIL_VERIFICATION_REQUESTED',
+    userId,
+    sessionId,
+    entityType: 'user',
+    entityId: userId,
+  })
+
+  after(async () => {
+    await issueAndSend(userId, email, 'email_verification')
+  })
 
   redirect(
     merge.unavailable.length

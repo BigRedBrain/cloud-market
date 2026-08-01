@@ -6,23 +6,18 @@ import { after } from 'next/server'
 import { redirect } from 'next/navigation'
 
 import { recordAuditEvent } from '@/lib/auth/audit'
+import { issueAndSend } from '@/lib/auth/email-dispatch'
 import { requireUser } from '@/lib/auth/dal'
 import { hashPassword } from '@/lib/auth/crypto'
 
 import {
   checkSendThrottle,
   claimTokenWithin,
-  discardToken,
   findConsumedToken,
   inspectToken,
-  issueToken,
   MAX_SENDS_PER_DAY,
-  type TokenPurpose,
 } from '@/lib/auth/tokens'
 import { db, schema } from '@/lib/db'
-import { sendEmail } from '@/lib/email'
-import { passwordResetEmail, verificationEmail } from '@/lib/email/templates'
-import { clientEnv } from '@/lib/env'
 import {
   fail,
   formDataToObject,
@@ -56,82 +51,6 @@ import {
  *    mistake available in this feature, and it is avoided by never having the
  *    request's opinion of its own hostname in scope.
  */
-
-const APP_URL = clientEnv.NEXT_PUBLIC_APP_URL.replace(/\/$/, '')
-
-const verifyUrl = (token: string) =>
-  `${APP_URL}/verify-email/${encodeURIComponent(token)}`
-const resetUrl = (token: string) =>
-  `${APP_URL}/reset-password/${encodeURIComponent(token)}`
-
-/**
- * Issues a token and hands the message to the transport.
- *
- * Runs inside `after()` at both call sites, so provider latency never shapes
- * the response the visitor sees. That is a security property, not a performance
- * one: "no account" returning in 20ms while "account found, token hashed, mail
- * sent" takes 400ms is a measurable enumeration oracle, and no amount of
- * matched wording hides it.
- */
-async function issueAndSend(
-  userId: string,
-  email: string,
-  purpose: TokenPurpose,
-): Promise<void> {
-  const { token } = await issueToken(userId, purpose)
-
-  const rendered =
-    purpose === 'email_verification'
-      ? verificationEmail(verifyUrl(token))
-      : passwordResetEmail(resetUrl(token))
-
-  const result = await sendEmail({
-    to: email,
-    subject: rendered.subject,
-    html: rendered.html,
-    text: rendered.text,
-  })
-
-  if (!result.ok) {
-    /**
-     * DELIVERY FAILED, SO THE TOKEN IS DISCARDED.
-     *
-     * The response already told the customer to check their inbox — it had to,
-     * because saying anything else would leak whether the address exists. That
-     * promise is now known to be false, and the only thing left to get right is
-     * what happens when they try again.
-     *
-     * Issuing the token cost them one of five daily sends and started a 60s
-     * cooldown. Leaving it in place would mean a provider outage locks people
-     * out of recovery for a day — the throttle punishing them for our failure.
-     * Removing the row returns both budgets immediately, so "try again" works
-     * straight away.
-     *
-     * The link is dropped with it. If the message did somehow arrive despite
-     * the error, its link is dead and the customer requests another; that is
-     * the safe direction to be wrong in.
-     *
-     * No queue and no retry loop: this phase does not need one, and a queue
-     * that silently retries a message we already told the customer about would
-     * make the state harder to reason about, not easier.
-     */
-    await discardToken(token, purpose)
-
-    /**
-     * The transport's message can name the recipient, so it is not stored.
-     * Only the fact of failure and the purpose are recorded — enough to alert
-     * on, nothing that turns the audit log into a mailing list. `user_id` is
-     * attached because by this point an account is known to exist; this event
-     * is never written for an unknown address, so it cannot enumerate.
-     */
-    await recordAuditEvent({
-      event: 'EMAIL_SEND_FAILED',
-      userId,
-      entityType: 'email',
-      summary: `${purpose} delivery failed; token discarded so the customer can retry`,
-    })
-  }
-}
 
 /**
  * Test-only failure injection, for proving the transaction boundary holds.
@@ -209,6 +128,8 @@ export async function resendVerificationAction(
 export type VerificationView =
   | { status: 'ready'; token: string }
   | { status: 'already_verified' }
+  /** Replaced by a newer link, not used. See the note in `inspectVerificationToken`. */
+  | { status: 'superseded' }
   | { status: 'invalid' }
   | { status: 'expired' }
 
@@ -240,6 +161,22 @@ export async function inspectVerificationToken(token: string): Promise<Verificat
       if (row?.verifiedAt) return { status: 'already_verified' }
     }
   }
+
+  /**
+   * Replaced, not used — and worth saying so.
+   *
+   * Someone with two confirmation emails open who clicks the older one was
+   * previously told "confirmation links can only be used once", which is untrue
+   * about their own behaviour and sends them to request a third link, causing
+   * the same thing again. `superseded_at` already distinguishes "we replaced
+   * this" from "the customer spent it"; this surfaces that distinction instead
+   * of flattening it into a generic failure.
+   *
+   * It reveals nothing: possession of the token is already assumed by whoever
+   * opened the link, and the reply names no address, no account state, and
+   * offers no form. Nothing is sent, and the token stays unusable.
+   */
+  if (result.reason === 'superseded') return { status: 'superseded' }
 
   return { status: result.reason === 'expired' ? 'expired' : 'invalid' }
 }

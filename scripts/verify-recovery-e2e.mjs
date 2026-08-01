@@ -196,8 +196,53 @@ async function main() {
   check('the page works without JavaScript (has an action form)',
     Object.keys(actionFields(prompt.html)).length > 0)
 
+  /* ---- sign-up dispatches the confirmation email by itself ---- */
+
+  /**
+   * The gap this covers: for one release, sign-up created the account and sent
+   * nothing, so a customer only ever received a confirmation email if they
+   * found the resend button. Production showed it — an account was created and
+   * no request ever reached the provider.
+   */
+  const autoMail = await waitForEmail((m) => m.to === email && /Confirm/i.test(m.subject))
+  check('sign-up alone dispatched a verification email', Boolean(autoMail))
+  check('it links to the verification route',
+    /https?:\/\/[^\s]+\/verify-email\//.test(autoMail?.text ?? ''))
+
+  const autoTokens = await sql(
+    `select count(*)::int n from verification_tokens
+      where user_id=$1 and purpose='email_verification'`, [user.id])
+  check('sign-up issued exactly one verification token — no duplicates',
+    autoTokens[0].n === 1, `${autoTokens[0].n} tokens`)
+
+  const signUpEvents = (await sql(
+    'select event from audit_log where user_id=$1', [user.id])).map((r) => r.event)
+  check('EMAIL_VERIFICATION_REQUESTED audited at sign-up',
+    signUpEvents.includes('EMAIL_VERIFICATION_REQUESTED'))
+  check('no delivery failure was recorded for a working transport',
+    !signUpEvents.includes('EMAIL_SEND_FAILED'))
+
+  /**
+   * The automatic send starts the cooldown, so pressing resend straight away is
+   * refused. This is the throttle behaving correctly, not a regression — and it
+   * is the behaviour a customer will actually meet, since the page is where
+   * they land moments after signing up.
+   */
+  const tooSoon = await submit(customer, '/account/verify-email', {})
+  check('an immediate manual resend is throttled by the automatic send',
+    /wait \d+ second/i.test(tooSoon.html), 'no cooldown message shown')
+
+  // Clear the cooldown so the rest of the suite can exercise resend normally.
+  await sql(`update verification_tokens set created_at = now() - interval '5 minutes'
+              where user_id=$1`, [user.id])
+
   await trackAudit(() => submit(customer, '/account/verify-email', {}))
-  const verifyMail = await waitForEmail((m) => m.to === email && /Confirm/i.test(m.subject))
+  /**
+   * Must be the message from the MANUAL resend, not the automatic one sign-up
+   * already sent — otherwise the token under test is the superseded one.
+   */
+  const verifyMail = await waitForEmail(
+    (m) => m.to === email && /Confirm/i.test(m.subject) && m.sentAt > autoMail.sentAt)
   check('a verification email was produced', Boolean(verifyMail))
   check('it has a plain-text part', Boolean(verifyMail?.text?.length))
   check('it has no remote images', !/<img/i.test(verifyMail?.html ?? ''))
@@ -249,6 +294,33 @@ async function main() {
     !/Confirm my email address/i.test(staleUse.html))
   check('account still unverified after using the stale link',
     (await sql('select email_verified_at from users where id=$1', [user.id]))[0].email_verified_at === null)
+
+  /**
+   * The superseded link says it was REPLACED, not "already used".
+   *
+   * Telling someone with two emails open that they already used a link they
+   * never used is untrue about their own behaviour, and the old copy then sent
+   * them to request a third link — causing the same collision again.
+   */
+  check('the superseded link names the real reason',
+    /A newer confirmation link was requested/i.test(staleUse.html))
+  check('and explains what to do with the older email',
+    /Use the most recent link in your inbox/i.test(staleUse.html) &&
+      /safely delete the older email/i.test(staleUse.html))
+  check('it does NOT claim the link was already used',
+    !/can only be used once/i.test(staleUse.html))
+  check('it offers no way to trigger another email',
+    !/Request a new link/i.test(staleUse.html))
+  check('it reveals no address or account state',
+    !staleUse.html.includes(email) && !/verified|suspended/i.test(
+      (staleUse.html.match(/<main[\s\S]*?<\/main>/) ?? [''])[0]))
+
+  const staleTokensAfter = await sql(
+    `select count(*)::int n from verification_tokens
+      where user_id=$1 and purpose='email_verification'
+        and consumed_at is null and superseded_at is null`, [user.id])
+  check('viewing the superseded link sent no new email and changed no token',
+    staleTokensAfter[0].n === 1, `${staleTokensAfter[0].n} usable tokens`)
 
   /* ---- GET IS INERT: the scanner simulation ---- */
   const vToken2 = tokenFrom(secondMail, '/verify-email')
@@ -355,6 +427,64 @@ async function main() {
   check('an expired verification link is rejected', /expired/i.test(expiredUse.html))
 
   /* ---- throttle ---- */
+  /* ---- sign-up survives an unavailable provider ---- */
+  section('[1b] Sign-up when the email provider is unavailable')
+
+  /**
+   * `resend` with no credentials is refused by the transport selector, so
+   * `sendEmail` returns an error without touching the network. That is the same
+   * code path a real outage takes, reached without breaking anything.
+   *
+   * The account must still exist, the customer must still be signed in, and the
+   * throttle must be handed back — a provider problem cannot be allowed to cost
+   * someone their account or their ability to retry.
+   */
+  const outageProbe = await fetch(`${BASE}/api/test-outage`, { method: 'POST' })
+  if (outageProbe.status !== 200) {
+    console.log('    skipped: /api/test-outage unavailable on this server')
+  } else {
+    const outageEmail = `outage.${stamp}@example.invalid`
+    const outageDevice = device('outage')
+    const signUp = await trackAudit(() =>
+      submit(outageDevice, '/sign-up', {
+        name: 'Outage Tester', email: outageEmail, password: PASSWORD, dateOfBirth: '1990-01-01',
+      }))
+
+    const [oUser] = await sql('select id from users where email=$1', [outageEmail])
+    check('the account is still created when delivery fails', Boolean(oUser))
+    if (oUser) CREATED_USERS.add(oUser.id)
+
+    check('sign-up still redirects to the account page',
+      (signUp.headers.get('location') ?? '').startsWith('/account'),
+      `location ${signUp.headers.get('location')}`)
+    check('the customer is still signed in',
+      [...outageDevice.cookies.keys()].some((k) => k.includes('session')))
+
+    // after() runs post-response; give it a moment to record the failure.
+    await new Promise((r) => setTimeout(r, 3000))
+
+    const oEvents = (await sql(
+      'select event, summary from audit_log where user_id=$1', [oUser.id]))
+    for (const row of await sql('select id from audit_log where user_id=$1', [oUser.id])) {
+      CREATED_AUDIT.add(row.id)
+    }
+    const oNames = oEvents.map((e) => e.event)
+    check('EMAIL_SEND_FAILED is audited', oNames.includes('EMAIL_SEND_FAILED'))
+    const oFail = oEvents.find((e) => e.event === 'EMAIL_SEND_FAILED')
+    check('the failure record names no address', !oFail?.summary?.includes('@'))
+    check('the failure record carries no link', !/https?:\/\//.test(oFail?.summary ?? ''))
+
+    check('the issued token was discarded',
+      (await sql('select count(*)::int n from verification_tokens where user_id=$1',
+        [oUser.id]))[0].n === 0)
+
+    const retry = await submit(outageDevice, '/account/verify-email', {})
+    check('throttle capacity is restored — retry is not blocked',
+      !/wait \d+ second/i.test(retry.html))
+
+    await fetch(`${BASE}/api/test-outage`, { method: 'DELETE' })
+  }
+
   section('[2] Send throttling')
 
   const throttleEmail = `throttle.${stamp}@example.invalid`
