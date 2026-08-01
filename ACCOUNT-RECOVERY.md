@@ -33,7 +33,33 @@ riskier than leaving them.
 
 ---
 
-## 2. GET is inert — POST changes state
+## 2. When email is dispatched
+
+| Trigger | Sends |
+| --- | --- |
+| Sign-up completes | Verification email, automatically, from  |
+|  resend button | Verification email, manual fallback |
+|  submit | Reset email, from  |
+
+Sign-up dispatches after the response, so a slow or unreachable provider cannot
+delay account creation and cannot fail it. Someone who has just passed the age
+gate and had a password hashed ends up with an account whatever the provider is
+doing; the email is a follow-up, not a precondition.
+
+The automatic send starts the 60-second cooldown, so pressing resend immediately
+is refused — correct, and the behaviour a customer actually meets, since
+ is one click from where they land. If delivery fails the
+token is discarded, which hands the cooldown and the daily budget straight back.
+
+ lives in  behind , not in
+a  module. It takes a userId and an address; exported as a Server
+Action it would let any caller mail a verification or reset link for an arbitrary
+account to an arbitrary address — a phishing primitive wearing our sending
+domain. Same boundary as .
+
+---
+
+## 3. GET is inert — POST changes state
 
 **No security-sensitive state change happens on a GET.** A URL in an email is
 opened by things that are not the customer: corporate mail security following
