@@ -128,6 +128,8 @@ export async function resendVerificationAction(
 export type VerificationView =
   | { status: 'ready'; token: string }
   | { status: 'already_verified' }
+  /** Replaced by a newer link, not used. See the note in `inspectVerificationToken`. */
+  | { status: 'superseded' }
   | { status: 'invalid' }
   | { status: 'expired' }
 
@@ -159,6 +161,22 @@ export async function inspectVerificationToken(token: string): Promise<Verificat
       if (row?.verifiedAt) return { status: 'already_verified' }
     }
   }
+
+  /**
+   * Replaced, not used — and worth saying so.
+   *
+   * Someone with two confirmation emails open who clicks the older one was
+   * previously told "confirmation links can only be used once", which is untrue
+   * about their own behaviour and sends them to request a third link, causing
+   * the same thing again. `superseded_at` already distinguishes "we replaced
+   * this" from "the customer spent it"; this surfaces that distinction instead
+   * of flattening it into a generic failure.
+   *
+   * It reveals nothing: possession of the token is already assumed by whoever
+   * opened the link, and the reply names no address, no account state, and
+   * offers no form. Nothing is sent, and the token stays unusable.
+   */
+  if (result.reason === 'superseded') return { status: 'superseded' }
 
   return { status: result.reason === 'expired' ? 'expired' : 'invalid' }
 }

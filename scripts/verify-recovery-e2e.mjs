@@ -295,6 +295,33 @@ async function main() {
   check('account still unverified after using the stale link',
     (await sql('select email_verified_at from users where id=$1', [user.id]))[0].email_verified_at === null)
 
+  /**
+   * The superseded link says it was REPLACED, not "already used".
+   *
+   * Telling someone with two emails open that they already used a link they
+   * never used is untrue about their own behaviour, and the old copy then sent
+   * them to request a third link — causing the same collision again.
+   */
+  check('the superseded link names the real reason',
+    /A newer confirmation link was requested/i.test(staleUse.html))
+  check('and explains what to do with the older email',
+    /Use the most recent link in your inbox/i.test(staleUse.html) &&
+      /safely delete the older email/i.test(staleUse.html))
+  check('it does NOT claim the link was already used',
+    !/can only be used once/i.test(staleUse.html))
+  check('it offers no way to trigger another email',
+    !/Request a new link/i.test(staleUse.html))
+  check('it reveals no address or account state',
+    !staleUse.html.includes(email) && !/verified|suspended/i.test(
+      (staleUse.html.match(/<main[\s\S]*?<\/main>/) ?? [''])[0]))
+
+  const staleTokensAfter = await sql(
+    `select count(*)::int n from verification_tokens
+      where user_id=$1 and purpose='email_verification'
+        and consumed_at is null and superseded_at is null`, [user.id])
+  check('viewing the superseded link sent no new email and changed no token',
+    staleTokensAfter[0].n === 1, `${staleTokensAfter[0].n} usable tokens`)
+
   /* ---- GET IS INERT: the scanner simulation ---- */
   const vToken2 = tokenFrom(secondMail, '/verify-email')
   const vPath = `/verify-email/${encodeURIComponent(vToken2)}`
