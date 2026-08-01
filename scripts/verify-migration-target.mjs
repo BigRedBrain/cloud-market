@@ -47,6 +47,41 @@ if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocke
 
 const BASE = process.argv[2] ?? 'https://cloud-market-ten.vercel.app'
 
+/* ---------------------------------------------------------- expectations ---
+ *
+ * Supplied per rollout rather than baked in, so this gate never reports NO-GO
+ * for a reason that stopped being true two phases ago.
+ *
+ *   --expect-migrations=7               journal length BEFORE this migration
+ *   --require-table=carts,cart_lines    must already exist
+ *   --forbid-table=foo                  must NOT yet exist
+ *   --forbid-column=verification_tokens.superseded_at
+ *   --forbid-enum=audit_event:EMAIL_VERIFIED
+ *
+ * For migration 0007:
+ *
+ *   node scripts/verify-migration-target.mjs <url> \
+ *     --expect-migrations=7 \
+ *     --require-table=carts,cart_lines \
+ *     --forbid-column=verification_tokens.superseded_at \
+ *     --forbid-enum=audit_event:EMAIL_VERIFIED
+ */
+const flag = (name) => {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`))
+  return hit ? hit.slice(name.length + 3) : null
+}
+const list = (name) => {
+  const raw = flag(name)
+  return raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : []
+}
+
+const rawExpect = flag('expect-migrations')
+const EXPECT_MIGRATIONS = rawExpect === null ? null : Number(rawExpect)
+const REQUIRE_TABLES = list('require-table')
+const FORBID_TABLES = list('forbid-table')
+const FORBID_COLUMNS = list('forbid-column')
+const FORBID_ENUM = list('forbid-enum')
+
 /* ---- replicate drizzle.config.ts exactly ---------------------------------- */
 loadEnv({ path: '.env.local', quiet: true })
 loadEnv({ path: '.env', quiet: true })
@@ -156,21 +191,67 @@ async function main() {
     note(`cart_lines:         ${tables.includes('cart_lines') ? 'present' : 'absent'}`)
     note(`CART_MERGED:        ${cartMerged ? 'present' : 'absent'}`)
 
+    /**
+     * The catalog check is the one invariant that does not move: production is
+     * unseeded, the development branch is not, so a populated catalog means the
+     * wrong target regardless of which migration is being applied.
+     */
     if (products > 0 || variants > 0) {
       problems.push(
         `The target has a populated catalog (${products} products, ${variants} variants). ` +
-          'Production\'s catalog is empty; the seeded development branch is not. ' +
+          "Production's catalog is empty; the seeded development branch is not. " +
           'This looks like development.',
       )
     }
-    if (migrations !== 5) {
+
+    /**
+     * Everything else is supplied per rollout.
+     *
+     * This section used to hard-code "expect 5 journal entries, expect no cart
+     * tables" — true for the Phase 3 rollout and false the moment it landed. A
+     * gate that reports NO-GO for a stale reason teaches its operator to read
+     * past it, which is worse than having no gate. Expectations now come from
+     * the caller, so the script asserts what THIS rollout actually requires.
+     */
+    if (EXPECT_MIGRATIONS !== null && migrations !== EXPECT_MIGRATIONS) {
       problems.push(
-        `Expected 5 journal entries (0000-0004) before this rollout; found ${migrations}. ` +
+        `Expected ${EXPECT_MIGRATIONS} journal entries before this rollout; found ${migrations}. ` +
           'Do not migrate until this is explained.',
       )
     }
-    if (tables.includes('carts') || tables.includes('cart_lines') || cartMerged) {
-      problems.push('Cart objects already exist on the target. 0005/0006 may already be applied.')
+
+    for (const name of REQUIRE_TABLES) {
+      if (!tables.includes(name)) {
+        problems.push(`Required table "${name}" is missing — the target is behind where it should be.`)
+      }
+    }
+    for (const name of FORBID_TABLES) {
+      if (tables.includes(name)) {
+        problems.push(`Table "${name}" already exists — this migration may already be applied.`)
+      }
+    }
+
+    for (const spec of FORBID_COLUMNS) {
+      const [table, column] = spec.split('.')
+      const [{ present }] = await q(
+        `select count(*)::int > 0 as present from information_schema.columns
+          where table_schema='public' and table_name='${table}' and column_name='${column}'`)
+      note(`${spec}: ${present ? 'present' : 'absent'}`)
+      if (present) {
+        problems.push(`Column "${spec}" already exists — this migration may already be applied.`)
+      }
+    }
+
+    for (const spec of FORBID_ENUM) {
+      const [type, label] = spec.split(':')
+      const [{ present }] = await q(
+        `select count(*)::int > 0 as present from pg_enum e
+           join pg_type t on t.oid = e.enumtypid
+          where t.typname='${type}' and e.enumlabel='${label}'`)
+      note(`${spec}: ${present ? 'present' : 'absent'}`)
+      if (present) {
+        problems.push(`Enum value "${spec}" already exists — this migration may already be applied.`)
+      }
     }
   } catch (error) {
     problems.push(`Could not read the target: ${error.message}`)

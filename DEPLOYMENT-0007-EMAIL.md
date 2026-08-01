@@ -157,9 +157,12 @@ counts.** Read the reasons; the ones that matter are that the resolved target is
 the same Neon branch as the pooled string and that the pooled string matches
 `/api/health`. Both must hold.
 
-*(Improving that script to take an expected-journal-length argument is a small
-follow-up, noted rather than done, because changing a safety gate immediately
-before using it is how safety gates stop being trustworthy.)*
+The gate is now parameterised, so it asserts what THIS rollout requires rather
+than what Phase 3 required. For 0007 pass:
+
+    --expect-migrations=7 --require-table=carts,cart_lines
+    --forbid-column=verification_tokens.superseded_at
+    --forbid-enum=audit_event:EMAIL_VERIFIED
 
 **Gate:** target confirmed as production/main; journal at 7.
 
