@@ -23,7 +23,8 @@
     "test:prod:cms": "node scripts/verify-cms-production.mjs",
     "db:inspect": "node scripts/db-inspect.mjs",
     "test:recovery": "node scripts/verify-recovery-e2e.mjs",
-    "test:email": "tsx --conditions=react-server scripts/verify-email-config.ts"
+    "test:email": "tsx --conditions=react-server scripts/verify-email-config.ts",
+    "test:cred": "node scripts/verify-dev-credential.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
