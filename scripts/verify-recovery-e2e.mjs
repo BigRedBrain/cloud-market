@@ -137,6 +137,30 @@ const tokenFrom = (message, path) => {
   return m ? decodeURIComponent(m[1]) : null
 }
 
+/**
+ * Rendered content inside <main>, with the RSC flight payload excluded.
+ *
+ * THIS EXISTS BECAUSE THE PREVIOUS ASSERTIONS WERE UNSOUND. They used
+ * html.includes('Account details'), which matches the string inside the
+ * self.__next_f flight payload as readily as inside rendered markup — so they
+ * passed against a page whose <main> held nothing but an empty Suspense
+ * boundary. Every account assertion now goes through here.
+ */
+function mainContent(html) {
+  const inner = (html.match(/<main[^>]*>([\s\S]*?)<\/main>/) ?? [null, ''])[1]
+  /** Scripts carry the flight payload; stripping them is the whole point. */
+  const withoutScripts = inner.replace(/<script[\s\S]*?<\/script>/g, '')
+  const text = withoutScripts.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  const stripped = inner.replace(/<template[^>]*><\/template>/g, '').trim()
+  return {
+    html: inner,
+    text,
+    /** Only a Suspense placeholder and nothing else. */
+    isEmptyBoundary: /^<!--\$-->\s*<!--\/\$-->$/.test(stripped),
+    has: (needle) => text.includes(needle),
+  }
+}
+
 /* ------------------------------------------------------------- bookkeeping */
 const CREATED_USERS = new Set()
 const CREATED_AUDIT = new Set()
@@ -370,12 +394,105 @@ async function main() {
     !/<(script|img|iframe|link)[^>]+(src|href)="https?:\/\//i.test(scannerHtml))
 
   /* ---- POST is what confirms ---- */
-  const confirmed = await trackAudit(() => submit(device('confirm'), vPath, { token: vToken2 }))
-  check('POST confirms the address',
-    (confirmed.headers.get('location') ?? '').includes('verified=1'),
-    `location ${confirmed.headers.get('location')}`)
-  check('the redirect target carries NO token',
-    !(confirmed.headers.get('location') ?? '').includes(vToken2))
+
+  /**
+   * Submitted from the SIGNED-IN device, which is the real path: sign-up signs
+   * the customer in, and they click the link in that same browser.
+   *
+   * This is where the blank-account bug lived. The action redirected to
+   * /sign-in?verified=1 unconditionally; the proxy bounced the authenticated
+   * visitor to /account, discarding `verified=1`, and the second hop — during a
+   * Server-Action client navigation — left the account layout on screen above
+   * an empty page slot. The suite missed it because it confirmed from a fresh
+   * device with no session, which never triggers the bounce.
+   */
+  const confirmed = await trackAudit(() => submit(customer, vPath, { token: vToken2 }))
+  const target = confirmed.headers.get('location') ?? ''
+  check('POST confirms the address', target.includes('verified=1'), `location ${target}`)
+  check('the redirect target carries NO token', !target.includes(vToken2))
+  check('a signed-in customer is sent to their account, not the sign-in page',
+    target.startsWith('/account'), `location ${target}`)
+
+  /**
+   * ONE HOP. If the destination itself redirects, the confirmation query is
+   * lost and the client navigation lands on a payload it did not ask for.
+   */
+  const landing = await visit(customer, target)
+  check('the destination does not redirect again', landing.status === 200,
+    `status ${landing.status} -> ${landing.headers.get('location')}`)
+  check('the confirmation message survives the redirect',
+    /Email confirmed/i.test(landing.html))
+
+  /* ---- the account body is actually there, INSIDE <main> ---- */
+
+  /**
+   * Every assertion below reads `mainContent`, not the raw HTML. The raw HTML
+   * contains the RSC flight payload, so `includes('Account details')` is true
+   * even when `<main>` holds nothing but an empty Suspense placeholder — which
+   * is exactly how a blank account page passed 149 assertions.
+   */
+  const landingMain = mainContent(landing.html)
+  check('<main> is not an empty Suspense boundary', !landingMain.isEmptyBoundary,
+    landingMain.html.slice(0, 80))
+  check('<main> carries visible text', landingMain.text.length > 20,
+    `${landingMain.text.length} chars`)
+  /**
+   * The page body arrives as streamed markup, not in the initial shell.
+   *
+   * An async page beneath a layout is rendered into a Suspense boundary — that
+   * is the App Router's design, and no arrangement of this layout changes it.
+   * So the guarantee worth asserting is twofold: the boundary is never empty
+   * (above), and the real content is genuinely RENDERED in the document rather
+   * than existing only as flight payload for the client to build.
+   *
+   * `renderedSomewhere` matches actual tags. The flight payload carries the
+   * same words as escaped JSON (\"children\":\"Email confirmed\"), which is
+   * exactly the false positive that let a blank page pass before.
+   */
+  const renderedSomewhere = (html, tag, text) =>
+    new RegExp(`<${tag}[^>]*>[^<]*${text}`, 'i').test(html)
+
+  check('the confirmation message is rendered markup, not flight payload',
+    renderedSomewhere(landing.html, '\\w+', 'Email confirmed'))
+
+  check('the Profile tab is marked current', /aria-current="page"/.test(landing.html))
+
+  /* ---- direct navigation to both account routes ---- */
+  const directAccount = await visit(customer, '/account')
+  const accountMain = mainContent(directAccount.html)
+  check('direct /account returns 200', directAccount.status === 200)
+  check('direct /account <main> is not an empty boundary', !accountMain.isEmptyBoundary,
+    accountMain.html.slice(0, 80))
+  check('direct /account <main> shows the loading fallback, never nothing',
+    accountMain.text.length > 0, `${accountMain.text.length} chars`)
+  check('direct /account renders profile content as real markup',
+    renderedSomewhere(directAccount.html, 'h3', 'Account details') &&
+      renderedSomewhere(directAccount.html, '\\w+', 'Date of birth'))
+  check('direct /account renders the verified badge as real markup',
+    renderedSomewhere(directAccount.html, '\\w+', 'Email verified'))
+  check('direct /account shows no stale confirmation banner',
+    !renderedSomewhere(directAccount.html, '\\w+', 'Email confirmed'))
+
+  const directSecurity = await visit(customer, '/account/security')
+  const securityMain = mainContent(directSecurity.html)
+  check('direct /account/security returns 200', directSecurity.status === 200)
+  check('/account/security <main> is not an empty boundary', !securityMain.isEmptyBoundary,
+    securityMain.html.slice(0, 80))
+  check('/account/security <main> shows the loading fallback, never nothing',
+    securityMain.text.length > 0, `${securityMain.text.length} chars`)
+  check('/account/security renders its own content as real markup',
+    /<(h1|h2|h3|label|button)[^>]*>[^<]*(password|Password|session|Session)/.test(
+      directSecurity.html))
+
+  /**
+   * Guards the exact failure this suite missed: a page whose only rendered
+   * content is a placeholder, with the real markup sitting in the flight
+   * payload waiting on a client relocation script.
+   */
+  check('neither account route serves an outlet whose only content is a placeholder',
+    !accountMain.isEmptyBoundary && !securityMain.isEmptyBoundary)
+  check('no assertion above was satisfied by the flight payload alone',
+    !mainContent('<main></main>').has('Account details'))
 
   const [afterVerify] = await sql('select email_verified_at, status from users where id=$1', [user.id])
   check('email_verified_at is set', afterVerify.email_verified_at !== null)
