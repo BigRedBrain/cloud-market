@@ -1,13 +1,14 @@
 'use server'
 
 import { and, eq, isNull } from 'drizzle-orm'
+import type { Route } from 'next'
 import { headers } from 'next/headers'
 import { after } from 'next/server'
 import { redirect } from 'next/navigation'
 
 import { recordAuditEvent } from '@/lib/auth/audit'
 import { issueAndSend } from '@/lib/auth/email-dispatch'
-import { requireUser } from '@/lib/auth/dal'
+import { getCurrentUser, requireUser } from '@/lib/auth/dal'
 import { hashPassword } from '@/lib/auth/crypto'
 
 import {
@@ -29,6 +30,7 @@ import {
   completeResetSchema,
   confirmEmailSchema,
   requestResetSchema,
+  withQueryFlag,
 } from '@/lib/auth/validation'
 
 /**
@@ -254,8 +256,36 @@ export async function confirmEmailAction(
     entityId: verifiedUserId,
   })
 
-  /** A clean URL with no token in it. See ACCOUNT-RECOVERY.md §3. */
-  redirect('/sign-in?verified=1')
+  /**
+   * Send them somewhere they can actually use.
+   *
+   * This redirected to `/sign-in?verified=1` unconditionally. Sign-up signs the
+   * customer in, so the overwhelmingly common case was an authenticated visitor
+   * being sent to the sign-in page — which the proxy then bounced to /account,
+   * DISCARDING `verified=1` on the way. The customer confirmed their email and
+   * got no acknowledgement at all.
+   *
+   * The second hop also broke the render. A Server Action redirect is a
+   * client-side navigation; routing it through a proxy redirect meant the
+   * router asked for /sign-in and was handed /account's payload, leaving the
+   * account layout on screen above an empty page slot.
+   *
+   * The destination now matches the caller: their own account when the session
+   * belongs to the account just verified, the sign-in page otherwise — a link
+   * opened on a phone with no session, or while signed in as someone else.
+   * Either way it is ONE hop, and the confirmation survives it.
+   *
+   * The reset flow keeps `/sign-in?reset=done` and is unaffected: it revokes
+   * every session first, so there is no cookie for the proxy to bounce.
+   */
+  const viewer = await getCurrentUser()
+  const destination: Route =
+    viewer?.id === verifiedUserId
+      ? withQueryFlag('/account', 'verified=1')
+      : withQueryFlag('/sign-in', 'verified=1')
+
+  /** A clean URL with no token in it. See ACCOUNT-RECOVERY.md §7. */
+  redirect(destination)
 }
 
 /* -------------------------------------------------------------------------- */

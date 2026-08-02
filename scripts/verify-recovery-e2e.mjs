@@ -370,12 +370,60 @@ async function main() {
     !/<(script|img|iframe|link)[^>]+(src|href)="https?:\/\//i.test(scannerHtml))
 
   /* ---- POST is what confirms ---- */
-  const confirmed = await trackAudit(() => submit(device('confirm'), vPath, { token: vToken2 }))
-  check('POST confirms the address',
-    (confirmed.headers.get('location') ?? '').includes('verified=1'),
-    `location ${confirmed.headers.get('location')}`)
-  check('the redirect target carries NO token',
-    !(confirmed.headers.get('location') ?? '').includes(vToken2))
+
+  /**
+   * Submitted from the SIGNED-IN device, which is the real path: sign-up signs
+   * the customer in, and they click the link in that same browser.
+   *
+   * This is where the blank-account bug lived. The action redirected to
+   * /sign-in?verified=1 unconditionally; the proxy bounced the authenticated
+   * visitor to /account, discarding `verified=1`, and the second hop — during a
+   * Server-Action client navigation — left the account layout on screen above
+   * an empty page slot. The suite missed it because it confirmed from a fresh
+   * device with no session, which never triggers the bounce.
+   */
+  const confirmed = await trackAudit(() => submit(customer, vPath, { token: vToken2 }))
+  const target = confirmed.headers.get('location') ?? ''
+  check('POST confirms the address', target.includes('verified=1'), `location ${target}`)
+  check('the redirect target carries NO token', !target.includes(vToken2))
+  check('a signed-in customer is sent to their account, not the sign-in page',
+    target.startsWith('/account'), `location ${target}`)
+
+  /**
+   * ONE HOP. If the destination itself redirects, the confirmation query is
+   * lost and the client navigation lands on a payload it did not ask for.
+   */
+  const landing = await visit(customer, target)
+  check('the destination does not redirect again', landing.status === 200,
+    `status ${landing.status} -> ${landing.headers.get('location')}`)
+  check('the confirmation message survives the redirect',
+    /Email confirmed/i.test(landing.html))
+
+  /* ---- the account body is actually there ---- */
+  check('the account page renders its profile content',
+    landing.html.includes('Account details') && landing.html.includes('Date of birth'))
+  check('the profile form is present', /name="name"/.test(landing.html))
+  check('the body is not empty below the layout',
+    landing.html.length > 5000, `${landing.html.length} bytes`)
+  check('the Profile tab is marked current',
+    /aria-current="page"[^>]*>\s*Profile|Profile[^<]*<\/[^>]+>\s*<\/a>/i.test(landing.html) ||
+      /aria-current="page"/.test(landing.html))
+  check('the account shows the verified badge now',
+    /Email verified/i.test(landing.html))
+
+  /* ---- direct navigation to both account routes ---- */
+  const directAccount = await visit(customer, '/account')
+  check('direct /account returns 200', directAccount.status === 200)
+  check('direct /account renders profile content',
+    directAccount.html.includes('Account details'))
+  check('direct /account shows no stale confirmation banner',
+    !/Email confirmed/i.test(directAccount.html))
+
+  const directSecurity = await visit(customer, '/account/security')
+  check('direct /account/security returns 200', directSecurity.status === 200)
+  check('/account/security renders its own content',
+    /current password|Change password|Sessions/i.test(directSecurity.html),
+    'security body missing')
 
   const [afterVerify] = await sql('select email_verified_at, status from users where id=$1', [user.id])
   check('email_verified_at is set', afterVerify.email_verified_at !== null)

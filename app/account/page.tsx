@@ -22,8 +22,18 @@ export default async function AccountPage({
   // Authoritative check, close to the data — not in the layout.
   const user = await requireUser('/account')
 
+  const params = await searchParams
+
   /** Sign-in lands here by default, so the bag notice has to be shown here too. */
-  const bagUpdatedOnSignIn = (await searchParams).bag === 'updated'
+  const bagUpdatedOnSignIn = params.bag === 'updated'
+
+  /**
+   * Set by `confirmEmailAction` when the session belongs to the account just
+   * verified. It is the only acknowledgement the customer gets, so it has to
+   * land somewhere they will actually be — previously it was attached to
+   * /sign-in, which the proxy bounced away from, taking the message with it.
+   */
+  const justVerified = params.verified === '1'
 
   const [details] = await db
     .select({ phone: schema.users.phone, dateOfBirth: schema.users.dateOfBirth })
@@ -48,6 +58,13 @@ export default async function AccountPage({
           )}
         </div>
       </div>
+
+      {justVerified && (
+        <Alert tone="success" title="Email confirmed">
+          Your email address is confirmed. You&apos;re all set to order when
+          checkout opens.
+        </Alert>
+      )}
 
       {bagUpdatedOnSignIn && (
         <Alert tone="warning" title="Your bag was updated">

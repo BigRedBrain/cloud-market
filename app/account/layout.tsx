@@ -1,5 +1,6 @@
 import Link from 'next/link'
 
+import { AccountTabs } from '@/components/account/account-tabs'
 import { Logo } from '@/components/brand/logo'
 import { Button } from '@/components/ui/button'
 import { signOutAction } from '@/lib/auth/actions'
@@ -45,21 +46,7 @@ export default async function AccountLayout({
 
       <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-10 sm:px-6">
         <nav aria-label="Account" className="mb-8 border-b-2 border-ink">
-          <ul className="flex gap-1">
-            {([
-              { href: '/account', label: 'Profile' },
-              { href: '/account/security', label: 'Security' },
-            ] as const).map((tab) => (
-              <li key={tab.href}>
-                <Link
-                  href={tab.href}
-                  className="inline-flex h-11 items-center rounded-t-md px-4 text-sm font-semibold text-white transition-colors hover:bg-white/10"
-                >
-                  {tab.label}
-                </Link>
-              </li>
-            ))}
-          </ul>
+          <AccountTabs />
         </nav>
 
         <main>{children}</main>
