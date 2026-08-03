@@ -1,3 +1,4 @@
+import { AccountShell } from '@/components/account/account-shell'
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
@@ -31,31 +32,33 @@ export default async function VerifyEmailPage() {
   if (user.emailVerifiedAt) redirect('/account')
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="font-display text-3xl tracking-tight text-white uppercase">
-          Confirm your email
-        </h1>
-        <p className="text-sm text-smoke">
-          We&apos;ll send a confirmation link to{' '}
-          <span className="font-semibold text-white">{user.email}</span>. The link
-          works for 24 hours. You can keep browsing and building a bag in the
-          meantime — you&apos;ll need a confirmed address before your first order.
+    <AccountShell>
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-2">
+          <h1 className="font-display text-3xl tracking-tight text-white uppercase">
+            Confirm your email
+          </h1>
+          <p className="text-sm text-smoke">
+            We&apos;ll send a confirmation link to{' '}
+            <span className="font-semibold text-white">{user.email}</span>. The link
+            works for 24 hours. You can keep browsing and building a bag in the
+            meantime — you&apos;ll need a confirmed address before your first order.
+          </p>
+        </div>
+
+        <Card className="p-6">
+          <ResendVerificationForm />
+        </Card>
+
+        <p className="text-center text-sm text-smoke">
+          <Link
+            href="/account"
+            className="font-semibold text-white underline underline-offset-4 hover:text-ember"
+          >
+            Back to your account
+          </Link>
         </p>
       </div>
-
-      <Card className="p-6">
-        <ResendVerificationForm />
-      </Card>
-
-      <p className="text-center text-sm text-smoke">
-        <Link
-          href="/account"
-          className="font-semibold text-white underline underline-offset-4 hover:text-ember"
-        >
-          Back to your account
-        </Link>
-      </p>
-    </div>
+    </AccountShell>
   )
 }

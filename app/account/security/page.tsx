@@ -1,3 +1,4 @@
+import { AccountShell } from '@/components/account/account-shell'
 import type { Metadata } from 'next'
 
 import { ChangePasswordForm } from '@/components/auth/auth-forms'
@@ -29,37 +30,39 @@ export default async function SecurityPage() {
   }))
 
   return (
-    <div className="flex flex-col gap-8">
-      <h1 className="font-display text-3xl tracking-tight text-white uppercase">
-        Security
-      </h1>
+    <AccountShell>
+      <div className="flex flex-col gap-8">
+        <h1 className="font-display text-3xl tracking-tight text-white uppercase">
+          Security
+        </h1>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Change password</CardTitle>
-          <CardDescription>
-            Changing your password signs out every other device.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ChangePasswordForm />
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Change password</CardTitle>
+            <CardDescription>
+              Changing your password signs out every other device.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ChangePasswordForm />
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Where you&apos;re signed in</CardTitle>
-          <CardDescription>
-            {rows.length === 1
-              ? 'This is the only device signed in.'
-              : `${rows.length} devices are signed in.`}{' '}
-            Sign out anything you don&apos;t recognise.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <SessionList sessions={rows} currentSessionId={session.sessionId} />
-        </CardContent>
-      </Card>
-    </div>
+        <Card>
+          <CardHeader>
+            <CardTitle>Where you&apos;re signed in</CardTitle>
+            <CardDescription>
+              {rows.length === 1
+                ? 'This is the only device signed in.'
+                : `${rows.length} devices are signed in.`}{' '}
+              Sign out anything you don&apos;t recognise.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <SessionList sessions={rows} currentSessionId={session.sessionId} />
+          </CardContent>
+        </Card>
+      </div>
+    </AccountShell>
   )
 }
