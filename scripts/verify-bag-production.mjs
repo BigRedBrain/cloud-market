@@ -64,15 +64,8 @@ if (!ALLOW) {
   console.error('Refusing to run without --allow-production.')
   process.exit(1)
 }
-if (!HTTP_ONLY && !process.env.DATABASE_URL) {
-  console.error(
-    'DATABASE_URL is required and is NOT read from .env.local.\n' +
-      '  PowerShell:  $env:DATABASE_URL = "<pooled production string>"\n' +
-      '  bash:        export DATABASE_URL="<pooled production string>"\n' +
-      'Use the POOLED string here. The unpooled one is only for drizzle-kit migrate.',
-  )
-  process.exit(1)
-}
+/** `--http-only` needs no credential at all, so it skips the check entirely. */
+if (!HTTP_ONLY) requireConnectionString(process.env.DATABASE_URL)
 
 /**
  * Created only after the target is confirmed. Constructing a Pool up front
@@ -95,6 +88,29 @@ const sql = (t, p) => pool.query(t, p).then((r) => r.rows)
  *
  * Both are printed. Only hostFp is ever compared to the deployed app.
  */
+/**
+ * Validate the SHAPE before fingerprinting it. `new URL()` on a placeholder
+ * throws ERR_INVALID_URL from deep inside Node, which reads like a bug in this
+ * script rather than an unset variable. This is the third time a configuration
+ * mistake has surfaced as a stack trace; it should surface as a sentence.
+ */
+function requireConnectionString(value, name = 'DATABASE_URL') {
+  if (!value) {
+    console.error(`${name} is not set.\n` +
+      `  PowerShell:  $env:${name} = "postgresql://…"\n` +
+      `  bash:        export ${name}="postgresql://…"`)
+    process.exit(1)
+  }
+  if (!/^postgres(ql)?:\/\//.test(value)) {
+    console.error(`${name} does not look like a connection string.\n` +
+      `  It currently starts with: ${value.slice(0, 24)}…\n` +
+      `  Expected something beginning postgresql:// — if you copied the command\n` +
+      `  from the docs, replace the placeholder with the real value.`)
+    process.exit(1)
+  }
+  return value
+}
+
 const hostFp = (u) =>
   createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)
 const endpointFp = (u) =>

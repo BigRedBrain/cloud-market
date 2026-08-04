@@ -41,10 +41,29 @@ if (!ALLOW || !MODE) {
   console.error('Usage: node scripts/verify-recovery-production.mjs <url> --allow-production <schema|failclosed|flow|cleanup>')
   process.exit(1)
 }
-if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is required and is NOT read from .env.local.\n' +
-    '  PowerShell:  $env:DATABASE_URL = "<production POOLED string>"')
-  process.exit(1)
+requireConnectionString(process.env.DATABASE_URL)
+
+/**
+ * Validate the SHAPE before fingerprinting it. `new URL()` on a placeholder
+ * throws ERR_INVALID_URL from deep inside Node, which reads like a bug in this
+ * script rather than an unset variable. This is the third time a configuration
+ * mistake has surfaced as a stack trace; it should surface as a sentence.
+ */
+function requireConnectionString(value, name = 'DATABASE_URL') {
+  if (!value) {
+    console.error(`${name} is not set.\n` +
+      `  PowerShell:  $env:${name} = "postgresql://…"\n` +
+      `  bash:        export ${name}="postgresql://…"`)
+    process.exit(1)
+  }
+  if (!/^postgres(ql)?:\/\//.test(value)) {
+    console.error(`${name} does not look like a connection string.\n` +
+      `  It currently starts with: ${value.slice(0, 24)}…\n` +
+      `  Expected something beginning postgresql:// — if you copied the command\n` +
+      `  from the docs, replace the placeholder with the real value.`)
+    process.exit(1)
+  }
+  return value
 }
 
 const hostFp = (u) => createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)

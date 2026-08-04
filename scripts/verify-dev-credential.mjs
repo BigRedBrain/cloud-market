@@ -30,6 +30,29 @@ loadEnv({ path: '.env.local', quiet: true })
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
 const h12 = (value) => createHash('sha256').update(value).digest('hex').slice(0, 12)
+/**
+ * Validate the SHAPE before fingerprinting it. `new URL()` on a placeholder
+ * throws ERR_INVALID_URL from deep inside Node, which reads like a bug in this
+ * script rather than an unset variable. This is the third time a configuration
+ * mistake has surfaced as a stack trace; it should surface as a sentence.
+ */
+function requireConnectionString(value, name = 'DATABASE_URL') {
+  if (!value) {
+    console.error(`${name} is not set.\n` +
+      `  PowerShell:  $env:${name} = "postgresql://…"\n` +
+      `  bash:        export ${name}="postgresql://…"`)
+    process.exit(1)
+  }
+  if (!/^postgres(ql)?:\/\//.test(value)) {
+    console.error(`${name} does not look like a connection string.\n` +
+      `  It currently starts with: ${value.slice(0, 24)}…\n` +
+      `  Expected something beginning postgresql:// — if you copied the command\n` +
+      `  from the docs, replace the placeholder with the real value.`)
+    process.exit(1)
+  }
+  return value
+}
+
 const hostFp = (url) => h12(new URL(url).hostname)
 const endpointFp = (url) => h12(new URL(url).hostname.split('.')[0].replace('-pooler', ''))
 const secretFp = (url) => h12(new URL(url).password)
@@ -82,11 +105,8 @@ async function main() {
   const pooled = process.env.DATABASE_URL
   const direct = process.env.DATABASE_URL_UNPOOLED
 
-  if (!pooled || !direct) {
-    console.error('DATABASE_URL and DATABASE_URL_UNPOOLED must both be set in .env.local.')
-    process.exitCode = 1
-    return
-  }
+  requireConnectionString(pooled, 'DATABASE_URL')
+  requireConnectionString(direct, 'DATABASE_URL_UNPOOLED')
 
   console.log('[1] Identity of the configured strings')
   console.log(`  pooled   host ${hostFp(pooled)}  endpoint ${endpointFp(pooled)}  secret ${secretFp(pooled)}`)
