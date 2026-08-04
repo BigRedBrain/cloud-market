@@ -33,8 +33,14 @@ if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL is required.')
   process.exit(1)
 }
-if (fp(process.env.DATABASE_URL) === PRODUCTION_FP) {
-  console.error('REFUSING: this is production.')
+/**
+ * Production requires an explicit opt-in, because this suite SIGNS UP — it
+ * writes a real user, session and audit rows. Everything it creates is removed
+ * by exact id in the finally block, and the run reports whether that succeeded.
+ */
+const ALLOW_PRODUCTION = process.argv.includes('--allow-production')
+if (fp(process.env.DATABASE_URL) === PRODUCTION_FP && !ALLOW_PRODUCTION) {
+  console.error('REFUSING: this is production. Pass --allow-production if that is intended.')
   process.exit(1)
 }
 
@@ -238,6 +244,14 @@ async function main() {
     }
     const leftover = await sql('select count(*)::int n from users where email=$1', [email])
     check('the temporary account was removed by id', leftover[0].n === 0)
+    if (userId) {
+      const residue = await sql(
+        ,
+        [userId])
+      check('no sessions, audit rows or tokens remain for it',
+        residue[0].s === 0 && residue[0].a === 0 && residue[0].t === 0,
+        JSON.stringify(residue[0]))
+    }
   }
 
   console.log('\n==========================================================')
