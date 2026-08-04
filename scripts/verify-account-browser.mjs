@@ -246,7 +246,9 @@ async function main() {
     check('the temporary account was removed by id', leftover[0].n === 0)
     if (userId) {
       const residue = await sql(
-        ,
+        `select (select count(*)::int from sessions where user_id = $1) s,
+                (select count(*)::int from audit_log where user_id = $1) a,
+                (select count(*)::int from verification_tokens where user_id = $1) t`,
         [userId])
       check('no sessions, audit rows or tokens remain for it',
         residue[0].s === 0 && residue[0].a === 0 && residue[0].t === 0,
