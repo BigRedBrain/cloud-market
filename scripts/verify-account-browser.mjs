@@ -22,6 +22,16 @@ import { config as loadEnv } from 'dotenv'
 import { chromium } from 'playwright'
 import { Pool, neonConfig } from '@neondatabase/serverless'
 
+/**
+ * Captured BEFORE dotenv runs, so we can tell an explicit variable from a
+ * fallback. `.env.local` holds development credentials; loading it is a
+ * convenience for local runs and a trap for production ones, which is why the
+ * production harnesses refuse to read it at all. Here the file is still loaded
+ * for the local case, but `--allow-production` requires the variable to have
+ * been set deliberately.
+ */
+const EXPLICIT_DATABASE_URL = process.env.DATABASE_URL
+
 loadEnv({ path: '.env.local', quiet: true })
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
@@ -59,6 +69,20 @@ requireConnectionString(process.env.DATABASE_URL)
  * by exact id in the finally block, and the run reports whether that succeeded.
  */
 const ALLOW_PRODUCTION = process.argv.includes('--allow-production')
+
+/**
+ * A production run must name its own database. Falling back to `.env.local`
+ * here would mean pointing the suite at the live storefront while silently
+ * connecting to development — which is exactly the shape of the mistake this
+ * guard exists to prevent.
+ */
+if (ALLOW_PRODUCTION && !EXPLICIT_DATABASE_URL) {
+  console.error('DATABASE_URL is not set.\n' +
+    '  --allow-production will not fall back to .env.local.\n' +
+    '  PowerShell:  $env:DATABASE_URL = "postgresql://…"')
+  process.exit(1)
+}
+
 if (fp(process.env.DATABASE_URL) === PRODUCTION_FP && !ALLOW_PRODUCTION) {
   console.error('REFUSING: this is production. Pass --allow-production if that is intended.')
   process.exit(1)
@@ -102,9 +126,59 @@ const mainText = (page) =>
     return main ? (main.innerText ?? '').replace(/\s+/g, ' ').trim() : '(no <main>)'
   })
 
+/**
+ * Refuses unless this script's database is the one the deployed app uses.
+ *
+ * RUNS BEFORE THE BROWSER LAUNCHES, and that ordering is the entire point.
+ * `postgresql://ACTUAL_PRODUCTION_POOLED_STRING` is a syntactically valid URL,
+ * so the shape check passes it; its hostname simply hashes to something that is
+ * not production. The old flow read that as "not production", carried on, drove
+ * a real sign-up against the live storefront, and only failed at the first
+ * query — by which point a production account, session and audit rows existed
+ * with no working connection to clean them up.
+ *
+ * A fingerprint that merely differs from a known constant is not evidence of
+ * anything. The only useful question is whether this connection is the same
+ * database the application at BASE is talking to, so that is what is asked.
+ *
+ * Prints two fingerprints and a verdict. Never a host, a user, or a password.
+ */
+async function assertTargetMatchesDeployedApp() {
+  let health
+  try {
+    health = await fetch(`${BASE}/api/health`).then((r) => r.json())
+  } catch (error) {
+    console.error(`refused: could not reach ${BASE}/api/health — ${error.message}`)
+    return false
+  }
+
+  const deployed = health.database?.fingerprint ?? null
+  const supplied = fp(process.env.DATABASE_URL)
+
+  console.log(`deployed app fingerprint:      ${deployed ?? '(none reported)'}`)
+  console.log(`supplied database fingerprint: ${supplied}`)
+
+  if (!deployed || deployed !== supplied) {
+    console.error('refused: DATABASE_URL is not the database behind ' + BASE)
+    return false
+  }
+
+  console.log('target confirmed\n')
+  return true
+}
+
 async function main() {
   console.log(`Account browser verification against ${BASE}`)
-  console.log(`database ${fp(process.env.DATABASE_URL)} (not production)\n`)
+
+  /**
+   * Nothing below this line may run on a mismatch — no browser, no sign-up, no
+   * user, session, token or audit row.
+   */
+  if (!(await assertTargetMatchesDeployedApp())) {
+    process.exitCode = 1
+    await pool.end().catch(() => {})
+    return
+  }
 
   const browser = await chromium.launch()
   let userId = null

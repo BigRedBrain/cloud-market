@@ -26,7 +26,8 @@
     "test:email": "tsx --conditions=react-server scripts/verify-email-config.ts",
     "test:cred": "node scripts/verify-dev-credential.mjs",
     "test:prod:recovery": "node scripts/verify-recovery-production.mjs",
-    "test:browser": "node scripts/verify-account-browser.mjs"
+    "test:browser": "node scripts/verify-account-browser.mjs",
+    "test:browser:guard": "node scripts/verify-browser-guard.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
