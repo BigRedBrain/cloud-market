@@ -114,7 +114,7 @@ export function SessionList({
                 </div>
                 <p className="font-mono text-xs text-smoke">
                   {session.ipAddress ?? 'Unknown IP'} · last active{' '}
-                  {new Date(session.lastUsedAt).toLocaleString()}
+                  {new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Detroit" }).format(new Date(session.lastUsedAt))}
                 </p>
               </div>
 
