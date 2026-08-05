@@ -75,6 +75,13 @@ protected tables — otherwise it can disable the triggers guarding them.
 `verify:checkout-readiness` (read-only, exits nonzero on any failure) and
 `rehearse:migration`.
 
+**The limit seeder refuses production.** `db:seed:limits:dev` fails closed
+before opening a connection: a known production fingerprint is refused
+unconditionally, a production platform is refused, and an absent or unrecognised
+`SEED_TARGET_ENVIRONMENT` is refused. No flag overrides it. Production rules are
+published only through `/admin/purchase-limits`, which the seeder bypasses
+entirely — and rule publication cannot be undone.
+
 ---
 
 ## Forward-only and one-way
@@ -108,9 +115,9 @@ classification.
 | `test:sweeper` | 53 | `test:browser:guard` | 25 |
 | `test:concurrency` | 28 | `test:auth` | 28 |
 | `test:readiness` | 22 | `test:email` | 12 |
-| `test:math` | 21 | | |
+| `test:math` | 21 | `test:seed-guard` | 54 |
 
-**867 assertions, 0 failures.** `lint` 0 errors (1 pre-existing warning),
+**921 assertions, 0 failures.** `lint` 0 errors (1 pre-existing warning),
 `typecheck` clean, `build` clean.
 
 Migration rehearsal from 0007: baseline 8.1 s, production step 6.9 s, 16 journal

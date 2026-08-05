@@ -1,15 +1,36 @@
 /**
- * Seeds `purchase_limit_rules` — the daily purchase caps.
+ * Seeds `purchase_limit_rules` — DEVELOPMENT AND STAGING ONLY.
  *
- *   node scripts/seed-purchase-limits.mjs            # report only, writes nothing
- *   node scripts/seed-purchase-limits.mjs --confirm  # insert missing rules
- *   node scripts/seed-purchase-limits.mjs --confirm --supersede
+ *   $env:SEED_TARGET_ENVIRONMENT = "development"   # or "staging"
+ *
+ *   node scripts/seed-purchase-limits-dev.mjs            # report only, writes nothing
+ *   node scripts/seed-purchase-limits-dev.mjs --confirm  # insert missing rules
+ *   node scripts/seed-purchase-limits-dev.mjs --confirm --supersede
+ *
+ * ## IT REFUSES TO WRITE TO PRODUCTION, AND NO FLAG OVERRIDES THAT
+ *
+ * Publishing a purchase limit rule is IRREVERSIBLE — the row cannot be edited
+ * or deleted, by trigger and by privilege — so a wrong value written here would
+ * stay on the record permanently and could only be corrected by publishing
+ * another beside it.
+ *
+ * The production path is `/admin/purchase-limits`, which requires the named
+ * `compliance_admin` grant, step-up re-authentication, a typed confirmation, an
+ * explicit acknowledgement, a written reason, and an audit row committed in the
+ * same transaction as the rule. **This script has none of those six controls.**
+ * It is a convenience for getting a fresh development database usable.
+ *
+ * A document saying "do not run this against production" is not a control. The
+ * control is `scripts/seed-target-guard.mjs`, which runs BEFORE a connection is
+ * opened and fails closed: a known production fingerprint is refused
+ * unconditionally, a production environment is refused, and an absent or
+ * unrecognised `SEED_TARGET_ENVIRONMENT` is refused. There is deliberately no
+ * value of that variable, and no command-line flag, that authorises production.
  *
  * THIS IS CONFIGURATION, NOT CATALOG DATA. The standing rule is "do not insert
- * fake products or stores into production"; limit rules are neither. They are
- * the legal caps the storefront enforces, and production needs them populated
- * before a single order can be placed correctly. They contain no invented
- * inventory and no invented business.
+ * fake products or stores into production"; limit rules are neither. But the
+ * values here are the CRA defaults pending legal confirmation, which is not the
+ * same as an approval — another reason they must not reach production this way.
  *
  * WHY A SCRIPT AND NOT A MIGRATION
  *
@@ -30,9 +51,16 @@
  *
  * Running it twice with no changes does nothing and reports nothing to do.
  */
-import { createHash } from 'node:crypto'
 import { config as loadEnv } from 'dotenv'
 import { Pool, neonConfig } from '@neondatabase/serverless'
+
+import {
+  classifyTarget,
+  denyFingerprintsFor,
+  describeRefusal,
+  endpointFingerprint,
+  hostFingerprint,
+} from './seed-target-guard.mjs'
 
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
@@ -148,18 +176,49 @@ async function main() {
   }
 
   /**
-   * Identity, not trust. The same fingerprint the migration gate prints, so an
-   * operator can compare the two by eye before allowing a write. No credential
-   * is ever printed.
+   * Identity, not trust. The same fingerprints the migration gate prints, so an
+   * operator can compare them by eye. No credential and no hostname is printed.
    */
-  const endpoint = createHash('sha256')
-    .update(new URL(connectionString).hostname.split('.')[0].replace('-pooler', ''))
-    .digest('hex')
-    .slice(0, 12)
+  let hostFp = null
+  let endpointFp = null
+  try {
+    hostFp = hostFingerprint(connectionString)
+    endpointFp = endpointFingerprint(connectionString)
+  } catch {
+    /** Left null; `classifyTarget` refuses an unreadable target. */
+  }
 
-  console.log('Purchase limit rules\n')
-  console.log(`  target endpoint id: ${endpoint}`)
-  console.log(`  mode:               ${CONFIRM ? (SUPERSEDE ? 'write, superseding' : 'write') : 'report only'}\n`)
+  console.log('Purchase limit rules — development/staging seeder\n')
+  console.log(`  target endpoint id:   ${endpointFp ?? 'unreadable'}`)
+  console.log(`  target hostname id:   ${hostFp ?? 'unreadable'}`)
+  console.log(`  declared environment: ${process.env.SEED_TARGET_ENVIRONMENT ?? 'unset'}`)
+  console.log(`  mode:                 ${CONFIRM ? (SUPERSEDE ? 'write, superseding' : 'write') : 'report only'}\n`)
+
+  /**
+   * THE GATE. Before the pool is constructed, so a refused run opens no
+   * connection at all — there is no transaction to leak, and nothing to roll
+   * back, because nothing was ever started.
+   *
+   * It runs regardless of `--confirm`: a report-only run against production
+   * would still be pointing a seeding tool at a database it must never touch,
+   * and the moment to find that out is before the habit forms.
+   */
+  const verdict = classifyTarget({
+    hostFp,
+    endpointFp,
+    declaredEnvironment: process.env.SEED_TARGET_ENVIRONMENT,
+    vercelEnv: process.env.VERCEL_ENV,
+    nodeEnv: process.env.NODE_ENV,
+    denyFingerprints: denyFingerprintsFor(process.env.PRODUCTION_POOLED_URL),
+  })
+
+  if (!verdict.allowed) {
+    console.error(describeRefusal(verdict))
+    process.exitCode = 1
+    return
+  }
+
+  console.log(`  target accepted as:   ${verdict.environment}\n`)
 
   const pool = new Pool({ connectionString })
   const planned = []

@@ -189,7 +189,8 @@ A full graphical diff and two-person approval remain out of scope, as agreed.
 
 ## 7. Baseline development rule values
 
-Seeded by `npm run db:seed:limits -- --confirm --supersede`. **These are the CRA
+Seeded in development by `npm run db:seed:limits:dev -- --confirm --supersede`
+(the script refuses production). **These are the CRA
 figures and are what production should receive once counsel confirms them.**
 
 | Class | Version | Conversion | Basis | Usable cap | Concentrate cap | Plants |
@@ -300,7 +301,8 @@ gated sequence in [ORDERS.md](ORDERS.md) §14.
 2. Apply 0008–0015 through the gated sequence.
 3. Run the §8 privilege SQL in [PURCHASE-LIMITS.md](PURCHASE-LIMITS.md) as the
    owner; `npm run verify:privileges` until all-PASS.
-4. `npm run db:seed:limits` (report), then `-- --confirm` — **one way, no undo**.
+4. Publish the confirmed rules through `/admin/purchase-limits` — **one way,
+   no undo**. The seeder refuses production and cannot be used here.
 5. Load real catalog data with classification and measurement on every variant.
 6. `npm run verify:catalog` until it reports **READY**.
 7. Set `CRON_SECRET`; confirm the plan supports the cron interval

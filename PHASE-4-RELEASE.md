@@ -303,11 +303,20 @@ npm run perm -- --email=officer@example.com --grant=compliance_admin \
       `/admin/purchase-limits`, one class at a time, each with a reason and
       re-authentication.
 
-> **Do not run `npm run db:seed:limits` against production.** It is the one
-> script in this repository that can write to production, and its values are
-> the CRA defaults pending confirmation, not an approval. Rule publication is
-> **one way** — a wrong value can only be corrected by publishing another, and
-> the wrong one stays on the record forever.
+> **Production purchase-limit rules can be published ONLY through
+> `/admin/purchase-limits`.**
+>
+> `npm run db:seed:limits:dev` is a development/staging tool and **refuses a
+> production target outright** — a known production fingerprint, a production
+> platform, or an absent/unrecognised `SEED_TARGET_ENVIRONMENT` all fail closed
+> before it opens a connection. There is no flag that overrides it.
+>
+> That refusal exists because the seeder bypasses every control this step
+> depends on: the `compliance_admin` grant, step-up re-authentication, the typed
+> confirmation, the written reason, and the audit row committed in the same
+> transaction as the rule. Rule publication is **one way** — a wrong value can
+> only be corrected by publishing another beside it, and the wrong one stays on
+> the record forever.
 
 Record, for each of the six supported classes:
 

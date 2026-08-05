@@ -225,7 +225,9 @@ async function main() {
   baseline = (await openRuleFor(WORKING_CLASS)) ?? null
   if (!baseline) {
     console.error(
-      `\nNo open rule for "${WORKING_CLASS}". Run "npm run db:seed:limits -- --confirm" first.`,
+      `\nNo open rule for "${WORKING_CLASS}". Run:\n` +
+        '  $env:SEED_TARGET_ENVIRONMENT = "development"\n' +
+        '  npm run db:seed:limits:dev -- --confirm\n',
     )
     process.exit(1)
   }

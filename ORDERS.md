@@ -179,9 +179,18 @@ trail. See [PURCHASE-LIMITS.md](PURCHASE-LIMITS.md).
 ### Seeding
 
 ```bash
-npm run db:seed:limits              # report only, writes nothing
-npm run db:seed:limits -- --confirm
+# Development and staging only — the script refuses production.
+$env:SEED_TARGET_ENVIRONMENT = "development"
+
+npm run db:seed:limits:dev              # report only, writes nothing
+npm run db:seed:limits:dev -- --confirm
 ```
+
+**Production rules are published only through `/admin/purchase-limits`.** The
+seeder bypasses the `compliance_admin` grant, re-authentication, the typed
+confirmation, the written reason and the transactional audit row, and rule
+publication cannot be undone — so it refuses a production target outright, with
+no flag to override it.
 
 The script prints the target endpoint fingerprint before doing anything, so it
 can be compared against the migration gate by eye. It only ever **inserts**: a
@@ -308,8 +317,7 @@ fake catalog data may be created in production — same rule as Phase 3.
       `cannabis_class`
 - [ ] Real `inventory_quantity`, with `reserved_quantity` at 0
 - [ ] `purchase_limit_rules` populated with **legally confirmed** values, via
-      `npm run db:seed:limits` (report first, then `-- --confirm`), after
-      editing `RULES` in the script to whatever counsel confirms
+      `/admin/purchase-limits` — **not** the seeder, which refuses production
 - [ ] All four cannabis classes have a live rule — a class with none gets a
       factor of 0 and counts toward nothing
 - [ ] Migration 0008 applied via the gated sequence
