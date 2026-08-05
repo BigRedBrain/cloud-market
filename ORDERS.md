@@ -1,6 +1,6 @@
 # Checkout & Orders (Phase 4)
 
-Branch `feat/checkout-orders`. Development only — migrations 0008–0012 are
+Branch `feat/checkout-orders`. Development only — migrations 0008–0015 are
 applied to the development branch; production remains on 0007. **No production
 catalog data was created.**
 
@@ -145,8 +145,8 @@ exactly after a rate change.
 ## 6. Purchase limits
 
 Configuration, not constants. `purchase_limit_rules` holds one row per cannabis
-class with an equivalence factor and daily caps, versioned by effective date.
-Checkout code contains no gram figures.
+class with an exact conversion ratio and the three **per-transaction** caps,
+versioned by effective date. Checkout code contains no gram figures.
 
 Each order line snapshots the classification, the measurement basis, the value
 and its unit, the usable equivalent, concentrate grams, the immature-plant
@@ -317,7 +317,7 @@ fake catalog data may be created in production — same rule as Phase 3.
 
 ### Schema
 
-- [ ] Journal at 9 entries
+- [ ] Journal at 16 rows (0000–0015)
 - [ ] All 6 tables present; `reserved_quantity` and `cannabis_class` on variants
 - [ ] All 10 audit enum values present
 - [ ] No existing row altered by the migration
@@ -497,7 +497,13 @@ Apply strictly in sequence. Each depends on the one before.
 | 0011 | `0011_unknown_absorbing_man` | `scheduler_runs`; `btree_gist`; the no-overlap exclusion constraint | Yes |
 | 0012 | `0012_scheduler_run_guard` | Partial unique index — one `running` run per job | Yes |
 
-Production is on **0007**. All five are pending.
+Production is on **0007**. All eight are pending.
+
+**The gate counts JOURNAL ROWS, not the highest migration number.** `0000`
+through `0007` is **eight** rows; the full sequence through `0015` is
+**sixteen**. Passing `7` here would report NO-GO against a correctly positioned
+production database, and an operator who learns to read past a false NO-GO is
+the failure this gate exists to prevent.
 
 ```bash
 # In the SAME shell, immediately before migrating:
@@ -505,14 +511,14 @@ $env:DATABASE_URL_UNPOOLED = "<production DIRECT string>"
 $env:PRODUCTION_POOLED_URL = "<production POOLED string>"
 
 node scripts/verify-migration-target.mjs https://cloudmarket.cc `
-  --expect-migrations=7 `
+  --expect-migrations=8 `
   --require-table=carts,cart_lines `
   --forbid-table=orders,user_permissions,scheduler_runs
 
 # Only on GO:
 npx drizzle-kit migrate
 
-node scripts/verify-migration-target.mjs https://cloudmarket.cc --expect-migrations=12
+node scripts/verify-migration-target.mjs https://cloudmarket.cc --expect-migrations=16
 ```
 
 **0011 needs `btree_gist`.** `CREATE EXTENSION` requires elevated rights; on

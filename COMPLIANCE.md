@@ -1,6 +1,6 @@
 # Purchase Limit Compliance (Phase 4.3)
 
-Branch `feat/checkout-orders`. Migrations 0008–0014, development only —
+Branch `feat/checkout-orders`. Migrations 0008–0015, development only —
 production remains on 0007.
 
 > **CHECKOUT MUST REMAIN DISABLED.** The code enforces it: every cannabis line
@@ -297,7 +297,7 @@ gated sequence in [ORDERS.md](ORDERS.md) §14.
 ## 11. Remaining manual production steps
 
 1. **Legal sign-off** on the §7 matrix, specifically the two open items.
-2. Apply 0008–0014 through the gated sequence.
+2. Apply 0008–0015 through the gated sequence.
 3. Run the §8 privilege SQL in [PURCHASE-LIMITS.md](PURCHASE-LIMITS.md) as the
    owner; `npm run verify:privileges` until all-PASS.
 4. `npm run db:seed:limits` (report), then `-- --confirm` — **one way, no undo**.

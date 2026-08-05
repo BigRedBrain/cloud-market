@@ -1,6 +1,6 @@
 # Purchase Limit Administration (Phase 4.1)
 
-Branch `feat/checkout-orders`. Migrations 0009–0012, development only —
+Branch `feat/checkout-orders`. Migrations 0009–0015, development only —
 production remains on 0007.
 
 > **Checkout must remain disabled in production until every gate in §11 passes.**
@@ -430,7 +430,7 @@ to explain the gap in the chain.
 ## 11. Production verification checklist
 
 Extends the Phase 4 checklist in [ORDERS.md](ORDERS.md) §12. Requires migrations
-0008–0012 applied in order through the gated sequence — see ORDERS.md §13.
+0008–0015 applied in order through the gated sequence — see ORDERS.md §14.
 
 ### Privileges — before anything else
 
@@ -440,7 +440,7 @@ Extends the Phase 4 checklist in [ORDERS.md](ORDERS.md) §12. Requires migration
 
 ### Schema
 
-- [ ] Journal at 13 entries
+- [ ] Journal at 16 rows (0000–0015)
 - [ ] `user_permissions` exists with its partial unique index
 - [ ] `purchase_limit_rules` has `version`, `change_reason`, `published_by`,
       `published_at`, `reauthenticated_at`, `supersedes_rule_id`,
