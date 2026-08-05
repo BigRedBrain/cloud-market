@@ -18,6 +18,47 @@ Assessment attempts: 2026-08-05 (attempt 1), 2026-08-05 (attempt 2, post-merge).
 > No results are recorded below, because none were produced. Nothing in this
 > document is an estimate, a projection or a substitute for a real run.
 
+### Attempt 3 — 2026-08-05, after the rehearsal branch was reported created
+
+A Neon child branch of production was reported created, with its pooled and
+direct strings loaded as `DATABASE_URL` / `DATABASE_URL_UNPOOLED`, plus
+`CHECKOUT_ENABLED=false`, `CRON_SECRET` and `SEED_TARGET_ENVIRONMENT=staging`.
+
+**The local environment is unchanged.** `.env.local` was last written
+**2026-07-31 23:19**, five days before this attempt, and still resolves to the
+development database. None of the three rehearsal-only settings are present.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| 1. Differs from production `2b968b3cbe06` | **PASS** | but only because it is development |
+| 2. Not the normal development fingerprint | **FAIL** | `eec6912eb35b` / endpoint `a5d81ac199d8` — exactly development |
+| 3. Baseline `0007`, eight journal rows | **FAIL** | **16** rows; the `orders` table already exists |
+| 4. Isolated Neon child branch from production | **CANNOT ASSESS** | `NEON_API_KEY` unset — parentage unprovable |
+| 5. Unreferenced by any Vercel deployment | **CANNOT ASSESS** | `VERCEL_TOKEN` unset |
+| 6. Live application cannot reach it | **CANNOT ASSESS** | follows from 4 and 5 |
+
+```
+                      hostname-fp    endpoint-fp
+DATABASE_URL          eec6912eb35b   a5d81ac199d8
+DATABASE_URL_UNPOOLED 3c503c1409d2   a5d81ac199d8
+
+CHECKOUT_ENABLED         not set
+SEED_TARGET_ENVIRONMENT  not set
+CRON_SECRET              unset
+```
+
+Gates 2 and 3 fail outright and 4–6 are unassessable, so **no write was
+attempted**. Two independent facts each disqualify the target on their own: the
+fingerprints are development's, and the schema is eight migrations past the
+required baseline with the Phase 4 tables already present.
+
+The likely cause is mechanical — the strings were copied but not saved to
+`.env.local`, or were set in a different shell, a different env file, or in
+Vercel rather than locally. This process reads `.env.local` and its own
+environment, and neither carries them.
+
+---
+
 ### Attempt 2 — post-merge, 2026-08-05
 
 A Neon rehearsal branch was reported as created from production and its
