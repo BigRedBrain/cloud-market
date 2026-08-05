@@ -187,11 +187,47 @@ A full graphical diff and two-person approval remain out of scope, as agreed.
 
 ---
 
-## 7. Baseline development rule values
+## 7. Approved values
+
+> ### ✅ COMPLIANCE REVIEW GATE — COMPLETE
+>
+> **Approved by business compliance review, 2026-08-05.**
+>
+> | Approved | Value |
+> | --- | --- |
+> | Total usable-equivalent cap, per transaction | **70.87380781250 g** (2.5 oz exactly) |
+> | Concentrate cap, per transaction | **15 g** |
+> | Immature-plant cap, per transaction | **3 units** |
+> | Classification and measurement matrix | **§2 of this document, as written** |
+> | Enforcement basis | **Per transaction**, not a rolling window |
+> | Equivalency basis | **Finished-product mass and volume**, never THC content |
+>
+> The two items previously left open are resolved by this approval:
+> `immature_plant` contributes **no** usable-equivalent weight and is governed
+> solely by the plant cap; no product type in scope falls outside the six
+> classes in §2.
+>
+> These values are verified identical across the development rule rows, this
+> document, `PURCHASE-LIMITS.md`, `lib/orders/limits.ts`, `lib/orders/exact.ts`,
+> `scripts/seed-purchase-limits-dev.mjs` and the `/admin/purchase-limits`
+> confirmation screen. Any future change is a new published rule version, never
+> an edit.
+>
+> No legal correspondence, adviser identity or privileged material is recorded
+> here or anywhere in this repository — only the approved figures and the date.
+
+**Publication is still pending.** Approval authorises the values; it does not
+publish them. Production rules are published one class at a time through
+`/admin/purchase-limits`, by a holder of the `compliance_admin` grant, with
+step-up re-authentication and a written reason. The development seeder
+**cannot** write to production.
+
+### Baseline development rule values
 
 Seeded in development by `npm run db:seed:limits:dev -- --confirm --supersede`
-(the script refuses production). **These are the CRA
-figures and are what production should receive once counsel confirms them.**
+(the script refuses production). **These are the approved figures, and are
+exactly what production must receive** — published through
+`/admin/purchase-limits`, never seeded.
 
 | Class | Version | Conversion | Basis | Usable cap | Concentrate cap | Plants |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -205,10 +241,11 @@ figures and are what production should receive once counsel confirms them.**
 Legacy `edible` and `other` rows remain open with null conversions. They cannot
 be deleted and do not need superseding — checkout refuses those classes outright.
 
-**Still awaiting confirmation:** whether `immature_plant` should also carry a
-usable-equivalent contribution, and whether any product type in the catalog maps
-to a class not in this matrix. The two items previously flagged — the concentrate
-factor and edible equivalency — are now resolved by the guidance.
+**Nothing remains awaiting confirmation.** The two items flagged during
+implementation — whether `immature_plant` carries a usable-equivalent
+contribution, and whether any product type falls outside the matrix — are
+resolved by the approval recorded above. The concentrate factor and infused
+equivalency were already resolved by the CRA guidance.
 
 ---
 
@@ -297,7 +334,7 @@ gated sequence in [ORDERS.md](ORDERS.md) §14.
 
 ## 11. Remaining manual production steps
 
-1. **Legal sign-off** on the §7 matrix, specifically the two open items.
+1. ~~Legal sign-off on the §7 matrix.~~ **Complete** — see §7.
 2. Apply 0008–0015 through the gated sequence.
 3. Run the §8 privilege SQL in [PURCHASE-LIMITS.md](PURCHASE-LIMITS.md) as the
    owner; `npm run verify:privileges` until all-PASS.

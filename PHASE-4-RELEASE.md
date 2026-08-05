@@ -97,10 +97,11 @@ do not exist. Do not do it.
 
 ## 1. Before maintenance
 
-- [ ] **Attorney has confirmed** the caps and the classification matrix
-      ([COMPLIANCE.md](COMPLIANCE.md) §2, §7), including the two open items:
-      whether `immature_plant` carries a usable-equivalent contribution, and
-      whether any real product maps outside the matrix.
+- [x] **Compliance review complete — approved 2026-08-05.** The caps and the
+      classification matrix are recorded in [COMPLIANCE.md](COMPLIANCE.md) §7:
+      70.87380781250 g usable-equivalent, 15 g concentrate, 3 immature plants,
+      all per transaction. Nothing remains open.
+      **Approval authorises the values; it does not publish them** — see §5.
 - [ ] **Vercel Pro or Enterprise confirmed**, *or* an approved external
       scheduler selected. Per-minute cron requires Pro/Enterprise; on Hobby
       `* * * * *` **fails the deployment** — it does not degrade to daily.

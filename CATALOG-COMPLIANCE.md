@@ -297,14 +297,13 @@ production.**
    the only thing that tests real data volume.
 5. `ALTER TABLE product_variants VALIDATE CONSTRAINT …` once the catalog is clean.
 
-### The attorney
+### The compliance reviewer
 
-6. Confirm the classification matrix and the three caps
-   ([COMPLIANCE.md](COMPLIANCE.md) §2, §7). Two items remain open: whether
-   `immature_plant` should also carry a usable-equivalent contribution, and
-   whether any real product maps to a class not in the matrix.
-7. Confirm the seed values **before** they are published — publication is
-   one-way.
+6. ~~Confirm the classification matrix and the three caps.~~ **Complete —
+   approved 2026-08-05**, recorded in [COMPLIANCE.md](COMPLIANCE.md) §7.
+7. Publish the approved values through `/admin/purchase-limits` when the
+   production sequence reaches that step. Publication is one-way; the
+   development seeder refuses production.
 
 ### The catalog operator
 

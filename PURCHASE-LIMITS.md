@@ -516,4 +516,6 @@ removed from the code, the seed script and the tests:
 - **`other` with a factor of 0** — `other` is now unsupported and fails closed.
   Exemption requires the explicit `non_cannabis` classification.
 
-What remains open for counsel is listed in COMPLIANCE.md §7.
+**The compliance review gate is complete.** The approved caps, the approved
+classification matrix and the approval date are recorded in COMPLIANCE.md §7.
+Nothing remains open.
