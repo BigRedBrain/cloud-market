@@ -62,6 +62,24 @@ export const productStatus = pgEnum('product_status', ['draft', 'active', 'archi
  */
 export const strainType = pgEnum('strain_type', ['indica', 'sativa', 'hybrid', 'cbd'])
 
+/**
+ * How a variant counts against the state daily purchase limit.
+ *
+ * Defined here rather than in the orders module because it describes a catalog
+ * property — and because orders already imports this file, so declaring it
+ * there would make the two modules import each other, which under ESM leaves
+ * whichever loads second holding an undefined reference.
+ *
+ * The conversion FACTOR is configuration (`purchase_limit_rules`); this is only
+ * the classification.
+ */
+export const cannabisClass = pgEnum('cannabis_class', [
+  'flower',
+  'concentrate',
+  'edible',
+  'other',
+])
+
 /* -------------------------------------------------------------------------- */
 /* Media                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -318,6 +336,27 @@ export const productVariants = pgTable(
      * additive, not a redesign.
      */
     inventoryQuantity: integer('inventory_quantity').notNull().default(0),
+
+    /**
+     * Units held by open checkout drafts but not yet sold.
+     *
+     * AVAILABLE STOCK IS `inventory_quantity - reserved_quantity`. Splitting the
+     * two keeps a reservation reversible without ever having to remember what
+     * the number used to be: releasing a hold decrements this, committing a sale
+     * decrements both. A single counter would leave an expired draft
+     * indistinguishable from a completed sale.
+     */
+    reservedQuantity: integer('reserved_quantity').notNull().default(0),
+
+    /**
+     * How this variant counts against the state daily purchase limit.
+     *
+     * Lives on the variant because weight and form are variant properties — the
+     * same strain sold as flower and as a cartridge counts differently. The
+     * conversion factor itself is configuration (`purchase_limit_rules`); this
+     * column is only the classification.
+     */
+    cannabisClass: cannabisClass('cannabis_class').notNull().default('other'),
 
     /** Per-unit cannabinoid content, for edibles and beverages. */
     thcMg: numeric('thc_mg', { precision: 8, scale: 2 }),

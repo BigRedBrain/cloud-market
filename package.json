@@ -16,6 +16,7 @@
     "db:seed:catalog": "tsx --env-file=.env.local lib/db/seed-catalog.ts",
     "db:seed:cms": "tsx --env-file=.env.local lib/db/seed-cms.ts",
     "db:branch": "node scripts/neon-dev-branch.mjs",
+    "db:seed:limits": "node scripts/seed-purchase-limits.mjs",
     "test:auth": "tsx --conditions=react-server scripts/verify-auth-primitives.ts",
     "test:e2e": "node scripts/verify-auth-e2e.mjs",
     "test:bag": "node scripts/verify-bag-e2e.mjs",
@@ -27,7 +28,9 @@
     "test:cred": "node scripts/verify-dev-credential.mjs",
     "test:prod:recovery": "node scripts/verify-recovery-production.mjs",
     "test:browser": "node scripts/verify-account-browser.mjs",
-    "test:browser:guard": "node scripts/verify-browser-guard.mjs"
+    "test:browser:guard": "node scripts/verify-browser-guard.mjs",
+    "test:math": "tsx scripts/verify-order-math.ts",
+    "test:concurrency": "tsx --env-file=.env.local --conditions=react-server scripts/verify-order-concurrency.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

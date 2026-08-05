@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { PackageOpen } from 'lucide-react'
 
 import { QuantityStepper, RemoveLineForm } from '@/components/bag/bag-controls'
+import { StartCheckoutForm } from '@/components/orders/checkout-forms'
 import { SiteNav } from '@/components/site-nav'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -183,13 +184,13 @@ export default async function BagPage({
                   Prices shown are current and may change until you order.
                 </p>
 
-                <Button variant="primary" size="lg" className="mt-4 w-full" disabled>
-                  Checkout — coming soon
-                </Button>
+                <div className="mt-4">
+                  <StartCheckoutForm disabled={bag.hasIssues} />
+                </div>
 
                 <p className="text-center font-sans text-xs text-muted-foreground">
-                  Adding to your bag doesn&apos;t reserve stock. Items are secured
-                  when you place your order.
+                  Adding to your bag doesn&apos;t reserve stock. Items are held
+                  for 15 minutes once you start checkout.
                 </p>
               </CardContent>
             </Card>

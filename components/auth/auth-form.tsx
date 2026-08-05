@@ -29,14 +29,24 @@ type AuthFormProps = {
   submitLabel: string
   pendingLabel: string
   successMessage?: string
+  /** Disables submission for a reason the caller knows about. */
+  disabled?: boolean
   children: (fieldErrors: Record<string, string[]> | undefined) => React.ReactNode
 }
 
-function SubmitButton({ label, pendingLabel }: { label: string; pendingLabel: string }) {
+function SubmitButton({
+  label,
+  pendingLabel,
+  disabled,
+}: {
+  label: string
+  pendingLabel: string
+  disabled?: boolean
+}) {
   const { pending } = useFormStatus()
 
   return (
-    <Button type="submit" variant="primary" size="lg" disabled={pending} className="w-full">
+    <Button type="submit" variant="primary" size="lg" disabled={pending || disabled} className="w-full">
       {pending ? (
         <>
           <Spinner label={pendingLabel} />
@@ -54,6 +64,7 @@ export function AuthForm({
   submitLabel,
   pendingLabel,
   successMessage,
+  disabled,
   children,
 }: AuthFormProps) {
   const [state, formAction] = useActionState<ActionResult<void> | null, FormData>(
@@ -88,7 +99,7 @@ export function AuthForm({
 
       {children(failed ? state.fieldErrors : undefined)}
 
-      <SubmitButton label={submitLabel} pendingLabel={pendingLabel} />
+      <SubmitButton label={submitLabel} pendingLabel={pendingLabel} disabled={disabled} />
     </form>
   )
 }

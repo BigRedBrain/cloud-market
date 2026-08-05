@@ -68,6 +68,25 @@ export const auditEvent = pgEnum('audit_event', [
   'SESSIONS_REVOKED',
   /** Transport-level delivery failure. Operational, not security. */
   'EMAIL_SEND_FAILED',
+
+  /* --- Checkout and orders (Phase 4) ------------------------------------
+   *
+   * The operational history of an order lives in `order_events`. These are
+   * the SECURITY and COMPLIANCE record: who was blocked by a purchase limit,
+   * whose ID was checked, whose money was taken. Same privacy rule as every
+   * event above — no address, no payment reference, no personal detail in
+   * summaries.
+   */
+  'ORDER_PLACED',
+  'ORDER_CANCELLED',
+  'ORDER_COMPLETED',
+  'PAYMENT_RECORDED',
+  'PAYMENT_COLLECTED',
+  'INVENTORY_RESERVED',
+  'INVENTORY_COMMITTED',
+  'INVENTORY_RELEASED',
+  'PURCHASE_LIMIT_BLOCKED',
+  'AGE_VERIFIED_AT_HANDOFF',
 ])
 
 export const auditLog = pgTable(
