@@ -4,6 +4,7 @@ import {
   date,
   index,
   integer,
+  type AnyPgColumn,
   numeric,
   pgEnum,
   pgTable,
@@ -127,6 +128,23 @@ export const paymentStatus = pgEnum('payment_status', [
  * adult-use is commonly stated as 2.5 oz (70.87 g) of usable marijuana per day
  * with no more than 15 g of that as concentrate. Equivalence factors for edibles
  * vary by interpretation, which is exactly why they are configuration.
+ *
+ * APPEND-ONLY, AND THE DATABASE ENFORCES IT.
+ *
+ * A row here is the rule an order was checked against. Changing one would
+ * silently rewrite the basis of every order that cites it, and deleting one
+ * would leave those orders citing nothing. So publishing a change INSERTS a new
+ * row and closes the old one; it never updates values in place.
+ *
+ * Two triggers in migration 0009 make that structural rather than a convention
+ * the application is trusted to keep: `purchase_limit_rules_immutable` rejects
+ * any UPDATE that touches a value column, and `purchase_limit_rules_no_delete`
+ * rejects every DELETE. The only mutations permitted are closing the window
+ * (`effective_until`) and recording the successor (`superseded_by_rule_id`),
+ * each exactly once, from null.
+ *
+ * `order_lines.purchase_limit_rule_id` references this table with `restrict`,
+ * which is the second lock on the same door.
  */
 export const purchaseLimitRules = pgTable(
   'purchase_limit_rules',
@@ -134,6 +152,13 @@ export const purchaseLimitRules = pgTable(
     id: primaryKeyColumn(),
 
     cannabisClass: cannabisClass('cannabis_class').notNull(),
+
+    /**
+     * Monotonic per class, starting at 1. Not a surrogate key — it exists so a
+     * compliance officer can say "version 3 of the concentrate rule" out loud,
+     * and so the history reads as a sequence rather than a pile of timestamps.
+     */
+    version: integer('version').notNull().default(1),
 
     /**
      * Grams of cannabis-equivalent per gram of product. Flower is 1.0;
@@ -157,21 +182,91 @@ export const purchaseLimitRules = pgTable(
       scale: 3,
     }),
 
+    /**
+     * The window this rule governs: `[effective_from, effective_until)`.
+     *
+     * Half-open on purpose. A rule that ends at exactly the instant its
+     * successor begins leaves no gap and no overlap, so "which rule applied at
+     * time T" has exactly one answer for every T.
+     *
+     * `effective_from` may be in the FUTURE — that is how a change is scheduled
+     * for a date counsel has specified. A scheduled rule is not yet in force;
+     * `currentlyEffective` compares both ends against database time.
+     */
     effectiveFrom: timestamp('effective_from', { withTimezone: true, mode: 'date' })
       .notNull()
       .defaultNow(),
     effectiveUntil: timestamp('effective_until', { withTimezone: true, mode: 'date' }),
+
+    /* --- Provenance: who changed this, when, and why --------------------- */
+
+    /**
+     * Required for anything published through the admin screen. Nullable only
+     * because the rows seeded before this table was versioned genuinely have no
+     * author — inventing one would be worse than recording the absence.
+     */
+    changeReason: text('change_reason'),
+
+    publishedBy: uuid('published_by').references(() => users.id, { onDelete: 'set null' }),
+    publishedAt: timestamp('published_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .defaultNow(),
+
+    /**
+     * When the publisher last proved their password, at publish time.
+     *
+     * Stored rather than merely checked, because "an authenticated session made
+     * this change" and "the person holding the session re-proved who they were
+     * seconds beforehand" are different claims, and only the second one is worth
+     * anything when the change is contested months later.
+     */
+    reauthenticatedAt: timestamp('reauthenticated_at', {
+      withTimezone: true,
+      mode: 'date',
+    }),
+
+    /* --- The chain ------------------------------------------------------- */
+
+    /**
+     * Doubly linked, deliberately. `supersedes_rule_id` is written at insert
+     * and never changes; `superseded_by_rule_id` is written once when this row
+     * is closed. Either direction alone would be reconstructible from
+     * timestamps, but only if no two rules for a class ever shared an instant —
+     * and a chain that depends on that is a chain that breaks under a clock
+     * adjustment.
+     *
+     * `restrict` on both: a rule cited by another rule cannot be removed, which
+     * is a third guard on top of the delete trigger and the order-line FK.
+     */
+    supersedesRuleId: uuid('supersedes_rule_id').references(
+      (): AnyPgColumn => purchaseLimitRules.id,
+      { onDelete: 'restrict' },
+    ),
+    supersededByRuleId: uuid('superseded_by_rule_id').references(
+      (): AnyPgColumn => purchaseLimitRules.id,
+      { onDelete: 'restrict' },
+    ),
 
     notes: text('notes'),
 
     ...timestampColumns,
   },
   (table) => [
-    /** One live rule per class at a time. */
+    /**
+     * One OPEN rule per class.
+     *
+     * Open means `effective_until is null` — the end of the chain, not
+     * necessarily the rule in force. Scheduling a future change closes the
+     * current rule at the future instant, so the invariant holds continuously
+     * while a change is pending.
+     */
     uniqueIndex('purchase_limit_rules_active_class')
       .on(table.cannabisClass)
       .where(sql`${table.effectiveUntil} is null`),
     index('purchase_limit_rules_class_idx').on(table.cannabisClass),
+    /** History reads chronologically per class. */
+    index('purchase_limit_rules_history_idx').on(table.cannabisClass, table.effectiveFrom),
+    uniqueIndex('purchase_limit_rules_class_version').on(table.cannabisClass, table.version),
   ],
 )
 
@@ -350,6 +445,24 @@ export const orderLines = pgTable(
       precision: 10,
       scale: 4,
     }),
+
+    /**
+     * WHICH RULE ROW THIS LINE WAS CHECKED AGAINST.
+     *
+     * The factor above says what arithmetic was done; this says on whose
+     * authority. Together they make the check reproducible: the reason the rule
+     * had that value, who published it and why is one join away, and it stays
+     * correct after the rule is superseded because the id never moves.
+     *
+     * `restrict` is load-bearing. It is the database refusing to delete a rule
+     * that an order depends on, independently of the trigger and independently
+     * of anything the application believes. Nullable for lines written before
+     * this column existed, and for classes with no rule at all.
+     */
+    purchaseLimitRuleId: uuid('purchase_limit_rule_id').references(
+      () => purchaseLimitRules.id,
+      { onDelete: 'restrict' },
+    ),
 
     ...timestampColumns,
   },

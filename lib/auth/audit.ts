@@ -61,9 +61,24 @@ export async function recordAuditEvent(context: AuditContext): Promise<void> {
     let { ipAddress, userAgent } = context
 
     if (ipAddress === undefined || userAgent === undefined) {
-      const headerList = await headers()
-      ipAddress ??= headerList.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
-      userAgent ??= headerList.get('user-agent') ?? null
+      /**
+       * Fails soft, and it must.
+       *
+       * `headers()` throws outside a request scope — a scheduled sweep, a
+       * background job, a script. This read used to sit in the same `try` as
+       * the INSERT below, so in those contexts the throw skipped the write
+       * entirely and the event was silently lost. Losing the IP is a
+       * degradation; losing the fact that a compliance action happened is a
+       * hole in the record. Take the row without the metadata.
+       */
+      try {
+        const headerList = await headers()
+        ipAddress ??= headerList.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
+        userAgent ??= headerList.get('user-agent') ?? null
+      } catch {
+        ipAddress ??= null
+        userAgent ??= null
+      }
     }
 
     await db.insert(schema.auditLog).values({

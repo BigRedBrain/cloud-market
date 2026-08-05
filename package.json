@@ -30,7 +30,10 @@
     "test:browser": "node scripts/verify-account-browser.mjs",
     "test:browser:guard": "node scripts/verify-browser-guard.mjs",
     "test:math": "tsx scripts/verify-order-math.ts",
-    "test:concurrency": "tsx --env-file=.env.local --conditions=react-server scripts/verify-order-concurrency.ts"
+    "test:concurrency": "tsx --env-file=.env.local --conditions=react-server scripts/verify-order-concurrency.ts",
+    "test:governance": "tsx --env-file=.env.local --conditions=react-server scripts/verify-limit-governance.ts",
+    "test:limits:http": "node scripts/verify-limit-admin-http.mjs",
+    "perm": "node scripts/grant-permission.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

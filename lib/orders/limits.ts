@@ -17,6 +17,15 @@
 import type { CannabisClass } from '@/lib/db/schema'
 
 export type LimitRule = {
+  /**
+   * The `purchase_limit_rules` row this came from, when it came from one.
+   *
+   * Optional because `FALLBACK_LIMIT_RULES` has no row behind it, and because
+   * the property tests construct rules directly. Where it is present it is
+   * copied onto the order line, so an order records not just the arithmetic but
+   * the published rule that authorised it.
+   */
+  ruleId?: string | null
   cannabisClass: CannabisClass
   /** Cannabis-equivalent grams per gram of this class. Flower is 1. */
   equivalentGramsPerGram: number
@@ -37,6 +46,8 @@ export type LimitLineResult = LimitLineInput & {
   equivalentGrams: number
   concentrateGrams: number
   equivalentFactorApplied: number
+  /** The rule row that supplied the factor. Null when none applied. */
+  ruleIdApplied: string | null
 }
 
 export type LimitEvaluation = {
@@ -89,6 +100,7 @@ export function evaluateLine(
     equivalentGrams: roundGrams(totalGrams * factor),
     concentrateGrams: line.cannabisClass === 'concentrate' ? totalGrams : 0,
     equivalentFactorApplied: factor,
+    ruleIdApplied: rule?.ruleId ?? null,
   }
 }
 

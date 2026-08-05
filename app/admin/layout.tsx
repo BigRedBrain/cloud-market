@@ -4,7 +4,7 @@ import type { Route } from 'next'
 import { Logo } from '@/components/brand/logo'
 import { Button } from '@/components/ui/button'
 import { signOutAction } from '@/lib/auth/actions'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { getCurrentUser, hasPermission } from '@/lib/auth/dal'
 
 /**
  * Admin shell — 5% brand intensity (DESIGN.md §9).
@@ -21,6 +21,14 @@ import { getCurrentUser } from '@/lib/auth/dal'
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const user = await getCurrentUser()
 
+  /**
+   * Purchase limits are gated on a grant, not on the admin role, so the tab is
+   * shown only to holders. This is presentation, not protection — the page runs
+   * its own `requirePermission`, and hiding a link has never stopped anyone
+   * typing the URL.
+   */
+  const compliance = await hasPermission('compliance_admin')
+
   const tabs = [
     { href: '/admin', label: 'Overview' },
     { href: '/admin/products', label: 'Products' },
@@ -31,6 +39,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     { href: '/admin/badges', label: 'Badges' },
     { href: '/admin/homepage', label: 'Homepage' },
     { href: '/admin/media', label: 'Media' },
+    ...(compliance
+      ? ([{ href: '/admin/purchase-limits', label: 'Purchase limits' }] as const)
+      : []),
   ] as const
 
   return (

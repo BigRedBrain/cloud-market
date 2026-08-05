@@ -64,6 +64,20 @@
       "when": 1785904547787,
       "tag": "0008_organic_proemial_gods",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785910777627,
+      "tag": "0009_lucky_cloak",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785911351572,
+      "tag": "0010_limit_boundary_guard",
+      "breakpoints": true
     }
   ]
 }

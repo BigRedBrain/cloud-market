@@ -140,8 +140,10 @@ Configuration, not constants. `purchase_limit_rules` holds one row per cannabis
 class with an equivalence factor and daily caps, versioned by effective date.
 Checkout code contains no gram figures.
 
-Each order line snapshots `equivalent_grams`, `concentrate_grams` and
-`equivalent_factor_applied`, so a check can be reproduced after the rules change.
+Each order line snapshots `equivalent_grams`, `concentrate_grams`,
+`equivalent_factor_applied` and `purchase_limit_rule_id`, so a check can be
+reproduced after the rules change — the factor says what arithmetic was done,
+the rule id says on whose authority.
 
 Enforced at **both** draft creation and placement. A failure at placement rolls
 back completely: no placed order, and the hold is left for the customer to fix
@@ -153,6 +155,10 @@ someone buy the maximum at 23:55 and again at 00:05.
 **The default numbers need legal confirmation.** Michigan adult-use is commonly
 stated as 2.5 oz (70.87 g) per day with no more than 15 g concentrate; edible
 equivalence varies by interpretation. That is exactly why they are data.
+
+Rules are **immutable and versioned**, published through an admin screen gated
+on a named `compliance_admin` grant, with re-authentication and a full audit
+trail. See [PURCHASE-LIMITS.md](PURCHASE-LIMITS.md).
 
 ### Seeding
 

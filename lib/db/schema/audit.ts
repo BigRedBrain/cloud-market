@@ -87,6 +87,24 @@ export const auditEvent = pgEnum('audit_event', [
   'INVENTORY_RELEASED',
   'PURCHASE_LIMIT_BLOCKED',
   'AGE_VERIFIED_AT_HANDOFF',
+
+  /* --- Compliance administration (Phase 4.1) ---------------------------
+   *
+   * Publishing a purchase limit changes the legal cap the storefront
+   * enforces. It is the highest-consequence write a human can make in this
+   * application, and every attempt at it — successful or not — leaves a row.
+   *
+   * A blocked attempt matters as much as a successful one: repeated
+   * re-authentication failures against this permission are what an intrusion
+   * looks like from the outside.
+   */
+  'PERMISSION_GRANTED',
+  'PERMISSION_REVOKED',
+  'COMPLIANCE_REAUTH_SUCCEEDED',
+  'COMPLIANCE_REAUTH_FAILED',
+  'PURCHASE_LIMIT_RULE_PUBLISHED',
+  'PURCHASE_LIMIT_RULE_SUPERSEDED',
+  'PURCHASE_LIMIT_RULE_REJECTED',
 ])
 
 export const auditLog = pgTable(

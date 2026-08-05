@@ -1,7 +1,7 @@
 import 'server-only'
 
 import { randomBytes } from 'node:crypto'
-import { and, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm'
 
 import type { DbExecutor } from '@/lib/auth/tokens'
 import { db, schema } from '@/lib/db'
@@ -93,16 +93,36 @@ export async function recordTransition(
   }
 }
 
-/** Live rules, falling back only when the table is empty. */
+/**
+ * The rules IN FORCE right now, falling back only when the table is empty.
+ *
+ * "In force" is the half-open window `[effective_from, effective_until)`, not
+ * "the open row". Those differ whenever a change has been scheduled: the
+ * incoming rule already exists with a future start date and an open end, while
+ * the rule that should still govern today's checkout is the one whose end is
+ * that future date. Selecting on `effective_until is null` would apply the new
+ * cap early — which, for a legal limit, is the wrong direction to be wrong in.
+ *
+ * Evaluated against DATABASE time, like every other temporal comparison in this
+ * phase. The rule id travels with each rule so the order line can record which
+ * row authorised it.
+ */
 export async function loadLimitRules(): Promise<LimitRule[]> {
   const rows = await db
     .select()
     .from(schema.purchaseLimitRules)
-    .where(isNull(schema.purchaseLimitRules.effectiveUntil))
+    .where(
+      and(
+        sql`${schema.purchaseLimitRules.effectiveFrom} <= now()`,
+        sql`(${schema.purchaseLimitRules.effectiveUntil} is null
+             or ${schema.purchaseLimitRules.effectiveUntil} > now())`,
+      ),
+    )
 
   if (rows.length === 0) return FALLBACK_LIMIT_RULES
 
   return rows.map((row) => ({
+    ruleId: row.id,
     cannabisClass: row.cannabisClass,
     equivalentGramsPerGram: Number(row.equivalentGramsPerGram),
     dailyEquivalentGramsCap: Number(row.dailyEquivalentGramsCap),
@@ -350,6 +370,8 @@ export async function createDraft(params: {
           equivalentGrams: String(limit.equivalentGrams),
           concentrateGrams: String(limit.concentrateGrams),
           equivalentFactorApplied: String(limit.equivalentFactorApplied),
+          /** The published rule that authorised this line's contribution. */
+          purchaseLimitRuleId: limit.ruleIdApplied,
         }
       }),
     )
@@ -586,6 +608,46 @@ export async function placeOrder(params: {
       .returning({ id: schema.orders.id, orderNumber: schema.orders.orderNumber })
 
     if (!claimed) return // lost the race; the winner placed it
+
+    /**
+     * Re-snapshot the compliance basis at the moment of placement.
+     *
+     * A draft may have been created under one version of a rule and placed
+     * under its successor — the window is only fifteen minutes, but a scheduled
+     * change can land inside it, and that is precisely the case worth getting
+     * right. The evaluation above already used the rule in force NOW, so the
+     * line must record that rule and not the one the draft was built with.
+     *
+     * This is the only write to these columns after placement. Once the order
+     * leaves `draft` its rule id is fixed, which is what makes "existing orders
+     * keep their original rule" true rather than aspirational.
+     */
+    for (const line of evaluation.lines) {
+      await tx
+        .update(schema.orderLines)
+        .set({
+          equivalentGrams: String(line.equivalentGrams),
+          concentrateGrams: String(line.concentrateGrams),
+          equivalentFactorApplied: String(line.equivalentFactorApplied),
+          purchaseLimitRuleId: line.ruleIdApplied,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.orderLines.orderId, params.orderId),
+            eq(schema.orderLines.variantId, line.variantId),
+          ),
+        )
+    }
+
+    await tx
+      .update(schema.orders)
+      .set({
+        totalEquivalentGrams: String(evaluation.totalEquivalentGrams),
+        totalConcentrateGrams: String(evaluation.totalConcentrateGrams),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.orders.id, params.orderId))
 
     const committed = await claimInventoryTransition(
       tx,
