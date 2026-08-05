@@ -305,6 +305,117 @@ async function main() {
     )
     report(exclusion ? 'PASS' : 'FAIL', 'the overlap exclusion constraint is present')
 
+    /* ============================================== migration journal ==== */
+    section('[10] The migration journal is readable but not writable')
+    /**
+     * `verify:checkout-readiness` reads `drizzle.__drizzle_migrations` AS THIS
+     * ROLE to establish which migration the database is on, so the role needs
+     * USAGE on the schema and SELECT on the table. Without them that gate does
+     * not report a failure — it aborts, which is worse, because an abort is
+     * easy to mistake for an environment problem.
+     *
+     * It must be READ ONLY, and this section is why. A role that can write the
+     * journal can insert a row claiming a migration was applied when it was
+     * not, or delete one that was. Every schema assertion in the release
+     * runbook — and in the readiness gate itself — is derived from this table,
+     * so write access to it would quietly invalidate all of them. Reading which
+     * migration you are on is all the application ever needs.
+     */
+    const [{ schema_usage: journalSchemaUsage }] = await q(
+      `select has_schema_privilege(current_user, 'drizzle', 'USAGE') as schema_usage`,
+    )
+    report(
+      journalSchemaUsage ? 'PASS' : 'FAIL',
+      'can USAGE the drizzle schema',
+      journalSchemaUsage ? '' : 'verify:checkout-readiness will abort without this',
+    )
+
+    const [{ readable: journalReadable }] = await q(
+      `select has_table_privilege(current_user, 'drizzle.__drizzle_migrations', 'SELECT') as readable`,
+    )
+    report(
+      journalReadable ? 'PASS' : 'FAIL',
+      'can SELECT drizzle.__drizzle_migrations',
+      journalReadable ? '' : 'verify:checkout-readiness will abort without this',
+    )
+
+    for (const privilege of ['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) {
+      const [{ allowed }] = await q(
+        `select has_table_privilege(current_user, 'drizzle.__drizzle_migrations', $1) as allowed`,
+        [privilege],
+      )
+      report(
+        allowed ? 'FAIL' : 'PASS',
+        `cannot ${privilege} the migration journal`,
+        allowed ? 'this role could fake or hide a migration' : '',
+      )
+    }
+
+    /**
+     * Ownership is checked through membership for the same reason as section
+     * [2]: an owner can grant itself anything, so "it has no write grant" is
+     * only meaningful if it also does not own the object.
+     */
+    const journalOwner = await q(
+      `select pg_get_userbyid(c.relowner) as owner from pg_class c
+         join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname='drizzle' and c.relname='__drizzle_migrations'`,
+    )
+    if (journalOwner.length === 0) {
+      report('FAIL', 'the migration journal exists', 'drizzle.__drizzle_migrations not found')
+    } else {
+      const [{ inherits }] = await q(`select pg_has_role(current_user, $1, 'USAGE') as inherits`, [
+        journalOwner[0].owner,
+      ])
+      report(
+        inherits ? 'FAIL' : 'PASS',
+        'does not own or inherit ownership of the migration journal',
+        inherits
+          ? `owner is "${journalOwner[0].owner}" and the app role has USAGE on it`
+          : `owner is "${journalOwner[0].owner}"`,
+      )
+    }
+
+    const [{ owner: schemaOwner }] = await q(
+      `select pg_get_userbyid(nspowner) as owner from pg_namespace where nspname='drizzle'`,
+    )
+    const [{ inherits: ownsSchema }] = await q(
+      `select pg_has_role(current_user, $1, 'USAGE') as inherits`,
+      [schemaOwner],
+    )
+    report(
+      ownsSchema ? 'FAIL' : 'PASS',
+      'does not own or inherit ownership of the drizzle schema',
+      ownsSchema ? `owner is "${schemaOwner}" and the app role has USAGE on it` : `owner is "${schemaOwner}"`,
+    )
+
+    /**
+     * CREATE on the schema would let the role replace the journal with a table
+     * of its own choosing, which is the same capability as writing it.
+     */
+    const [{ can_create: canCreateInJournalSchema }] = await q(
+      `select has_schema_privilege(current_user, 'drizzle', 'CREATE') as can_create`,
+    )
+    report(
+      canCreateInJournalSchema ? 'FAIL' : 'PASS',
+      'cannot CREATE in the drizzle schema',
+      canCreateInJournalSchema ? 'this role could shadow or replace the journal' : '',
+    )
+
+    /**
+     * Running a migration means DDL. The application role holds no CREATE right
+     * on `public` either, so `drizzle-kit migrate` cannot succeed as this role
+     * even if someone pointed it at the production application string.
+     */
+    const [{ can_create: canCreateInPublic }] = await q(
+      `select has_schema_privilege(current_user, 'public', 'CREATE') as can_create`,
+    )
+    report(
+      canCreateInPublic ? 'FAIL' : 'PASS',
+      'cannot CREATE in the public schema — migrations cannot run as this role',
+      canCreateInPublic ? 'this role could run DDL' : '',
+    )
+
     /* ==================================================== summary ======== */
     console.log('\n==========================================================')
     if (fail === 0) {

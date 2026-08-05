@@ -3,12 +3,50 @@
 Commit `807cd50` (plus this review). Migrations **0008 → 0015**, forward only.
 
 **Read the whole document before starting.** Steps are ordered because the order
-is load-bearing: privileges before migrations, migrations before code, rules
+is load-bearing: **migrations before privileges**, migrations before code, rules
 before catalog, readiness before enablement.
 
 > Every command shown is safe to run. No command in this runbook prints a
 > credential. Where a connection string is needed it is set as an environment
 > variable in the operator's own shell and never echoed.
+
+> ### ⚠️ The order of §2–§8 changed on 2026-08-05
+>
+> Privilege hardening now runs **after** the migrations, not before. The previous
+> order could not complete. See **[Why the order changed](#why-the-order-changed)**
+> before following a printed copy of the old runbook.
+
+---
+
+## Rehearsal outcome — 2026-08-05
+
+A restored-production rehearsal was executed against an isolated Neon child
+branch of production. Full report: **[PHASE-4-REHEARSAL.md](PHASE-4-REHEARSAL.md)**.
+
+| Measure | Result |
+| --- | --- |
+| Identity gates | **24 / 24 passed** |
+| Migrations `0008`–`0015` | **8 → 16 journal rows in 6927 ms** |
+| Lock waits | **zero** — in an isolated copy with an empty catalog |
+| Post-migration objects | **19 / 19** |
+| `verify:privileges` | **44 passed, 0 failed** |
+| Rule publication through `/admin/purchase-limits` | **10 / 10** |
+| Scheduler | **8 / 8** |
+| `verify:checkout-readiness` | **35 / 36** — the one failure is the absent real catalog |
+| Order-lifecycle scenarios | **272 / 273** — the one failure was a test defect (F6), since fixed |
+
+> **Zero lock waits does NOT predict zero lock waits in production.** It was
+> measured on an isolated copy with no concurrent clients and an empty catalog.
+> A rewrite holding ACCESS EXCLUSIVE behind live traffic behaves differently, and
+> the rehearsal says nothing about that.
+
+**Recommendation: GO to migrate.** **NO-GO to enable checkout** until the real
+production catalog exists, every active variant is classified, and all readiness
+gates pass.
+
+The rehearsal also proved that `0008`–`0015` apply successfully to **production's
+actual schema lineage** — not merely to a schema rebuilt from this repository.
+See §0's note on journal hashes.
 
 ---
 
@@ -30,8 +68,9 @@ before catalog, readiness before enablement.
 ### Required extensions and privileges
 
 - **`btree_gist`** (0011). `CREATE EXTENSION` needs elevated rights; on Neon the
-  default owner has them. **If it fails the migration aborts — do not work
-  around it by dropping the constraint.**
+  default owner has them. **Verified in rehearsal** — it installed under
+  `neondb_owner`, which is *not* a superuser. **If it fails the migration aborts
+  — do not work around it by dropping the constraint.**
 - Migrations run as the **owner** (`DATABASE_URL_UNPOOLED`), not as the
   restricted application role. The application role cannot and must not be able
   to run them.
@@ -46,6 +85,10 @@ empty in production today:
 - **0013** rewrites `orders` for two numeric widenings — production has **no
   orders**.
 - **0014** rewrites `purchase_limit_rules` — again, empty.
+
+**Confirmed by rehearsal against a real copy:** all three touched **zero rows**,
+and the whole sequence completed in 6927 ms — the same as against an empty
+database, because production *is* empty.
 
 **This is why the window is short today and would not be later.** Running these
 after the shop has been trading for a year is a different operation.
@@ -93,15 +136,77 @@ incompatible with a migration that has not yet been applied.** The reverse
 ordering is the hazard: deploying this code before 0013 would query columns that
 do not exist. Do not do it.
 
+### A note on journal hashes
+
+Two of production's eight recorded migration hashes — for `0000` and `0004` — do
+not match this repository's current `drizzle/*.sql` files, while the other six
+do. Both files have exactly one commit each and were never edited after it, so
+production was migrated from a working state that was adjusted before commit.
+
+**No action is required, and nothing may be done about it.** `drizzle` selects
+migrations by `created_at` versus `folderMillis`, never by hash, so the mismatch
+is inert; all eight rows map cleanly onto `0000`–`0007` by timestamp.
+
+> **Do not rewrite production migration history, and do not alter historical
+> journal rows** to make the hashes agree. There is no benefit and the rows are a
+> record of what was actually applied.
+
+It is recorded because it means production's 0007 schema is **not byte-identical**
+to what `npm run rehearse:migration` rebuilds from this repository. That is
+precisely why the restored-copy rehearsal mattered: it proved `0008`–`0015` apply
+to production's **actual** schema lineage, which a rebuild cannot prove.
+
 ---
 
-## 1. Before maintenance
+<a id="why-the-order-changed"></a>
+
+## Why the order changed
+
+Until 2026-08-05 this runbook applied the privilege-hardening SQL **before** the
+migrations. **That order cannot complete.** The rehearsal ran the block verbatim
+against a real 0007 production schema and four of its ten statements failed:
+
+```
+   1. OK    CREATE ROLE                       6. ERROR GRANT UPDATE(cols) …   42P01
+   2. OK    GRANT USAGE ON SCHEMA             7. OK    REVOKE ON audit_log
+   3. OK    GRANT ON ALL TABLES               8. ERROR REVOKE ON order_events 42P01
+   4. OK    GRANT ON ALL SEQUENCES            9. ERROR REVOKE ON user_perms   42P01
+   5. ERROR REVOKE ON purchase_limit_rules   10. OK    ALTER DEFAULT PRIVILEGES
+           42P01 relation "purchase_limit_rules" does not exist
+```
+
+`purchase_limit_rules`, `order_events` and `user_permissions` are created by
+migrations `0008`–`0015`. Before those migrations they do not exist, so every
+statement naming them fails.
+
+**What the old order would have left behind.** Run as a script, the block aborts
+at statement 5. By then the role has already been granted `SELECT, INSERT,
+UPDATE, DELETE` on **all** tables (statement 3), and the operator is left with:
+
+- **broader privileges than intended** on the application role;
+- **none** of the compliance REVOKEs — no protection on `purchase_limit_rules`,
+  `order_events` or `user_permissions`, which is the entire point of the
+  hardening;
+- **no `ALTER DEFAULT PRIVILEGES`**, so tables created by the later migrations
+  would receive no grants at all;
+- a `verify:privileges` run that fails at section [2] with *table not found*, at
+  a point in the release where migrations have not yet been applied.
+
+**Do not grant broad table privileges before the new compliance tables exist.**
+The grants and the revokes must be applied as one unit, and that is only possible
+once every table they name is present.
+
+---
+
+## 1. Before maintenance — preflight and restore point
 
 - [x] **Compliance review complete — approved 2026-08-05.** The caps and the
       classification matrix are recorded in [COMPLIANCE.md](COMPLIANCE.md) §7:
       70.87380781250 g usable-equivalent, 15 g concentrate, 3 immature plants,
       all per transaction. Nothing remains open.
-      **Approval authorises the values; it does not publish them** — see §5.
+      **Approval authorises the values; it does not publish them** — see §9.
+- [x] **Restored-production rehearsal complete — 2026-08-05.** See
+      [PHASE-4-REHEARSAL.md](PHASE-4-REHEARSAL.md).
 - [ ] **Vercel Pro or Enterprise confirmed**, *or* an approved external
       scheduler selected. Per-minute cron requires Pro/Enterprise; on Hobby
       `* * * * *` **fails the deployment** — it does not degrade to daily.
@@ -110,18 +215,87 @@ do not exist. Do not do it.
       minutes.
 - [ ] **`CRON_SECRET` generated** (32+ random bytes) and set in Vercel
       **Production**, marked Sensitive.
-- [ ] **Restore point confirmed** and its identifier recorded here: `__________`
 - [ ] **`CHECKOUT_ENABLED` is unset or `false`** in Production.
-- [ ] *(When credentials permit)* a **restored copy of production** prepared for
-      rehearsal. `npm run rehearse:migration` proves the sequence applies from
-      0007 but runs against an **empty** database — it says nothing about real
-      data volume.
+- [ ] **Restore point taken and its identifier recorded here:** `__________`
+
+> The restore point is the only recovery path from a *succeeded* migration.
+> Take it immediately before §3, not hours earlier.
 
 ---
 
-## 2. Database-owner steps
+## 2. Confirm production is at `0007`
 
-Run as the **owner**, before any migration.
+Run in the **same shell** that will run the migration, immediately before it.
+
+```bash
+# Record what the live application reports first
+curl -s https://cloudmarket.cc/api/health
+```
+
+- [ ] Fingerprint recorded: `__________`
+- [ ] Start time recorded: `__________`
+
+```powershell
+$env:DATABASE_URL_UNPOOLED = "<production DIRECT string>"   # the OWNER
+$env:PRODUCTION_POOLED_URL = "<production POOLED string>"
+
+node scripts/verify-migration-target.mjs https://cloudmarket.cc `
+  --expect-migrations=8 `
+  --require-table=carts,cart_lines `
+  --forbid-table=orders,user_permissions,scheduler_runs
+```
+
+**`--expect-migrations=8`, not 7.** The gate counts journal *rows*: `0000`
+through `0007` is eight of them.
+
+- [ ] Gate reports **GO**.
+
+> **A NO-GO is a stop, always.** Read the reason and resolve it. There is no
+> circumstance in which an operator should proceed past a NO-GO on this gate.
+> (When verifying an isolated rehearsal copy rather than production, use
+> `--rehearsal`, which enforces the *opposite* production-fingerprint
+> expectation while keeping every other identity check. It is a different mode,
+> not a way to silence an objection.)
+
+---
+
+## 3. Migrations `0008` → `0015`, as the owner
+
+```bash
+npx drizzle-kit migrate
+```
+
+- [ ] Completion time recorded: `__________`
+- [ ] Warnings recorded: `__________`
+
+Rehearsal reference: 6927 ms total, exit code 0, zero lock waits **in isolation**.
+
+---
+
+## 4. Confirm sixteen journal rows and all expected objects
+
+```powershell
+node scripts/verify-migration-target.mjs https://cloudmarket.cc --expect-migrations=16
+```
+
+- [ ] Journal at **16 rows** (`0000`–`0015`).
+- [ ] `orders`, `order_lines`, `order_events`, `payments`, `fulfilments`,
+      `purchase_limit_rules`, `user_permissions`, `scheduler_runs` all present.
+- [ ] Both guard triggers on `purchase_limit_rules` enabled (`tgenabled = 'O'`).
+- [ ] `purchase_limit_rules_no_overlap` present.
+- [ ] `product_variants_compliance_matrix` present (**NOT VALID** — expected).
+- [ ] `btree_gist` installed.
+- [ ] Enum counts: `cannabis_class` 8, `measurement_basis` 5,
+      `admin_permission` 2.
+
+> **Do not publish limit rules yet.** Rules are published through the admin
+> screen, by a named grant holder, after re-authentication — §9, not here.
+
+---
+
+## 5. Privilege hardening, as the owner
+
+**Only now**, with every table it names in existence.
 
 ```sql
 -- Create the restricted application role. Use SQL, not the Neon console:
@@ -143,21 +317,48 @@ REVOKE INSERT, UPDATE, DELETE ON user_permissions FROM cloudmarket_app;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cloudmarket_app;
+
+-- The migration journal. READ ONLY, and required: verify:checkout-readiness
+-- reads it as the application role and aborts without these two grants.
+GRANT USAGE ON SCHEMA drizzle TO cloudmarket_app;
+GRANT SELECT ON drizzle.__drizzle_migrations TO cloudmarket_app;
 ```
 
 > The column-level `GRANT UPDATE` **must** follow the table-level `REVOKE
 > UPDATE`, not precede it. Reversed, the revoke removes the column grants too.
 
-Then:
+> **The `drizzle` grants are SELECT and USAGE only.** Do **not** grant `INSERT`,
+> `UPDATE`, `DELETE` or `CREATE` on the `drizzle` schema or the journal, and do
+> not transfer ownership of either. A role that can write the journal can mark a
+> migration as applied without applying it, or hide one that was — which would
+> defeat every schema check in this runbook. The application only ever needs to
+> *read* which migration the database is on.
+
+- [ ] All statements succeeded. If any failed, stop — do not proceed with a
+      partially hardened role.
+
+*(`GRANT … ON ALL SEQUENCES` is a no-op today: the schema has no sequences at
+either 0007 or 0015. It is kept because a future migration may add one.)*
+
+---
+
+## 6. Repoint the application connection
 
 - [ ] Set Vercel Production `DATABASE_URL` to the **`cloudmarket_app`** string.
 - [ ] Leave `DATABASE_URL_UNPOOLED` as the **owner** — migrations need it.
 - [ ] Redeploy so the application picks up the new role.
 
+---
+
+## 7. `verify:privileges`, as the restricted role
+
 ```bash
 $env:DATABASE_URL = "<production app connection string>"
 npm run verify:privileges
 ```
+
+Run it with the connection string the deployed application uses — **not** the
+owner's. Checking the wrong role passes for the wrong reason.
 
 Expected:
 
@@ -172,8 +373,13 @@ Production application role — privilege audit (read only)
 [2] The role does not own the protected tables
   PASS  does not own or inherit ownership of purchase_limit_rules — owner is "neondb_owner"
   …
+[10] The migration journal is readable but not writable
+  PASS  can USAGE the drizzle schema
+  PASS  can SELECT drizzle.__drizzle_migrations
+  PASS  cannot INSERT into the migration journal
+  …
 ==========================================================
-ALL REQUIRED PRIVILEGES CORRECT — 44 PASS, 0 WARN
+ALL REQUIRED PRIVILEGES CORRECT — 54 PASS, 0 WARN
 ==========================================================
 ```
 
@@ -182,58 +388,7 @@ ALL REQUIRED PRIVILEGES CORRECT — 44 PASS, 0 WARN
 
 ---
 
-## 3. Migration steps
-
-```bash
-# Record first
-curl -s https://cloudmarket.cc/api/health
-```
-
-- [ ] Fingerprint recorded: `__________`
-- [ ] Start time recorded: `__________`
-
-```powershell
-# In the SAME shell, immediately before migrating:
-$env:DATABASE_URL_UNPOOLED = "<production DIRECT string>"   # the OWNER
-$env:PRODUCTION_POOLED_URL = "<production POOLED string>"
-
-node scripts/verify-migration-target.mjs https://cloudmarket.cc `
-  --expect-migrations=8 `
-  --require-table=carts,cart_lines `
-  --forbid-table=orders,user_permissions,scheduler_runs
-```
-
-**`--expect-migrations=8`, not 7.** The gate counts journal *rows*: `0000`
-through `0007` is eight of them.
-
-- [ ] Gate reports **GO**. On NO-GO, stop and read the reason.
-
-```bash
-npx drizzle-kit migrate
-```
-
-- [ ] Completion time recorded: `__________`
-- [ ] Warnings recorded: `__________`
-
-```powershell
-node scripts/verify-migration-target.mjs https://cloudmarket.cc --expect-migrations=16
-```
-
-- [ ] Journal at **16 rows** (`0000`–`0015`).
-- [ ] `orders`, `order_lines`, `order_events`, `payments`, `fulfilments`,
-      `purchase_limit_rules`, `user_permissions`, `scheduler_runs` all present.
-- [ ] Both guard triggers on `purchase_limit_rules` enabled (`tgenabled = 'O'`).
-- [ ] `purchase_limit_rules_no_overlap` present.
-- [ ] `product_variants_compliance_matrix` present (**NOT VALID** — expected).
-- [ ] `btree_gist` installed.
-
-> **Do not publish limit rules during the migration.** Rules are published
-> through the admin screen, by a named grant holder, after re-authentication —
-> §5, not here.
-
----
-
-## 4. Application deployment
+## 8. Application deployment
 
 - [ ] Deploy with **`CHECKOUT_ENABLED=false`** (or unset — absent means off).
 
@@ -290,7 +445,7 @@ Expected:
 
 ---
 
-## 5. Compliance setup
+## 9. Compliance setup
 
 - [ ] Grant the named officer:
 
@@ -318,6 +473,11 @@ npm run perm -- --email=officer@example.com --grant=compliance_admin \
 > transaction as the rule. Rule publication is **one way** — a wrong value can
 > only be corrected by publishing another beside it, and the wrong one stays on
 > the record forever.
+>
+> The rehearsal confirmed this end to end on a disposable copy: a published rule
+> **cannot be deleted**, and neither can the officer who published it — deleting
+> the user is refused by the immutability trigger, because the cascade reaches
+> `published_by`.
 
 Record, for each of the six supported classes:
 
@@ -334,7 +494,7 @@ Record, for each of the six supported classes:
 
 ---
 
-## 6. Catalog setup
+## 10. Catalog setup
 
 - [ ] Create the real licensed store record — real licence number, real address,
       `pickup_enabled = true`.
@@ -363,6 +523,11 @@ Repeat until:
 READY — all N variant(s) can enter checkout
 ```
 
+> **This is the step the rehearsal could not perform.** Production had no
+> catalog, so no real product record has yet met the compliance matrix. This gate
+> is the first and only place that risk is discovered. Treat a failure here as
+> expected, not exceptional.
+
 Only then, and **outside the maintenance window** if preferred:
 
 ```sql
@@ -374,7 +539,7 @@ ALTER TABLE product_variants VALIDATE CONSTRAINT product_variants_compliance_mat
 
 ---
 
-## 7. Final readiness
+## 11. Final readiness
 
 ```bash
 npm run verify:checkout-readiness
@@ -408,7 +573,7 @@ Checkout may be enabled. Set CHECKOUT_ENABLED=true and redeploy.
 
 ---
 
-## 8. Enablement
+## 12. Enablement
 
 - [ ] Set **`CHECKOUT_ENABLED=true`** in Vercel Production.
 - [ ] Deploy.
@@ -443,7 +608,7 @@ Then confirm, in the database:
 
 ---
 
-## 9. Emergency stop
+## 13. Emergency stop
 
 **The fastest safe way to stop new checkout activity:**
 
@@ -492,14 +657,18 @@ deployment completes.
 
 ---
 
-## 10. Sign-off
+## 14. Sign-off
 
 | Step | Who | Date | Result |
 | --- | --- | --- | --- |
 | Attorney confirmation | | | |
-| Privilege hardening + `verify:privileges` | | | |
+| Restore point recorded | | | |
 | Migrations 0008–0015 | | | |
-| Application deployment (disabled) | | | |
+| Sixteen journal rows confirmed | | | |
+| Privilege hardening applied | | | |
+| Application repointed to `cloudmarket_app` | | | |
+| `verify:privileges` — every check PASS | | | |
+| Application deployment (checkout disabled) | | | |
 | Purchase limit rules published | | | |
 | Catalog classified + `verify:catalog` READY | | | |
 | `VALIDATE CONSTRAINT` | | | |

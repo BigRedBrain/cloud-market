@@ -45,6 +45,7 @@ import {
   placeOrder,
 } from '../lib/orders/core'
 import { recordAuditEvent } from '../lib/auth/audit'
+import { SUPPORTED_CANNABIS_CLASSES } from '../lib/orders/limits'
 import { toFixed, type Rational } from '../lib/orders/exact'
 
 const PRODUCTION_FP = '2b968b3cbe06'
@@ -1243,17 +1244,66 @@ async function main() {
         ),
       )
 
+    /**
+     * WHY THIS ASSERTS `!ok` AND NOT A PARTICULAR REASON.
+     *
+     * `PROBE_CLASS` is `other`, which is not a supported class, and
+     * `resolveLimitRules` tests supported-ness BEFORE it looks for a rule. So a
+     * clean database answers `unsupported`, not `missing` — the class is
+     * refused before rule existence is ever evaluated.
+     *
+     * This used to assert `reason === 'missing'`, which passed in development
+     * for an incidental reason: development carries legacy open `other` and
+     * `edible` rule rows, so `closedProbe` was non-empty and the branch below
+     * was skipped entirely. Against a database with no legacy rows — a restored
+     * copy of production, which is where the Phase 4 rehearsal found this — the
+     * branch runs and the assertion fails, while the product is behaving
+     * correctly and in fact refusing EARLIER than the test expected.
+     *
+     * The requirement is "fails closed, and says which class". Both reasons
+     * satisfy it, so both are accepted; pinning the exact reason was asserting
+     * an implementation detail that legitimately depends on the data present.
+     * The `missing` branch itself is covered below, with a SUPPORTED class that
+     * genuinely has no rule in force.
+     */
     if (closedProbe.length === 0) {
-      const missing = await resolveLimitRules([PROBE_CLASS])
+      const refused = await resolveLimitRules([PROBE_CLASS])
       check('a class with no rule in force is REFUSED, not defaulted to zero',
-        !missing.ok && missing.reason === 'missing',
-        missing.ok ? 'resolved anyway' : missing.reason)
+        !refused.ok && (refused.reason === 'missing' || refused.reason === 'unsupported'),
+        refused.ok ? 'resolved anyway' : refused.reason)
       check('the refusal names the class',
-        !missing.ok && missing.classes.includes(PROBE_CLASS))
+        !refused.ok && refused.classes.includes(PROBE_CLASS))
     } else {
       check('a class with no rule in force is REFUSED, not defaulted to zero', true,
         'skipped: probe class has an open rule')
       check('the refusal names the class', true, 'skipped')
+    }
+
+    /**
+     * The `missing` branch, reached the only way it legitimately can: a class
+     * the application SUPPORTS, for which no rule is in force. Unsupported
+     * classes short-circuit before this point, so they cannot exercise it.
+     */
+    {
+      const withRules = await db
+        .selectDistinct({ cls: schema.purchaseLimitRules.cannabisClass })
+        .from(schema.purchaseLimitRules)
+        .where(isNull(schema.purchaseLimitRules.effectiveUntil))
+      const covered = new Set(withRules.map((r) => r.cls as string))
+      const uncovered = SUPPORTED_CANNABIS_CLASSES.find((cls) => !covered.has(cls))
+
+      if (uncovered) {
+        const missing = await resolveLimitRules([uncovered])
+        check('a SUPPORTED class with no rule in force reports "missing"',
+          !missing.ok && missing.reason === 'missing',
+          missing.ok ? 'resolved anyway' : missing.reason)
+        check('the "missing" refusal names the supported class',
+          !missing.ok && missing.classes.includes(uncovered))
+      } else {
+        check('a SUPPORTED class with no rule in force reports "missing"', true,
+          'skipped: every supported class has a rule in force')
+        check('the "missing" refusal names the supported class', true, 'skipped')
+      }
     }
 
     /**

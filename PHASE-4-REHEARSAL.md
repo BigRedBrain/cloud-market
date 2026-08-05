@@ -1,8 +1,15 @@
 # Phase 4 — Restored-Production Rehearsal
 
-**Status: EXECUTED AND COMPLETE — 2026-08-05.**
+**Status: EXECUTED AND COMPLETE — 2026-08-05. Corrections merged.**
 Phase 4 merged to `main` as `fcc9e1e` (PR #1).
 Attempts 1–3 were NO-GO to start. Attempt 4 ran the full sequence.
+
+The rehearsal Neon child branch has been **deleted** and must not be reused.
+
+**All findings below are now fixed.** F1, F2 and F3 in
+[PHASE-4-RELEASE.md](PHASE-4-RELEASE.md) and the scripts; F6 in
+`scripts/verify-limit-governance.ts`; F4 and F5 as documentation. Each is marked
+in §3.
 
 ---
 
@@ -178,8 +185,13 @@ catalogue churn from enum and function work.
 Figures are **first-to-last sighting** across the whole batch, not a
 continuously-held duration for one statement.
 
-**Lock waits: 0.** No sampled lock was ever ungranted. **This says nothing about
-behaviour under concurrent live traffic** — it was measured in isolation.
+**Lock waits: 0.**  No sampled lock was ever ungranted.
+
+> **Zero lock waits here does NOT predict zero lock waits in production.** This
+> was measured on an isolated copy, with no concurrent clients and an empty
+> catalog. Nothing was competing for the locks, so nothing could wait for them.
+> A rewrite holding ACCESS EXCLUSIVE behind live traffic behaves differently, and
+> this rehearsal says nothing about that case.
 
 ### 2.5 Journal confirmed at 16, constraint confirmed NOT VALID
 
@@ -303,6 +315,21 @@ open yet…"*, and the parser is strict — `1`, `yes`, `TRUE` and `True` all re
 
 ### 2.10 Order-lifecycle scenarios — 272 / 273
 
+> ### What these scenarios do and do not prove
+>
+> **They prove** that the application's order lifecycle behaves correctly against
+> **production's schema lineage** — the real migrated schema, its real
+> constraints, its real triggers and its real enum values.
+>
+> **They do NOT prove compatibility with real catalog data.** Every product,
+> variant, store and order they touch is a fixture the suite created and then
+> removed. Production had no catalog, so no real product record took part.
+>
+> **These are not, and must not be described as, real production-data catalog
+> verification.** Full real-catalog lifecycle verification is **deferred** until
+> real licensed products and inventory exist — see §10 of the release runbook,
+> where `npm run verify:catalog` is the gate that performs it.
+
 Run only after the prerequisite gates passed. The one outstanding readiness
 failure is the absence of a real catalog, which these suites supply themselves as
 isolated fixtures, removed by id afterwards.
@@ -361,7 +388,7 @@ The compliance record defends itself from the far end.
 
 ## 3. Findings
 
-### F1 · §2 cannot run where §3 puts it — **blocks a real release**
+### F1 · §2 cannot run where §3 puts it — **FIXED**
 
 `PHASE-4-RELEASE.md` §2 sits **before** §3, but four of its ten statements
 reference tables that `0008`–`0015` have not yet created. Verbatim against a real
@@ -380,12 +407,23 @@ Run as a script it **aborts at statement 5**, leaving a role with blanket
 `SELECT, INSERT, UPDATE, DELETE` on every table, **none** of the compliance
 REVOKEs, and no `ALTER DEFAULT PRIVILEGES`.
 
-**Fix: move §2 wholesale to after §3 and before §4.** Verified — all ten then
-succeed and `verify:privileges` returns 44 PASS / 0 FAIL. The ordering rationale
-survives: the app role still cannot run migrations, and the application is not
-deployed until §4 either way.
+**Fixed.** `PHASE-4-RELEASE.md` was reordered so migrations run first:
 
-### F2 · §2 omits the grant §7 needs — **blocks a real release**
+```
+1 preflight + restore point   5 privilege-hardening SQL (owner)
+2 confirm 0007, 8 journal rows 6 repoint the app to cloudmarket_app
+3 migrate 0008-0015 (owner)    7 verify:privileges as the restricted role
+4 confirm 16 rows + objects    8 deploy with CHECKOUT_ENABLED=false
+```
+
+Verified on the copy — all ten statements then succeed and `verify:privileges`
+returns 44 PASS / 0 FAIL. The ordering rationale survives: the app role still
+cannot run migrations, and the application is not deployed until §8 either way.
+The runbook carries a **"Why the order changed"** section recording that the old
+order aborts partway and can leave the application role with broader privileges
+than intended.
+
+### F2 · §2 omits the grant §7 needs — **FIXED**
 
 `npm run verify:checkout-readiness` aborts immediately as the application role:
 
@@ -399,18 +437,36 @@ It reads `drizzle.__drizzle_migrations`; §2 grants only on `public`. **Running 
 as the owner is not a fix** — the gate audits `current_user`, so the owner would
 produce a false pass.
 
-**Fix: add to §2.**
+**Fixed.** Added to the privilege-hardening step:
 
 ```sql
 GRANT USAGE ON SCHEMA drizzle TO cloudmarket_app;
 GRANT SELECT ON drizzle.__drizzle_migrations TO cloudmarket_app;
 ```
 
-Verified: the gate then runs to completion, and
-`has_table_privilege('cloudmarket_app','drizzle.__drizzle_migrations','INSERT')`
-remains **false**.
+Read-only, on migration metadata only. `INSERT`, `UPDATE`, `DELETE`, `CREATE`
+and ownership are **not** granted on the schema or the journal — a role that can
+write the journal can mark a migration as applied without applying it, or hide
+one that was, which would defeat every schema assertion in the runbook.
 
-### F3 · The pre-migration gate cannot pass against a rehearsal copy
+`verify:privileges` was extended with a new section **[10]** of ten checks
+proving exactly that, and a correctly hardened role now reports **54 PASS** where
+it reported 44:
+
+| New assertion | |
+| --- | --- |
+| can USAGE the `drizzle` schema | required, or §7 aborts |
+| can SELECT `drizzle.__drizzle_migrations` | required, or §7 aborts |
+| cannot INSERT / UPDATE / DELETE / TRUNCATE the journal | cannot fake or hide a migration |
+| does not own or inherit ownership of the journal | ownership would grant everything back |
+| does not own or inherit ownership of the `drizzle` schema | same |
+| cannot CREATE in the `drizzle` schema | could otherwise shadow the journal |
+| cannot CREATE in `public` | **migrations cannot run as this role** |
+
+Verified on the copy: the readiness gate runs to completion, and every write
+privilege on the journal reads **false**.
+
+### F3 · The pre-migration gate cannot pass against a rehearsal copy — **FIXED**
 
 `verify-migration-target.mjs` check B anchors the target to the fingerprint the
 *live production application* publishes — which a correctly isolated copy must
@@ -418,9 +474,34 @@ remains **false**.
 `--expect-migrations=8` and `=16`; checks A (same branch) and C (data signature)
 passed both times.
 
-**Fix:** add a `--rehearsal` flag that inverts check B to *must NOT match live*,
-or document that only A and C apply to a copy. Do not train operators to read
-past a NO-GO.
+**Fixed.** `scripts/verify-migration-target.mjs` now has an explicit
+`--rehearsal` mode.
+
+| | Production mode (default) | `--rehearsal` |
+| --- | --- | --- |
+| Target vs live production fingerprint | **must match** | **must NOT match** |
+| Target vs known production fingerprint | — | **must NOT match** |
+| Target vs known development fingerprints | must not match | **must NOT match** |
+| Target vs known development *endpoint* | — | **must NOT match** |
+| Pooled and direct on one branch | enforced | enforced |
+| Journal count and data signature | enforced | enforced |
+| Anchor source | `PRODUCTION_POOLED_URL` | the copy's own `DATABASE_URL` |
+
+Rehearsal mode needs **no production credential at all** — the anchor is the
+copy's own pooled string, and the known-fingerprint constants carry the
+production and development comparisons even when `/api/health` is unreachable.
+
+**No operator is ever told to ignore a NO-GO.** The mode changes what is
+asserted, not whether the answer may be disregarded; both modes now print
+*"A NO-GO is a stop. Resolve the reason; do not proceed past it."*
+
+The identity decision was extracted into a pure `evaluateIdentity()` so it can be
+tested without a database, a network or a credential.
+`npm run test:migration-target` — **19 passed, 0 failed** — proves the two modes
+return **opposite** answers for the same target while retaining every other
+check, including that production mode fails closed when `/api/health` cannot be
+read, and that rehearsal mode still refuses a copy sharing the development
+endpoint.
 
 ### F4 · §2.10's prerequisites — RESOLVED
 
@@ -432,10 +513,23 @@ production supplies neither, and the seeder is forbidden.
 step-up re-authentication and the audit row, and is a better test than the
 scenarios it unblocked. The catalog half remains supplied by suite fixtures.
 
-**Recommend the runbook say so explicitly:** the rehearsal publishes rules
-through the admin path on the copy, as its own step, before the scenarios.
+**Documented policy, now recorded in both documents:**
 
-### F5 · Two journal hashes do not match this repository — informational
+- **Rehearsal-only purchase-limit rules MAY be published through
+  `/admin/purchase-limits`** on an **isolated, disposable copy**, as a rehearsal
+  step in its own right — it exercises the grant, the step-up re-authentication,
+  the typed confirmation, the written reason and the audit row.
+- **The development seeder remains prohibited**, on every target. It bypasses
+  every one of those controls, and `npm run db:seed:limits:dev` refuses a
+  production target outright.
+- **Lifecycle scenarios using fixtures prove application behaviour against
+  production's schema lineage.** That is their value and their limit.
+- **They do not prove compatibility with real catalog data** when production has
+  no catalog.
+- **Full real-catalog lifecycle verification is deferred** until real licensed
+  products and inventory exist.
+
+### F5 · Two journal hashes do not match this repository — **informational, PRESERVED**
 
 The copy's recorded content hashes for `0000` and `0004` differ from the current
 `drizzle/*.sql` files; the other six match. Both files have exactly one commit
@@ -451,7 +545,16 @@ Recorded because production's 0007 schema is therefore **not byte-identical** to
 what this repository rebuilds, so `npm run rehearse:migration` tests a slightly
 different starting schema than production actually has.
 
-### F6 · A governance test is coupled to development's legacy rows — **test defect**
+> **Do not rewrite production migration history, and do not alter historical
+> journal rows** to make the hashes agree. They record what was actually
+> applied. This note is retained deliberately, and is repeated in §0 of
+> [PHASE-4-RELEASE.md](PHASE-4-RELEASE.md).
+
+**This is exactly why the restored-copy rehearsal was worth running:** it proved
+that migrations `0008`–`0015` apply successfully to **production's actual schema
+lineage**, which no rebuild from this repository can establish.
+
+### F6 · A governance test is coupled to development's legacy rows — **FIXED**
 
 `npm run test:governance` fails one of 104 checks against a clean
 production-lineage database:
@@ -479,9 +582,18 @@ incidental reason and fails here.
 refuses `other` as *unsupported*, which is a stronger and earlier refusal than
 *missing*. Both fail closed. **No safety impact.**
 
-**Fix the test, not the product** — assert `!ok` and that the class is named,
-rather than pinning the exact reason; or use a supported class with no rule as
-the probe.
+**Fixed in the test; `resolveLimitRules()` was NOT changed.** The product
+behaviour is correct and was left alone.
+
+`scripts/verify-limit-governance.ts` now does both of the available remedies:
+
+- The `other` probe asserts only that resolution **fails** and **names the
+  class**, accepting either `missing` or `unsupported`. The requirement is "fails
+  closed, and says which class"; pinning the exact reason was asserting an
+  implementation detail that legitimately depends on which rows are present.
+- A **new** assertion covers the `missing` branch properly, using a **supported**
+  class that has no rule in force — the only way that branch can legitimately be
+  reached, since unsupported classes short-circuit before it.
 
 ---
 
@@ -547,12 +659,27 @@ and is why this gap is tolerable.
 
 ---
 
-## 6. Operator action required
+## 6. Operator actions
 
-- [ ] **Delete the rehearsal Neon branch** (endpoint `a53081efb29d`). It holds a
-      copy of production's users and audit history, plus six published rules, a
-      rehearsal officer and an audit trail that **cannot be deleted from inside
-      the database**. It must not be reused or reset — only dropped.
-- [ ] Apply **F1** and **F2** to `PHASE-4-RELEASE.md` before the release window.
-- [ ] Fix **F6** in `scripts/verify-limit-governance.ts` (test-only).
-- [ ] Consider **F3** and **F4** as documentation improvements.
+- [x] **Delete the rehearsal Neon branch** (endpoint `a53081efb29d`) — reported
+      done. It held a copy of production's users and audit history, plus six
+      published rules, a rehearsal officer and an audit trail that **cannot be
+      deleted from inside the database**. It must not be reused or reset.
+- [x] **F1** — release runbook reordered; migrations now precede privilege
+      hardening.
+- [x] **F2** — journal grants added; `verify:privileges` extended to 49 checks.
+- [x] **F3** — `--rehearsal` mode added, with 19 tests over both modes.
+- [x] **F4** — scenario scope documented in both files.
+- [x] **F5** — journal-hash note preserved in both files.
+- [x] **F6** — governance test corrected; the product was not changed.
+
+### Still outstanding, and owned by the operator
+
+- [ ] Confirm the Vercel plan supports the cron interval (Pro/Enterprise), or
+      select an external scheduler.
+- [ ] Generate and set `CRON_SECRET` in Vercel **Production**, marked Sensitive.
+- [ ] **Take and record the production restore point** immediately before
+      migrating. This is the only recovery path from a succeeded migration, and
+      it is the one precondition the rehearsal itself could not satisfy — taking
+      a restore point needs the Neon control plane, and no API key was available
+      to the rehearsal environment.

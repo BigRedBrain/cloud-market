@@ -42,7 +42,8 @@
     "test:readiness": "node scripts/verify-readiness-gate.mjs",
     "rehearse:migration": "node scripts/rehearse-migration.mjs",
     "db:seed:limits:dev": "node scripts/seed-purchase-limits-dev.mjs",
-    "test:seed-guard": "node scripts/verify-seed-guard.mjs"
+    "test:seed-guard": "node scripts/verify-seed-guard.mjs",
+    "test:migration-target": "node scripts/verify-migration-target-modes.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

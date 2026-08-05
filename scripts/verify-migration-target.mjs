@@ -1,9 +1,15 @@
 /**
  * Pre-write gate: proves where `drizzle-kit migrate` is about to write.
  *
+ *   # Production
  *   $env:DATABASE_URL_UNPOOLED = "<production DIRECT string>"
  *   $env:PRODUCTION_POOLED_URL = "<production POOLED string>"
- *   node scripts/verify-migration-target.mjs https://cloud-market-ten.vercel.app
+ *   node scripts/verify-migration-target.mjs https://cloudmarket.cc --expect-migrations=8
+ *
+ *   # An isolated rehearsal copy
+ *   $env:DATABASE_URL          = "<copy POOLED string>"
+ *   $env:DATABASE_URL_UNPOOLED = "<copy DIRECT string>"
+ *   node scripts/verify-migration-target.mjs https://cloudmarket.cc --rehearsal --expect-migrations=8
  *
  * Run this in the SAME shell that will run the migration, immediately before it.
  *
@@ -24,47 +30,158 @@
  *
  * So this script does not check what you set. It replicates the config's exact
  * resolution and reports the connection drizzle-kit will actually open, then
- * proves that connection is production three independent ways:
+ * proves that connection is the intended target three independent ways:
  *
  *   A. Branch identity — the resolved endpoint must be the same Neon endpoint
  *      as the pooled string, with '-pooler' stripped. Catches "direct string
  *      from the wrong branch".
- *   B. Deployment anchor — that pooled string must match the fingerprint the
- *      live app publishes at /api/health. Catches "both strings wrong".
+ *   B. Deployment anchor — see the two modes below.
  *   C. Data signature — read through the resolved connection itself: the
- *      journal, the catalog, and the absence of cart objects must look like
- *      production and not like the seeded development branch.
+ *      journal, the catalog, and the absence of cart objects must look like the
+ *      expected target and not like the seeded development branch.
  *
- * A and B establish identity; C establishes it again through the very channel
- * the write will use. Read-only throughout — it opens a connection, runs
- * SELECTs, and closes.
+ * THE TWO MODES, AND WHY CHECK B INVERTS
+ *
+ * Check B is the only check whose expectation depends on what you are writing
+ * to, so it is the only one that changes between modes.
+ *
+ *   PRODUCTION (default) — the pooled string MUST match the fingerprint the
+ *   live application publishes at /api/health. Anything else means you are not
+ *   pointed at the database the deployed app is using.
+ *
+ *   REHEARSAL (--rehearsal) — the target MUST NOT match that fingerprint, and
+ *   must not match the known production or development fingerprints either. A
+ *   correctly isolated copy is *defined* by not being production; a rehearsal
+ *   that anchored to production would be a rehearsal against production.
+ *
+ * This mode exists because the alternative was telling operators that a NO-GO
+ * is sometimes expected. It never is. A NO-GO always means stop — the mode
+ * changes what is being asserted, not whether the answer may be ignored.
  */
 import { createHash } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
 import { config as loadEnv } from 'dotenv'
 import { Pool, neonConfig } from '@neondatabase/serverless'
 
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
-const BASE = process.argv[2] ?? 'https://cloud-market-ten.vercel.app'
+/**
+ * Known identities, so a rehearsal can be refused for pointing at production or
+ * development even when /api/health is unreachable. Fingerprints are SHA-256 of
+ * the hostname (or of the endpoint id with '-pooler' stripped), first 12 hex —
+ * they identify a database without disclosing one.
+ */
+export const KNOWN_FINGERPRINTS = {
+  productionHost: '2b968b3cbe06',
+  developmentHosts: ['eec6912eb35b', '3c503c1409d2'],
+  developmentEndpoint: 'a5d81ac199d8',
+}
+
+export const hostFp = (u) =>
+  createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)
+export const endpointFp = (u) =>
+  createHash('sha256')
+    .update(new URL(u).hostname.split('.')[0].replace('-pooler', ''))
+    .digest('hex')
+    .slice(0, 12)
+
+/**
+ * The identity decision, as a pure function of fingerprints.
+ *
+ * Extracted so both modes can be tested without a database, a network or a
+ * credential — the part worth testing is the expectation, not the plumbing.
+ *
+ * @param {object} input
+ * @param {'production'|'rehearsal'} input.mode
+ * @param {string} input.resolvedHost      hostFp of the string drizzle-kit will open
+ * @param {string} input.resolvedEndpoint  endpointFp of the same
+ * @param {string} input.pooledHost        hostFp of the pooled string
+ * @param {string} input.pooledEndpoint    endpointFp of the same
+ * @param {string|null} input.liveFingerprint    what /api/health published, or null
+ * @param {string|null} input.liveEnvironment    what /api/health called itself, or null
+ * @returns {string[]} problems; empty means the identity checks passed
+ */
+export function evaluateIdentity({
+  mode,
+  resolvedHost,
+  resolvedEndpoint,
+  pooledHost,
+  pooledEndpoint,
+  liveFingerprint,
+  liveEnvironment,
+}) {
+  const problems = []
+
+  /* ---- A. both strings must be the same Neon branch, in BOTH modes ------- */
+  if (resolvedEndpoint !== pooledEndpoint) {
+    problems.push(
+      'The resolved write target is a DIFFERENT Neon branch than the pooled string. ' +
+        'This is the exact shape of an accidental write to development.',
+    )
+  }
+
+  if (mode === 'production') {
+    /* ---- B. must BE the database the live application is using ----------- */
+    if (liveFingerprint === null) {
+      problems.push('Could not read the live application fingerprint, so nothing anchors this target.')
+    } else if (liveFingerprint !== pooledHost) {
+      problems.push(
+        'The pooled string is not the database the deployed app is using, so it ' +
+          'cannot anchor anything. Both strings may be wrong.',
+      )
+    }
+    if (liveEnvironment !== null && liveEnvironment !== 'production') {
+      problems.push(`The app reports environment "${liveEnvironment}", not "production".`)
+    }
+    return problems
+  }
+
+  /* ---- B (inverted). must NOT be production, and must not be development - */
+  for (const [label, fp] of [
+    ['resolved write target', resolvedHost],
+    ['pooled string', pooledHost],
+  ]) {
+    if (liveFingerprint !== null && fp === liveFingerprint) {
+      problems.push(
+        `The ${label} IS the database the live application is using. A rehearsal ` +
+          'must never be run against production.',
+      )
+    }
+    if (fp === KNOWN_FINGERPRINTS.productionHost) {
+      problems.push(`The ${label} matches the known production fingerprint.`)
+    }
+    if (KNOWN_FINGERPRINTS.developmentHosts.includes(fp)) {
+      problems.push(
+        `The ${label} matches the known development fingerprint. A rehearsal must ` +
+          'be an isolated copy of production, not the development database.',
+      )
+    }
+  }
+  for (const [label, fp] of [
+    ['resolved write target', resolvedEndpoint],
+    ['pooled string', pooledEndpoint],
+  ]) {
+    if (fp === KNOWN_FINGERPRINTS.developmentEndpoint) {
+      problems.push(`The ${label} is on the known development endpoint.`)
+    }
+  }
+
+  return problems
+}
+
+const BASE = process.argv[2]?.startsWith('http') ? process.argv[2] : 'https://cloudmarket.cc'
 
 /* ---------------------------------------------------------- expectations ---
  *
  * Supplied per rollout rather than baked in, so this gate never reports NO-GO
  * for a reason that stopped being true two phases ago.
  *
- *   --expect-migrations=7               journal length BEFORE this migration
+ *   --rehearsal                         verify an isolated copy, not production
+ *   --expect-migrations=8               journal length BEFORE this migration
  *   --require-table=carts,cart_lines    must already exist
  *   --forbid-table=foo                  must NOT yet exist
  *   --forbid-column=verification_tokens.superseded_at
  *   --forbid-enum=audit_event:EMAIL_VERIFIED
- *
- * For migration 0007:
- *
- *   node scripts/verify-migration-target.mjs <url> \
- *     --expect-migrations=7 \
- *     --require-table=carts,cart_lines \
- *     --forbid-column=verification_tokens.superseded_at \
- *     --forbid-enum=audit_event:EMAIL_VERIFIED
  */
 const flag = (name) => {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`))
@@ -75,6 +192,7 @@ const list = (name) => {
   return raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : []
 }
 
+const MODE = process.argv.includes('--rehearsal') ? 'rehearsal' : 'production'
 const rawExpect = flag('expect-migrations')
 const EXPECT_MIGRATIONS = rawExpect === null ? null : Number(rawExpect)
 const REQUIRE_TABLES = list('require-table')
@@ -82,26 +200,26 @@ const FORBID_TABLES = list('forbid-table')
 const FORBID_COLUMNS = list('forbid-column')
 const FORBID_ENUM = list('forbid-enum')
 
-/* ---- replicate drizzle.config.ts exactly ---------------------------------- */
-loadEnv({ path: '.env.local', quiet: true })
-loadEnv({ path: '.env', quiet: true })
-
-const RESOLVED_VAR = process.env.DATABASE_URL_UNPOOLED ? 'DATABASE_URL_UNPOOLED' : 'DATABASE_URL'
-const resolved = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL
-const pooled = process.env.PRODUCTION_POOLED_URL
-
-const hostFp = (u) => createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)
-const endpointFp = (u) =>
-  createHash('sha256')
-    .update(new URL(u).hostname.split('.')[0].replace('-pooler', ''))
-    .digest('hex')
-    .slice(0, 12)
-
 const problems = []
 const note = (s) => console.log(`  ${s}`)
 
 async function main() {
-  console.log('Migration target verification (read-only)\n')
+  /* ---- replicate drizzle.config.ts exactly -------------------------------- */
+  loadEnv({ path: '.env.local', quiet: true })
+  loadEnv({ path: '.env', quiet: true })
+
+  const RESOLVED_VAR = process.env.DATABASE_URL_UNPOOLED ? 'DATABASE_URL_UNPOOLED' : 'DATABASE_URL'
+  const resolved = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL
+
+  /**
+   * In production the anchor is the production POOLED string, supplied
+   * explicitly. In a rehearsal there is no production credential in the room —
+   * and there must not be — so the pooled half of the pair being verified is
+   * the copy's own DATABASE_URL.
+   */
+  const pooled = MODE === 'rehearsal' ? process.env.DATABASE_URL : process.env.PRODUCTION_POOLED_URL
+
+  console.log(`Migration target verification (read-only) — ${MODE.toUpperCase()} mode\n`)
 
   if (!resolved) {
     console.error('No connection string resolved. Set DATABASE_URL_UNPOOLED.')
@@ -110,8 +228,11 @@ async function main() {
   }
   if (!pooled) {
     console.error(
-      'PRODUCTION_POOLED_URL is required — it is the anchor that /api/health validates.\n' +
-        '  $env:PRODUCTION_POOLED_URL = "<production POOLED string>"',
+      MODE === 'rehearsal'
+        ? 'DATABASE_URL is required in --rehearsal mode — it is the pooled half of the pair being verified.\n' +
+            '  $env:DATABASE_URL = "<the copy\'s POOLED string>"'
+        : 'PRODUCTION_POOLED_URL is required — it is the anchor that /api/health validates.\n' +
+            '  $env:PRODUCTION_POOLED_URL = "<production POOLED string>"',
     )
     process.exitCode = 1
     return
@@ -129,38 +250,43 @@ async function main() {
   }
 
   console.log('\n[2] A — is the write target the same branch as the pooled string?')
-  const sameBranch = endpointFp(resolved) === endpointFp(pooled)
   note(`pooled endpoint id: ${endpointFp(pooled)}`)
-  note(`same branch:        ${sameBranch ? 'YES' : 'NO'}`)
-  if (!sameBranch) {
-    problems.push(
-      'The resolved write target is a DIFFERENT Neon branch than the pooled string. ' +
-        'This is the exact shape of an accidental write to development.',
-    )
-  }
+  note(`same branch:        ${endpointFp(resolved) === endpointFp(pooled) ? 'YES' : 'NO'}`)
 
-  console.log('\n[3] B — does the pooled string match the deployed application?')
+  console.log(
+    MODE === 'rehearsal'
+      ? '\n[3] B — is the target ISOLATED from production and development?'
+      : '\n[3] B — does the pooled string match the deployed application?',
+  )
   let health
   try {
     health = await fetch(`${BASE}/api/health`).then((r) => r.json())
   } catch (error) {
-    problems.push(`Could not reach ${BASE}/api/health — ${error.message}`)
+    note(`could not reach ${BASE}/api/health — ${error.message}`)
   }
+  const liveFingerprint = health?.database?.fingerprint ?? null
+  const liveEnvironment = health?.environment ?? null
   if (health) {
-    note(`app reports:        ${health.database?.fingerprint} (environment: ${health.environment})`)
+    note(`app reports:        ${liveFingerprint} (environment: ${liveEnvironment})`)
     note(`pooled hostname:    ${hostFp(pooled)}`)
-    const anchored = health.database?.fingerprint === hostFp(pooled)
-    note(`anchored:           ${anchored ? 'YES' : 'NO'}`)
-    if (!anchored) {
-      problems.push(
-        'The pooled string is not the database the deployed app is using, so it ' +
-          'cannot anchor anything. Both strings may be wrong.',
-      )
-    }
-    if (health.environment !== 'production') {
-      problems.push(`The app at ${BASE} reports environment "${health.environment}".`)
-    }
+    note(
+      MODE === 'rehearsal'
+        ? `isolated:           ${liveFingerprint !== hostFp(pooled) ? 'YES' : 'NO'}`
+        : `anchored:           ${liveFingerprint === hostFp(pooled) ? 'YES' : 'NO'}`,
+    )
   }
+
+  problems.push(
+    ...evaluateIdentity({
+      mode: MODE,
+      resolvedHost: hostFp(resolved),
+      resolvedEndpoint: endpointFp(resolved),
+      pooledHost: hostFp(pooled),
+      pooledEndpoint: endpointFp(pooled),
+      liveFingerprint,
+      liveEnvironment,
+    }),
+  )
 
   console.log('\n[4] C — data signature, read through the write connection itself')
   const pool = new Pool({ connectionString: resolved })
@@ -194,7 +320,9 @@ async function main() {
     /**
      * The catalog check is the one invariant that does not move: production is
      * unseeded, the development branch is not, so a populated catalog means the
-     * wrong target regardless of which migration is being applied.
+     * wrong target regardless of which migration is being applied. It holds in
+     * rehearsal mode too — a copy of production inherits production's empty
+     * catalog, so a populated one means the copy is not what it claims to be.
      */
     if (products > 0 || variants > 0) {
       problems.push(
@@ -263,15 +391,28 @@ async function main() {
   if (problems.length) {
     console.log('NO-GO — do not run drizzle-kit migrate:')
     for (const p of problems) console.log(`  • ${p}`)
+    console.log('\nA NO-GO is a stop. Resolve the reason; do not proceed past it.')
     process.exitCode = 1
   } else {
-    console.log('GO — the resolved target is production/main at 0004, catalog empty,')
-    console.log('     cart objects absent. Run `npx drizzle-kit migrate` in THIS shell.')
+    console.log(
+      MODE === 'rehearsal'
+        ? 'GO — the resolved target is an isolated copy: not production, not development,'
+        : 'GO — the resolved target is the production database the live app is using,',
+    )
+    console.log(
+      `     both strings on one branch, catalog empty${
+        EXPECT_MIGRATIONS === null ? '' : `, journal at ${EXPECT_MIGRATIONS}`
+      }.`,
+    )
+    console.log('     Run `npx drizzle-kit migrate` in THIS shell.')
   }
   console.log('==========================================================')
 }
 
-main().catch((error) => {
-  console.error(`\nABORTED: ${error.message}`)
-  process.exitCode = 1
-})
+/** Only run when executed directly, so the pure logic above can be imported. */
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`\nABORTED: ${error.message}`)
+    process.exitCode = 1
+  })
+}
