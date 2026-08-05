@@ -1,7 +1,8 @@
 # Phase 4 — Restored-Production Rehearsal
 
 **Status: NOT EXECUTED — NO-GO to start.**
-Date of assessment: 2026-08-05. Branch `feat/checkout-orders` at `75db330`.
+Phase 4 merged to `main` as `fcc9e1e` (PR #1).
+Assessment attempts: 2026-08-05 (attempt 1), 2026-08-05 (attempt 2, post-merge).
 
 ---
 
@@ -9,13 +10,100 @@ Date of assessment: 2026-08-05. Branch `feat/checkout-orders` at `75db330`.
 
 > ## 🔴 NO-GO — the rehearsal cannot begin
 >
-> **This is not a NO-GO on the Phase 4 code.** It is a NO-GO on *starting the
-> rehearsal*, because the single precondition the rehearsal is defined by —
-> **an isolated database restored from current production data** — cannot be
-> created from this environment.
+> **This is not a NO-GO on the Phase 4 code**, which is merged. It is a NO-GO on
+> *starting the rehearsal*, because the single precondition the rehearsal is
+> defined by — **an isolated database restored from current production data** —
+> is not reachable from this environment.
 >
 > No results are recorded below, because none were produced. Nothing in this
 > document is an estimate, a projection or a substitute for a real run.
+
+### Attempt 2 — post-merge, 2026-08-05
+
+A Neon rehearsal branch was reported as created from production and its
+credentials as configured locally. **They are not present in this environment.**
+
+Every variable that could carry them was checked, by name, without printing any
+value:
+
+```
+variable                          set   hostname-fp    endpoint-fp
+DATABASE_URL                      yes   eec6912eb35b   a5d81ac199d8
+DATABASE_URL_UNPOOLED             yes   3c503c1409d2   a5d81ac199d8
+REHEARSAL_DATABASE_URL            no    -              -
+REHEARSAL_DATABASE_URL_UNPOOLED   no    -              -
+REHEARSAL_OWNER_URL               no    -              -
+REHEARSAL_APP_URL                 no    -              -
+PRODUCTION_POOLED_URL             no    -              -
+STAGING_DATABASE_URL              no    -              -
+NEON_API_KEY                      unset
+```
+
+`.env.local` holds eight variable names, of which the only two database entries
+are `DATABASE_URL` and `DATABASE_URL_UNPOOLED`. The raw process environment
+contains no variable matching `DATABASE|NEON|REHEARS|STAGING|POSTGRES|PG|DB_`
+beyond those. There is no second env file.
+
+**The one reachable database is demonstrably not the rehearsal branch:**
+
+| Evidence | Reading | Required of a rehearsal copy |
+| --- | --- | --- |
+| Hostname fingerprint | `eec6912eb35b` | must differ from development |
+| Migration journal rows | **16** | **8** (baseline `0007`) |
+| `product_variants` | 43 (development seed) | production's real catalog |
+| `purchase_limit_rules` | 21 (development governance runs) | production's — none published |
+| `orders` | 0 | production's real orders |
+
+It is the development database, already fully migrated through `0015`. It is not
+a copy of production and it is not at the `0007` baseline the rehearsal must
+start from.
+
+### Every step-2 gate is unperformable
+
+| Required proof | Status |
+| --- | --- |
+| Fingerprint differs from production `2b968b3cbe06` | **cannot assess** — no rehearsal fingerprint exists |
+| Originates from production as a branch or restore | **cannot assess** |
+| Not referenced by any Vercel deployment | **cannot assess** |
+| Not the normal development database | **cannot assess** |
+| Live application cannot reach it | **cannot assess** |
+| Baseline is `0007`, eight journal rows | **cannot assess** |
+| Contents match production's data shape | **cannot assess** |
+
+The brief's instruction is unambiguous: *stop with NO-GO if any identity or
+isolation check is uncertain.* All seven are.
+
+### What was deliberately NOT done
+
+- **The development database was not substituted.** Running the sequence against
+  it would produce timings, privilege results and scenario outcomes that look
+  like a rehearsal and mean nothing — it holds no production data, and it is
+  eight migrations past the baseline. That output would be worse than none,
+  because it would read as evidence.
+- **No production credential was sought**, and none is wanted here.
+- **No migration was applied anywhere.**
+- **No branch was provisioned** — `NEON_API_KEY` is unset, and provisioning
+  production infrastructure is not this environment's to do.
+
+### To unblock
+
+Provide the rehearsal branch's connection strings in `.env.local`, or exported
+in the shell, under names the rehearsal can find — two are needed:
+
+```
+REHEARSAL_OWNER_URL              # the branch OWNER — migrations, privilege SQL
+REHEARSAL_DATABASE_URL           # the RESTRICTED app role, once created in step 4
+```
+
+The owner string is enough to begin: steps 2–5 create the restricted role, and
+`verify:privileges` then runs against it. Everything else is ready; §4 of this
+document lists the commands and their gates, and `PHASE-4-RELEASE.md` is the
+procedure.
+
+Once they are present, the first thing this rehearsal will do is re-run the
+step-2 identity checks — including confirming the branch is at eight journal
+rows and that its fingerprint is neither production's nor development's — and it
+will stop again if any of them is uncertain.
 
 ### The stop condition that fired
 
