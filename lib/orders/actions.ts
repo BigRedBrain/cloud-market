@@ -103,6 +103,24 @@ export async function startCheckoutAction(
           summary: 'daily purchase limit would be exceeded',
         })
         return fail('conflict', result.failure.evaluation.reason ?? 'Daily limit reached.')
+      case 'limit_rules_unavailable':
+        /**
+         * Failing closed. The customer gets an apology rather than a sale,
+         * because the alternative is selling without an enforceable daily cap.
+         * Audited as a compliance event: this is a misconfiguration that stops
+         * trade, and it must be visible to whoever can fix it.
+         */
+        await recordAuditEvent({
+          event: 'PURCHASE_LIMIT_BLOCKED',
+          userId: user.id,
+          entityType: 'order',
+          summary: `limit rules ${result.failure.reason}: ${result.failure.classes.join(', ')}`,
+        })
+        return fail(
+          'conflict',
+          'Checkout is unavailable for one of the items in your bag. Our team has ' +
+            'been notified — please try again shortly or call the store.',
+        )
     }
   }
 
@@ -161,6 +179,19 @@ export async function placeOrderAction(
           summary: 'daily purchase limit would be exceeded at placement',
         })
         return fail('conflict', result.failure.evaluation.reason ?? 'Daily limit reached.')
+      case 'limit_rules_unavailable':
+        await recordAuditEvent({
+          event: 'PURCHASE_LIMIT_BLOCKED',
+          userId: user.id,
+          entityType: 'order',
+          entityId: parsed.data.orderId,
+          summary: `limit rules ${result.failure.reason} at placement: ${result.failure.classes.join(', ')}`,
+        })
+        return fail(
+          'conflict',
+          'We cannot complete this order right now. Your items are still held — ' +
+            'please try again shortly or call the store.',
+        )
     }
   }
 

@@ -5,6 +5,7 @@ import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm'
 
 import type { DbExecutor } from '@/lib/auth/tokens'
 import { db, schema } from '@/lib/db'
+import type { CannabisClass } from '@/lib/db/schema'
 import {
   claimInventoryTransition,
   commitStock,
@@ -131,6 +132,59 @@ export async function loadLimitRules(): Promise<LimitRule[]> {
   }))
 }
 
+export type RuleResolution =
+  | { ok: true; rules: LimitRule[] }
+  | { ok: false; reason: 'missing' | 'ambiguous'; classes: CannabisClass[] }
+
+/**
+ * Resolves the rules for the classes a basket actually contains — and REFUSES
+ * rather than guessing.
+ *
+ * FAILING CLOSED IS THE WHOLE POINT.
+ *
+ * Two database states must never reach a customer. If a class has NO rule in
+ * force, `evaluateLine` applies a factor of zero and the item counts toward
+ * nothing — an unlimited sale, arrived at silently. If a class has MORE THAN
+ * ONE, the arithmetic picks whichever row the map happened to keep, so the cap
+ * enforced depends on row order. Both are worse than an outage: an outage is
+ * visible and a licence is not at risk.
+ *
+ * The database is supposed to make the second impossible — migration 0011 adds
+ * an exclusion constraint over (class, effective window) — and this check is
+ * here anyway, because a guarantee that is only asserted in one place is a
+ * guarantee that disappears the first time someone restores a backup with a
+ * constraint missing.
+ *
+ * Only the classes PRESENT IN THE BASKET are required. A store with no
+ * concentrate rule can still sell flower; refusing every sale because an unused
+ * class is unconfigured would be failing closed in the unhelpful direction.
+ */
+export async function resolveLimitRules(
+  classes: readonly CannabisClass[],
+): Promise<RuleResolution> {
+  const rules = await loadLimitRules()
+  const needed = [...new Set(classes)]
+
+  const missing: CannabisClass[] = []
+  const ambiguous: CannabisClass[] = []
+
+  for (const cls of needed) {
+    const matches = rules.filter((rule) => rule.cannabisClass === cls)
+    if (matches.length === 0) missing.push(cls)
+    else if (matches.length > 1) ambiguous.push(cls)
+  }
+
+  /**
+   * Ambiguity is reported first. Both are refusals, but a duplicate live rule
+   * means the invariant the schema is built on has been violated, and that is
+   * the one an operator must be told about before anything else.
+   */
+  if (ambiguous.length > 0) return { ok: false, reason: 'ambiguous', classes: ambiguous }
+  if (missing.length > 0) return { ok: false, reason: 'missing', classes: missing }
+
+  return { ok: true, rules }
+}
+
 /**
  * What the customer has already bought today.
  *
@@ -200,6 +254,8 @@ export type DraftFailure =
   | { kind: 'unavailable'; items: string[] }
   | { kind: 'insufficient_stock'; failures: ReservationFailure[] }
   | { kind: 'limit_exceeded'; evaluation: LimitEvaluation }
+  /** No rule in force, or more than one, for a class in the basket. */
+  | { kind: 'limit_rules_unavailable'; reason: 'missing' | 'ambiguous'; classes: CannabisClass[] }
 
 export type DraftResult =
   | { ok: true; orderId: string; orderNumber: string }
@@ -270,21 +326,31 @@ export async function createDraft(params: {
     rates,
   )
 
-  const rules = await loadLimitRules()
+  const limitLines = params.cartLines.map((line) => {
+    const fact = byVariant.get(line.variantId)!
+    return {
+      variantId: line.variantId,
+      quantity: line.quantity,
+      cannabisClass: fact.cannabisClass,
+      unitWeightGrams: fact.weightGrams === null ? null : Number(fact.weightGrams),
+    }
+  })
+
+  /** Refuses on a missing or duplicated rule. See `resolveLimitRules`. */
+  const resolved = await resolveLimitRules(limitLines.map((line) => line.cannabisClass))
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      failure: {
+        kind: 'limit_rules_unavailable',
+        reason: resolved.reason,
+        classes: resolved.classes,
+      },
+    }
+  }
+
   const prior = await priorPurchasesToday(params.userId)
-  const evaluation = evaluateOrderLimits(
-    params.cartLines.map((line) => {
-      const fact = byVariant.get(line.variantId)!
-      return {
-        variantId: line.variantId,
-        quantity: line.quantity,
-        cannabisClass: fact.cannabisClass,
-        unitWeightGrams: fact.weightGrams === null ? null : Number(fact.weightGrams),
-      }
-    }),
-    rules,
-    prior,
-  )
+  const evaluation = evaluateOrderLimits(limitLines, resolved.rules, prior)
 
   if (!evaluation.allowed) {
     return { ok: false, failure: { kind: 'limit_exceeded', evaluation } }
@@ -456,6 +522,7 @@ export type PlacementFailure =
   | { kind: 'price_changed'; previousTotalCents: number; currentTotalCents: number }
   | { kind: 'unavailable'; items: string[] }
   | { kind: 'limit_exceeded'; evaluation: LimitEvaluation }
+  | { kind: 'limit_rules_unavailable'; reason: 'missing' | 'ambiguous'; classes: CannabisClass[] }
 
 export type PlacementResult =
   | { ok: true; orderId: string; orderNumber: string; alreadyPlaced: boolean }
@@ -570,21 +637,37 @@ export async function placeOrder(params: {
     }
   }
 
-  const rules = await loadLimitRules()
+  const limitLines = lines.map((line) => {
+    const fact = byVariant.get(line.variantId)!
+    return {
+      variantId: line.variantId,
+      quantity: line.quantity,
+      cannabisClass: fact.cannabisClass,
+      unitWeightGrams: fact.weightGrams === null ? null : Number(fact.weightGrams),
+    }
+  })
+
+  /**
+   * Re-resolved at placement, not carried from the draft.
+   *
+   * A rule can be published, or a duplicate can appear, inside the fifteen
+   * minutes a draft is held. Placement is the moment the sale becomes real, so
+   * it is the moment the check has to be sound.
+   */
+  const resolved = await resolveLimitRules(limitLines.map((line) => line.cannabisClass))
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      failure: {
+        kind: 'limit_rules_unavailable',
+        reason: resolved.reason,
+        classes: resolved.classes,
+      },
+    }
+  }
+
   const prior = await priorPurchasesToday(params.userId)
-  const evaluation = evaluateOrderLimits(
-    lines.map((line) => {
-      const fact = byVariant.get(line.variantId)!
-      return {
-        variantId: line.variantId,
-        quantity: line.quantity,
-        cannabisClass: fact.cannabisClass,
-        unitWeightGrams: fact.weightGrams === null ? null : Number(fact.weightGrams),
-      }
-    }),
-    rules,
-    prior,
-  )
+  const evaluation = evaluateOrderLimits(limitLines, resolved.rules, prior)
 
   if (!evaluation.allowed) {
     return { ok: false, failure: { kind: 'limit_exceeded', evaluation } }
@@ -894,7 +977,78 @@ export async function collectPaymentAndComplete(params: {
  * claimed by a conditional UPDATE, so a draft being placed at the same moment
  * is either placed or expired, never both.
  */
-export async function sweepExpiredDrafts(): Promise<number> {
+/**
+ * Flattens an error and its causes into one line.
+ *
+ * Drizzle wraps driver errors, so `error.message` alone is always "Failed
+ * query: …" with the SQL echoed back and the actual reason — the constraint
+ * name, the trigger's RAISE — buried on `.cause`. A log line that records only
+ * the wrapper tells whoever is on call that something failed and nothing about
+ * what, which is the least useful possible amount of information.
+ *
+ * THE ROOT CAUSE COMES FIRST, and that ordering is the whole point. Drizzle's
+ * wrapper echoes the entire failing statement, which on its own is longer than
+ * the column this ends up in — so putting the outermost message first meant the
+ * truncation ate the only part worth reading. Innermost first, outer context
+ * after it if there is room.
+ *
+ * Never includes a stack: these are written to a database column and read in a
+ * dashboard.
+ */
+function describeError(error: unknown): string {
+  const parts: string[] = []
+  let current: unknown = error
+  for (let depth = 0; current instanceof Error && depth < 5; depth += 1) {
+    parts.push(current.message)
+    current = (current as { cause?: unknown }).cause
+  }
+  return (parts.reverse().join(' | ') || String(error)).slice(0, 300)
+}
+
+export type SweepOutcome = {
+  /** Drafts that looked expired when the batch was selected. */
+  scanned: number
+  /** Drafts this caller actually moved to `expired`. */
+  expired: number
+  /** Units handed back to `available` as a result. */
+  unitsReleased: number
+  /** Drafts that threw. The batch continues; these are retried next run. */
+  failed: number
+  /** True when the batch filled, so more work is waiting. */
+  more: boolean
+  /** First error seen, for the run record. Never a stack trace. */
+  firstError: string | null
+}
+
+export const SWEEP_BATCH_SIZE = 100
+
+/**
+ * Releases the stock held by drafts whose window has closed.
+ *
+ * BOUNDED. A sweep that tries to drain an unbounded backlog in one transaction
+ * is the shape of an incident: it holds locks for minutes, times out against a
+ * serverless request limit, and rolls back everything it did. The batch is
+ * capped and `more` tells the caller work remains, so a backlog drains over
+ * several runs instead of failing forever on the first.
+ *
+ * SAFE TO RUN CONCURRENTLY. There is no process-level guard here and there
+ * must not be — two Vercel invocations are different processes. Correctness
+ * comes from the conditional UPDATE claiming each draft: the loser of a race
+ * updates zero rows and moves on. `runDraftSweep` adds an advisory lock on top
+ * to avoid the wasted work, but this function is correct without it.
+ *
+ * ONE TRANSACTION PER DRAFT, NOT ONE PER BATCH. A single failing draft must not
+ * roll back the fifty that already succeeded — those releases are correct and
+ * discarding them would keep real stock unavailable. Failures are counted and
+ * left for the next run, which is safe because every step is idempotent.
+ *
+ * DATABASE TIME. `now()` is evaluated by Postgres in both the selection and the
+ * claim, so an application server with a drifted clock cannot expire a hold
+ * early or keep a dead one alive.
+ */
+export async function sweepExpiredDrafts(
+  batchSize: number = SWEEP_BATCH_SIZE,
+): Promise<SweepOutcome> {
   const expired = await db
     .select({ id: schema.orders.id })
     .from(schema.orders)
@@ -905,52 +1059,81 @@ export async function sweepExpiredDrafts(): Promise<number> {
         sql`${schema.orders.reservedUntil} <= now()`,
       ),
     )
+    .orderBy(schema.orders.reservedUntil)
+    .limit(batchSize)
 
   let released = 0
+  let unitsReleased = 0
+  let failed = 0
+  let firstError: string | null = null
+
   for (const order of expired) {
-    await db.transaction(async (tx) => {
-      const claimed = await tx
-        .update(schema.orders)
-        .set({ currentStatus: 'expired', updatedAt: new Date() })
-        .where(
-          and(
-            eq(schema.orders.id, order.id),
-            eq(schema.orders.currentStatus, 'draft'),
-            sql`${schema.orders.reservedUntil} <= now()`,
-          ),
+    try {
+      await db.transaction(async (tx) => {
+        /**
+         * The claim. Still a draft, still past its window — checked inside the
+         * write, so a placement committing a microsecond earlier wins and this
+         * updates nothing.
+         */
+        const claimed = await tx
+          .update(schema.orders)
+          .set({ currentStatus: 'expired', updatedAt: new Date() })
+          .where(
+            and(
+              eq(schema.orders.id, order.id),
+              eq(schema.orders.currentStatus, 'draft'),
+              sql`${schema.orders.reservedUntil} <= now()`,
+            ),
+          )
+          .returning({ id: schema.orders.id })
+
+        if (!claimed[0]) return
+
+        const inventoryClaimed = await claimInventoryTransition(
+          tx,
+          order.id,
+          'reserved',
+          'released',
         )
-        .returning({ id: schema.orders.id })
+        if (inventoryClaimed) {
+          const lines = await tx
+            .select({
+              variantId: schema.orderLines.variantId,
+              quantity: schema.orderLines.quantity,
+            })
+            .from(schema.orderLines)
+            .where(eq(schema.orderLines.orderId, order.id))
+          await releaseStock(tx, lines)
+          unitsReleased += lines.reduce((sum, line) => sum + line.quantity, 0)
+        }
 
-      if (!claimed[0]) return
-
-      const inventoryClaimed = await claimInventoryTransition(
-        tx,
-        order.id,
-        'reserved',
-        'released',
-      )
-      if (inventoryClaimed) {
-        const lines = await tx
-          .select({
-            variantId: schema.orderLines.variantId,
-            quantity: schema.orderLines.quantity,
-          })
-          .from(schema.orderLines)
-          .where(eq(schema.orderLines.orderId, order.id))
-        await releaseStock(tx, lines)
-      }
-
-      await recordTransition(tx, {
-        orderId: order.id,
-        eventType: 'DRAFT_EXPIRED',
-        fromStatus: 'draft',
-        toStatus: 'expired',
-        actorType: 'system',
-        reason: 'reservation window elapsed',
+        await recordTransition(tx, {
+          orderId: order.id,
+          eventType: 'DRAFT_EXPIRED',
+          fromStatus: 'draft',
+          toStatus: 'expired',
+          actorType: 'system',
+          reason: 'reservation window elapsed',
+        })
+        released += 1
       })
-      released += 1
-    })
+    } catch (error) {
+      /**
+       * One draft's failure is not the batch's failure. Its transaction rolled
+       * back, so nothing partial survives, and every step is idempotent — the
+       * next run picks it up unchanged.
+       */
+      failed += 1
+      firstError ??= describeError(error)
+    }
   }
 
-  return released
+  return {
+    scanned: expired.length,
+    expired: released,
+    unitsReleased,
+    failed,
+    more: expired.length === batchSize,
+    firstError,
+  }
 }

@@ -52,6 +52,16 @@ const serverSchema = z.object({
    * because a missing email key must not stop the storefront from booting.
    * Browsing, the bag and sign-in do not need email; only recovery does.
    */
+  /**
+   * Shared secret for scheduled invocations (Phase 4 hardening).
+   *
+   * Optional here and required at the point of use: a missing value makes
+   * `/api/cron/sweep-drafts` return 503 rather than run unauthenticated, which
+   * is the correct failure. Validating it as required would instead stop the
+   * storefront from booting over a job nothing customer-facing depends on.
+   */
+  CRON_SECRET: z.string().min(16).optional(),
+
   EMAIL_PROVIDER: z.enum(['resend', 'console', 'capture']).default('console'),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),

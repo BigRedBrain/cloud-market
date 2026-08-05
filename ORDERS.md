@@ -1,8 +1,16 @@
 # Checkout & Orders (Phase 4)
 
-Branch `feat/checkout-orders`. Development only — migration 0008 is applied to
-the development branch; production remains on 0007. **No production catalog data
-was created.**
+Branch `feat/checkout-orders`. Development only — migrations 0008–0012 are
+applied to the development branch; production remains on 0007. **No production
+catalog data was created.**
+
+> ## CHECKOUT MUST REMAIN DISABLED IN PRODUCTION
+>
+> Not "should" — the code refuses. `resolveLimitRules` fails closed when a class
+> in the basket has no rule in force, and production has no rules and no
+> catalog. Enabling checkout requires every gate in §12 and in
+> [PURCHASE-LIMITS.md](PURCHASE-LIMITS.md) §11 to pass first, in that order:
+> privileges, then migrations, then rules, then catalog, then verification.
 
 ---
 
@@ -226,6 +234,9 @@ radius checks and driver records that belong to their own phase.
 ```
 npm run test:math          29 passed, 0 failed   (~40,000 generated cases)
 npm run test:concurrency   28 passed, 0 failed   (real database, real races)
+npm run test:sweeper       53 passed, 0 failed   (scheduler, §13)
+npm run test:governance    96 passed, 0 failed   (rule governance)
+npm run test:limits:http   44 passed, 0 failed   (admin HTTP surface)
 npm run test:recovery     155 passed, 0 failed   (regression)
 npm run test:e2e           94 passed, 0 failed   (regression)
 npm run test:bag           63 passed, 0 failed   (regression)
@@ -264,10 +275,7 @@ fixture is removed by exact id.
 ## 11. Known limitations
 
 1. **No production verification yet** — production has no catalog. See §12.
-2. **The expiry sweep has no scheduler.** `sweepExpiredDrafts()` exists and is
-   tested; nothing calls it periodically. A cron entry or a Vercel scheduled
-   function is a follow-up. Until then an abandoned draft holds stock until
-   someone runs it — which is why the TTL is short.
+2. ~~The expiry sweep has no scheduler.~~ **Resolved** — see §13.
 3. **Purchase limit values need legal confirmation** (§6). Development is
    seeded; production deliberately is not.
 4. **Single store.** The draft picks the first pickup-enabled store. Multi-store
@@ -327,11 +335,20 @@ fake catalog data may be created in production — same rule as Phase 3.
 - [ ] Age checkbox is required
 - [ ] `date_of_birth_at_purchase` snapshotted
 
-### Expiry
+### Expiry and the scheduler
 
 - [ ] A draft left past 15 minutes shows the timeout on review
-- [ ] `sweepExpiredDrafts()` releases it; `reserved_quantity` returns to prior
+- [ ] The **cron** releases it with no user activity; `reserved_quantity`
+      returns to its prior value
 - [ ] A placement attempt after expiry is refused
+- [ ] `/api/health` reports `scheduler.ageSeconds` under 120
+
+### Fail-closed behaviour
+
+- [ ] With a class deliberately unconfigured, checkout **refuses** rather than
+      selling it uncapped, and `PURCHASE_LIMIT_BLOCKED` is audited
+- [ ] Every production variant has a correct `cannabis_class` — a variant left
+      as `other` contributes nothing to any cap
 
 ### Cleanup
 
@@ -339,3 +356,137 @@ fake catalog data may be created in production — same rule as Phase 3.
 - [ ] Inventory back to its starting values
 - [ ] Pre-existing audit rows all survive
 - [ ] Every monitored table back to baseline
+
+---
+
+## 13. The expired-draft scheduler
+
+### Mechanism
+
+**Vercel Cron**, declared in `vercel.json`, calling
+`GET /api/cron/sweep-drafts` every minute.
+
+Chosen because it is already part of the deployment: no new service, no worker
+to keep alive, no second place credentials have to live. The alternative —
+releasing lazily on user traffic — is what the previous phase did, and it fails
+exactly when it matters: the customer who abandoned checkout is by definition
+not coming back to trigger it, and a quiet evening is precisely when nothing
+gets released.
+
+> **Check the plan.** Per-minute cron requires Vercel Pro. On Hobby, cron runs
+> at most **once a day**, which makes a 15-minute reservation window meaningless.
+> Verify the interval after deploying — see below — and if the plan cannot
+> support it, either shorten nothing and accept the exposure, or move the job to
+> an external scheduler hitting the same authenticated endpoint.
+
+### Deployment
+
+1. Generate a secret and set it in Vercel **Production** only:
+   `CRON_SECRET` — 32+ random bytes. Mark it Sensitive.
+2. Deploy. Vercel registers crons from `vercel.json` at deploy time; the entry
+   does nothing until a deployment carrying it is promoted.
+3. Confirm the job is registered under Project → Settings → Cron Jobs.
+4. Wait two minutes, then check `/api/health`:
+
+```json
+"scheduler": {
+  "job": "sweep-expired-drafts",
+  "lastSuccessAt": "…",
+  "ageSeconds": 43,
+  "lastExpired": 0,
+  "lastDurationMs": 61
+}
+```
+
+`ageSeconds` climbing past a few minutes means the schedule is not running.
+Alert on it.
+
+`CRON_SECRET` unset returns **503 and does not run** — a scheduled job that
+silently becomes a public endpoint when an environment variable is dropped is
+the kind of regression nobody notices until it is being abused.
+
+### Design
+
+| Requirement | How |
+| --- | --- |
+| Bounded batches | `SWEEP_BATCH_SIZE = 100`; `more: true` when the batch fills |
+| Safe when two overlap | Partial unique index — one `running` row per job |
+| Database time | `now()` in Postgres, in both the select and the claim |
+| Retryable | One transaction **per draft**; failures counted, not thrown |
+| Structured logs | One JSON line per run: scanned, expired, unitsReleased, failed, durationMs, error |
+| Health signal | `scheduler_runs`, surfaced at `/api/health` |
+
+**The mutual exclusion is a row, not an advisory lock — and that is a bug fix,
+not a preference.** `pg_try_advisory_lock` was the first implementation and the
+sweeper suite caught it failing: advisory locks are session-scoped, a connection
+pool hands each statement whatever session is free, so `pg_advisory_unlock`
+regularly ran on a different connection than the lock. The unlock silently did
+nothing, the lock outlived the request, and **every subsequent run skipped** — a
+sweeper that had quietly stopped sweeping while reporting success. State in a
+table has no such problem.
+
+None of that is the correctness argument. Every step is a conditional UPDATE
+exactly one caller can win, so two sweepers are already safe; the guard only
+avoids duplicated work. `verify-sweeper.ts` proves it by racing them with the
+guard bypassed.
+
+**The health signal reports the last run that COMPLETED**, not the last that
+started. A job being invoked and failing every minute would otherwise show a
+fresh timestamp and read as healthy — which is the failure this exists to catch.
+
+### Verification (`npm run test:sweeper`, 53 assertions)
+
+| Scenario | Asserted |
+| --- | --- |
+| Release with no user activity | Hold returns, on-hand untouched, draft `expired`, state `released` |
+| Two sweepers racing | Each draft expired once, exactly one `DRAFT_EXPIRED` event each, no double release |
+| Placement racing expiry | Placed **xor** expired — never both, never neither; caller's answer matches the database; no stock left held either way |
+| Placed / completed orders | A placed order with an elapsed `reserved_until` is **not** expired and keeps its stock consumed; same once completed |
+| Partial batch failure | A trigger fails one draft; the other two still expire and are **not** rolled back; the failed one is untouched and still holds stock; a plain retry finishes it with exactly one expiry event |
+| Batching | Limit respected, `more` set, remainder drains next run |
+| Overlapping invocations | One runs, one records `skipped`; a skip is not a failure |
+| Health signal | Advances on success; a failed run does **not** advance it |
+
+---
+
+## 14. Migration order
+
+Apply strictly in sequence. Each depends on the one before.
+
+| # | File | What it does | Reversible |
+| --- | --- | --- | --- |
+| 0008 | `0008_organic_proemial_gods` | Orders, lines, events, payments, fulfilments, rules; `reserved_quantity` + `cannabis_class` on variants; 10 audit values | Tables yes, enum values **no** |
+| 0009 | `0009_lucky_cloak` | `user_permissions`; rule versioning columns; `order_lines.purchase_limit_rule_id`; both guard triggers; 7 audit values | Triggers yes, enum values **no** |
+| 0010 | `0010_limit_boundary_guard` | Replaces the guard function so a **future** boundary may move | Yes (`CREATE OR REPLACE`) |
+| 0011 | `0011_unknown_absorbing_man` | `scheduler_runs`; `btree_gist`; the no-overlap exclusion constraint | Yes |
+| 0012 | `0012_scheduler_run_guard` | Partial unique index — one `running` run per job | Yes |
+
+Production is on **0007**. All five are pending.
+
+```bash
+# In the SAME shell, immediately before migrating:
+$env:DATABASE_URL_UNPOOLED = "<production DIRECT string>"
+$env:PRODUCTION_POOLED_URL = "<production POOLED string>"
+
+node scripts/verify-migration-target.mjs https://cloudmarket.cc `
+  --expect-migrations=7 `
+  --require-table=carts,cart_lines `
+  --forbid-table=orders,user_permissions,scheduler_runs
+
+# Only on GO:
+npx drizzle-kit migrate
+
+node scripts/verify-migration-target.mjs https://cloudmarket.cc --expect-migrations=12
+```
+
+**0011 needs `btree_gist`.** `CREATE EXTENSION` requires elevated rights; on
+Neon it is available to the default owner. If it fails, the exclusion constraint
+cannot be created and the migration aborts — do not work around it by removing
+the constraint.
+
+**The enum additions in 0008 and 0009 cannot be undone.** `ALTER TYPE … ADD
+VALUE` has no inverse short of recreating the type. Rolling back to 0007 means
+restoring from a backup, not running a down migration — there are none.
+
+Then, in order: §8 of PURCHASE-LIMITS.md (privileges) → `verify:privileges` →
+seed the confirmed rules → load real catalog data → §12 here.

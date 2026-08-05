@@ -6,6 +6,7 @@ import { headers } from 'next/headers'
 import { db, schema } from '@/lib/db'
 import { serverEnv } from '@/lib/env'
 import type { AuditEvent } from '@/lib/db/schema'
+import type { DbExecutor } from './tokens'
 
 /**
  * Security audit logging.
@@ -105,4 +106,52 @@ export async function recordAuditEventHeadless(
   context: Omit<AuditContext, 'ipAddress' | 'userAgent'>,
 ): Promise<void> {
   await recordAuditEvent({ ...context, ipAddress: null, userAgent: null })
+}
+
+/**
+ * Transactional variant. Writes through the caller's transaction AND THROWS.
+ *
+ * THE OPPOSITE POLICY TO `recordAuditEvent`, AND DELIBERATELY SO.
+ *
+ * `recordAuditEvent` swallows failures because refusing to authenticate a
+ * legitimate customer over a lost log line is the worse outcome. That reasoning
+ * does not survive contact with a compliance write. Publishing a purchase limit
+ * changes the legal cap the storefront enforces; a published rule with no
+ * record of who published it, when, or why is not a lesser version of the same
+ * thing — it is the artefact the audit exists to make impossible.
+ *
+ * So here the log line and the change are one atomic unit. If the audit INSERT
+ * fails, the publication rolls back with it: no new rule, no closed predecessor,
+ * no successor link. Better to refuse the change than to make it unaccountably.
+ *
+ * The request-header read still degrades to null, because missing metadata is a
+ * degradation while a missing row is a hole.
+ */
+export async function recordAuditEventWithin(
+  tx: DbExecutor,
+  context: AuditContext,
+): Promise<void> {
+  let { ipAddress, userAgent } = context
+
+  if (ipAddress === undefined || userAgent === undefined) {
+    try {
+      const headerList = await headers()
+      ipAddress ??= headerList.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
+      userAgent ??= headerList.get('user-agent') ?? null
+    } catch {
+      ipAddress ??= null
+      userAgent ??= null
+    }
+  }
+
+  await tx.insert(schema.auditLog).values({
+    event: context.event,
+    userId: context.userId ?? null,
+    sessionId: context.sessionId ?? null,
+    ipHash: keyedDigest(ipAddress),
+    userAgentHash: keyedDigest(userAgent),
+    entityType: context.entityType ?? null,
+    entityId: context.entityId ?? null,
+    summary: context.summary?.slice(0, 300) ?? null,
+  })
 }

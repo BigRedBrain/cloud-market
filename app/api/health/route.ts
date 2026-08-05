@@ -34,6 +34,25 @@ type HealthBody = {
     fingerprint: string | null
     latencyMs: number | null
   }
+  /**
+   * Liveness of the expired-draft sweeper.
+   *
+   * Reports the last run that COMPLETED, not the last that started: a job being
+   * invoked and failing every minute would otherwise show a fresh timestamp and
+   * read as healthy, which is the exact failure this is here to catch.
+   *
+   * `ageSeconds` is what a monitor should alert on. Absent entirely means the
+   * schedule has never run — a fresh deployment, or a cron that was never
+   * installed. Both need looking at, and neither is an outage on its own, so
+   * this does not degrade the overall status.
+   */
+  scheduler?: {
+    job: string
+    lastSuccessAt: string | null
+    ageSeconds: number | null
+    lastExpired: number | null
+    lastDurationMs: number | null
+  }
   timestamp: string
 }
 
@@ -106,6 +125,30 @@ export async function GET(): Promise<Response> {
 
     await db.execute(sql`select 1`)
 
+    /**
+     * Best-effort, and deliberately after the liveness probe.
+     *
+     * If the scheduler table cannot be read the process is still alive and the
+     * database is still reachable, which is what this endpoint primarily
+     * answers. Letting a missing `scheduler_runs` table — a deployment ahead of
+     * its migration — turn a healthy instance into a 503 would take the site
+     * down over a reporting field.
+     */
+    let scheduler: HealthBody['scheduler']
+    try {
+      const { SWEEP_JOB, lastSuccessfulSweep } = await import('@/lib/jobs/sweep')
+      const last = await lastSuccessfulSweep()
+      scheduler = {
+        job: SWEEP_JOB,
+        lastSuccessAt: last?.at.toISOString() ?? null,
+        ageSeconds: last ? Math.round((Date.now() - last.at.getTime()) / 1000) : null,
+        lastExpired: last?.expired ?? null,
+        lastDurationMs: last?.durationMs ?? null,
+      }
+    } catch (error) {
+      console.error('[health] scheduler probe failed:', error)
+    }
+
     return json(
       {
         status: 'ok',
@@ -116,6 +159,7 @@ export async function GET(): Promise<Response> {
           fingerprint: fp,
           latencyMs: Date.now() - startedAt,
         },
+        ...(scheduler ? { scheduler } : {}),
         timestamp: new Date().toISOString(),
       },
       200,

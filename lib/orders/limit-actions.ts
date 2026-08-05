@@ -214,32 +214,19 @@ export async function publishLimitRuleAction(
     }
   }
 
-  /* 6 — the record of what happened. */
-  await recordAuditEvent({
-    event: 'PURCHASE_LIMIT_RULE_PUBLISHED',
-    userId: user.id,
-    entityType: 'purchase_limit_rule',
-    entityId: published.ruleId,
-    summary:
-      `${input.cannabisClass} v${published.version}: factor ` +
-      `${input.equivalentGramsPerGram}, cap ${input.dailyEquivalentGramsCap}g` +
-      (input.dailyConcentrateGramsCap === null
-        ? ''
-        : `, concentrate ${input.dailyConcentrateGramsCap}g`),
-  })
-
-  if (published.supersededRuleId) {
-    await recordAuditEvent({
-      event: 'PURCHASE_LIMIT_RULE_SUPERSEDED',
-      userId: user.id,
-      entityType: 'purchase_limit_rule',
-      entityId: published.supersededRuleId,
-      summary: published.cancelledPending
-        ? `superseded by v${published.version} before it took effect`
-        : `superseded by v${published.version}`,
-    })
-  }
-
+  /**
+   * 6 — the record of what happened is already written.
+   *
+   * `PURCHASE_LIMIT_RULE_PUBLISHED` and `_SUPERSEDED` are inserted INSIDE the
+   * publishing transaction, not here. Writing them from the action would put
+   * them outside it, and a crash between COMMIT and this line would leave a
+   * changed legal cap with no record of who changed it. Reaching this point
+   * means both the rule and its audit row committed together, or neither did.
+   *
+   * The refusal paths above are audited from here on purpose: those are
+   * non-transactional by nature — there is no publication to be atomic with —
+   * and a lost refusal record must not turn into a 500 for the operator.
+   */
   revalidatePath('/admin/purchase-limits')
   return ok()
 }

@@ -33,6 +33,8 @@
     "test:concurrency": "tsx --env-file=.env.local --conditions=react-server scripts/verify-order-concurrency.ts",
     "test:governance": "tsx --env-file=.env.local --conditions=react-server scripts/verify-limit-governance.ts",
     "test:limits:http": "node scripts/verify-limit-admin-http.mjs",
+    "test:sweeper": "tsx --env-file=.env.local --conditions=react-server scripts/verify-sweeper.ts",
+    "verify:privileges": "node scripts/verify-production-privileges.mjs",
     "perm": "node scripts/grant-permission.mjs"
   },
   "dependencies": {

@@ -2,6 +2,7 @@ import 'server-only'
 
 import { and, asc, desc, eq, isNull, ne, sql } from 'drizzle-orm'
 
+import { recordAuditEventWithin } from '@/lib/auth/audit'
 import { db, schema } from '@/lib/db'
 import type { CannabisClass } from '@/lib/db/schema'
 
@@ -398,6 +399,41 @@ export async function publishRule(input: PublishInput): Promise<PublishResult> {
         .where(eq(schema.purchaseLimitRules.id, current.id))
     }
 
+    /**
+     * 4 — the audit, INSIDE this transaction and allowed to throw.
+     *
+     * This is the whole point of doing it here rather than in the caller. A
+     * publish that succeeds and an audit that fails would leave a legal cap
+     * changed with no record of who changed it — which is precisely the
+     * artefact the audit exists to make impossible. `recordAuditEventWithin`
+     * does not swallow errors, so a failure here takes the new rule, the closed
+     * predecessor and the successor link down with it.
+     */
+    await recordAuditEventWithin(tx, {
+      event: 'PURCHASE_LIMIT_RULE_PUBLISHED',
+      userId: input.publishedBy,
+      entityType: 'purchase_limit_rule',
+      entityId: inserted.id,
+      summary:
+        `${input.cannabisClass} v${inserted.version}: factor ` +
+        `${input.equivalentGramsPerGram}, cap ${input.dailyEquivalentGramsCap}g` +
+        (input.dailyConcentrateGramsCap === null
+          ? ''
+          : `, concentrate ${input.dailyConcentrateGramsCap}g`),
+    })
+
+    if (current) {
+      await recordAuditEventWithin(tx, {
+        event: 'PURCHASE_LIMIT_RULE_SUPERSEDED',
+        userId: input.publishedBy,
+        entityType: 'purchase_limit_rule',
+        entityId: current.id,
+        summary: cancelledPending
+          ? `superseded by v${inserted.version} before it took effect`
+          : `superseded by v${inserted.version}`,
+      })
+    }
+
     result = {
       ok: true,
       ruleId: inserted.id,
@@ -432,7 +468,17 @@ export async function publishRuleSafely(input: PublishInput): Promise<PublishRes
     }
     const joined = text.join(' | ')
 
-    if (/duplicate key|unique constraint|purchase_limit_rules_(class_version|active_class)/i.test(joined)) {
+    /**
+     * `conflicting key value violates exclusion constraint` is the overlap
+     * guard in migration 0011 firing. It means another transaction committed a
+     * window that intersects this one between our read and our write — the same
+     * lost race the unique indexes catch, arriving by a different route.
+     */
+    if (
+      /duplicate key|unique constraint|exclusion constraint|purchase_limit_rules_(class_version|active_class|no_overlap)/i.test(
+        joined,
+      )
+    ) {
       return { ok: false, failure: { kind: 'concurrent_publish' } }
     }
     throw error

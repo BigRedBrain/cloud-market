@@ -1,7 +1,11 @@
 # Purchase Limit Administration (Phase 4.1)
 
-Branch `feat/checkout-orders`. Migrations 0009 and 0010, development only —
+Branch `feat/checkout-orders`. Migrations 0009–0012, development only —
 production remains on 0007.
+
+> **Checkout must remain disabled in production until every gate in §11 passes.**
+> No production migration has been applied, no production rule has been
+> published, and no production catalog data exists.
 
 An admin screen at `/admin/purchase-limits` for publishing the daily caps
 enforced at checkout. Rules are immutable and versioned: publishing inserts a
@@ -28,7 +32,9 @@ So the guarantee lives in three places, and the application is only one of them:
 | `purchase_limit_rules_no_delete` trigger | Every DELETE, unconditionally |
 | `order_lines.purchase_limit_rule_id` FK `restrict` | Deleting a rule an order cites |
 | `purchase_limit_rules_window_ordered` CHECK | A window ending before it starts |
+| `purchase_limit_rules_no_overlap` EXCLUDE | Two intersecting windows for one class |
 | `supersedes` / `superseded_by` self-FKs `restrict` | Deleting a rule another rule cites |
+| Production role privileges (§10) | The app disabling any of the above |
 
 The one permitted mutation is closing the window (`effective_until`) and
 recording the successor (`superseded_by_rule_id`) — each once, from null.
@@ -195,8 +201,9 @@ keep their original rule" true rather than aspirational.
 ## 6. Verification
 
 ```
-npm run test:governance     77 passed, 0 failed   (database + domain)
+npm run test:governance     96 passed, 0 failed   (database + domain)
 npm run test:limits:http    44 passed, 0 failed   (HTTP surface)
+npm run test:sweeper        53 passed, 0 failed   (scheduler, see ORDERS.md)
 ```
 
 ### Governance (`test:governance`)
@@ -210,6 +217,34 @@ change overtaking a pending one; **no two non-empty windows overlapping anywhere
 on the timeline**; simultaneous publishes; a placed order keeping its rule
 through a change; a cited rule refusing deletion; step-up success, failure,
 no-password and throttling; grant, revoke and re-grant.
+
+#### Audit atomicity
+
+Section [9] installs a **real trigger on `audit_log`** that rejects
+`PURCHASE_LIMIT_RULE_PUBLISHED` inserts, then publishes. Stubbing the audit
+writer would have proved only that the stub was wired up; what has to be true is
+that a genuine database failure on the audit INSERT takes the publication with
+it. It asserts, after the rollback:
+
+- the publish did not report success, and the failure surfaced
+- **no new rule row exists**
+- the previous rule is still the open one, window still open, no successor link,
+  caps byte-identical
+- **no orphaned `SUPERSEDED` audit row** (measured as a delta, since earlier
+  sections legitimately produced some)
+- publishing works again once the induced fault is removed, and the successful
+  publish carries exactly one audit row
+
+Section [10] proves the other half: `recordAuditEvent` called with **no request
+scope at all** — exactly as a cron invocation sees it — still writes the row,
+with the IP and user-agent hashes degraded to null.
+
+#### Overlap and fail-closed resolution
+
+Section [11] proves the exclusion constraint rejects a fully-overlapping insert
+and a partially-overlapping one, while still permitting an empty (cancelled)
+window beside a live rule. Section [12] proves `resolveLimitRules` refuses a
+class with no rule in force rather than defaulting its factor to zero.
 
 **Teardown is the hard part.** The table cannot be deleted from — that is the
 point of it. So teardown disables the two guards, removes only ids captured
@@ -259,7 +294,122 @@ written either way.
 
 ---
 
-## 8. Known limitations
+## 8. Production role hardening
+
+**Every guard in §1 is a trigger or a constraint, and a role that OWNS a table
+can drop or disable both with one statement.** So the guards are worth exactly
+as much as the separation between the application's role and the owner's — and
+nothing more. In development they are the same role, which is why the audit
+below reports 29 failures there. That is the correct result, not a bug.
+
+### The command
+
+```bash
+# Run with the connection string the DEPLOYED APP uses.
+# Not the migration string. Not the owner's.
+$env:DATABASE_URL = "<production app connection string>"
+npm run verify:privileges
+```
+
+Read-only: catalogue queries and `has_*_privilege()` calls only. It never
+attempts the operations it tests for — a rolled-back `DELETE` against production
+still fires triggers, still takes locks, and is one mistyped `COMMIT` from
+destroying a compliance record. It prints `PASS`/`FAIL` per privilege and exits
+non-zero on any failure.
+
+Compare the printed fingerprint against `/api/health` before believing the
+result. Auditing the wrong role passes for the wrong reason.
+
+### What it requires
+
+| Check | Requirement |
+| --- | --- |
+| §1 | Not a superuser |
+| §2 | Does not own — or inherit ownership of — `purchase_limit_rules`, `audit_log`, `order_events` |
+| §3 | Both guard triggers exist, are enabled, and cannot be disabled by this role |
+| §4 | Cannot `CREATE OR REPLACE` `purchase_limit_rules_guard` |
+| §5 | No `DELETE`/`TRUNCATE` on rules; no `UPDATE`/`DELETE`/`TRUNCATE` on `audit_log` or `order_events` |
+| §6 | No `UPDATE` on any frozen column of `purchase_limit_rules` |
+| §7 | Still has the privileges the app genuinely needs |
+| §8 | No write access to `user_permissions`; cannot create or alter roles |
+| §9 | The harness trigger-disable path is unavailable; the exclusion constraint exists |
+
+Ownership is tested with `pg_has_role(current_user, owner, 'USAGE')`, not string
+equality. A role that is a *member* of the owner can `SET ROLE` to it and
+inherit everything, so `owner != current_user` on its own proves nothing.
+
+### The SQL that establishes it
+
+Run as the **owner** (the role `drizzle-kit migrate` connects as), after
+migrations are applied. Not part of any migration: migrations run as the owner
+and would be granting privileges to themselves, and a privilege model is an
+operational decision that should not ride in silently with a schema change.
+
+```sql
+-- 1. The application role. Create it with SQL rather than the Neon console:
+--    console-created roles are granted neon_superuser, which fails §1 and §2.
+CREATE ROLE cloudmarket_app WITH LOGIN PASSWORD '<generated>'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
+
+GRANT USAGE ON SCHEMA public TO cloudmarket_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cloudmarket_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cloudmarket_app;
+
+-- 2. Take back what must never be possible.
+REVOKE DELETE, TRUNCATE, UPDATE ON purchase_limit_rules FROM cloudmarket_app;
+GRANT  UPDATE (effective_until, superseded_by_rule_id, updated_at)
+       ON purchase_limit_rules TO cloudmarket_app;
+
+REVOKE UPDATE, DELETE, TRUNCATE ON audit_log    FROM cloudmarket_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON order_events FROM cloudmarket_app;
+
+-- The app only ever READS grants. Granting compliance_admin is an
+-- out-of-band act (scripts/grant-permission.mjs, run by the owner).
+REVOKE INSERT, UPDATE, DELETE ON user_permissions FROM cloudmarket_app;
+
+-- 3. Future tables inherit the baseline, so a new migration does not
+--    silently create a table the app cannot use.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cloudmarket_app;
+```
+
+Then point `DATABASE_URL` in Vercel Production at `cloudmarket_app`, leave
+`DATABASE_URL_UNPOOLED` as the owner for migrations, redeploy, and re-run
+`npm run verify:privileges` until it reports all-PASS.
+
+**This has not been executed.** Production credentials are Sensitive in Vercel
+and unavailable to me; the SQL above and the audit script are the deliverable,
+and running them is the operator's step.
+
+---
+
+## 9. Roll-forward recovery
+
+**There is no rollback, by design.** A published rule cannot be edited or
+deleted, so recovering from a bad publication means publishing a correction —
+and the mistake stays visible in the history, which is the point.
+
+| Situation | Action |
+| --- | --- |
+| Wrong values, published immediately | Publish the correct values with `timing = now`. The bad version stays, closed at the moment the correction takes effect. |
+| Wrong values, scheduled for later | Publish the correct values with the **same** effective date. The bad version gets an empty window and reads as `Cancelled before taking effect` — it never governs anything. |
+| Scheduled change no longer wanted at all | Publish the *current* values again at the scheduled instant. Republishing identical values is normally refused, so change one figure trivially or wait for it to land and then correct it. |
+| Urgent correction while a change is scheduled | Publish with `timing = now`. The pending rule is cancelled and the rule in force is closed at this instant — see §4. |
+| A rule was published against the wrong class | Publish a correction for that class. The wrong entry cannot be removed; the reason field is where you explain it. |
+| Orders were placed under the bad rule | They keep citing it, permanently, and that is correct — it *is* what they were checked against. Any remediation is a business decision recorded outside this system. |
+
+Every correction goes through the same six gates, including re-authentication
+and a reason. Write the reason as though the person reading it is an inspector
+who was not in the room, because eventually they will be.
+
+**Never repair by hand.** `UPDATE`/`DELETE` are refused by trigger, and in a
+correctly hardened production the app role cannot execute them at all. If a
+repair genuinely requires owner access, it is an incident: record it, and expect
+to explain the gap in the chain.
+
+---
+
+## 10. Known limitations
 
 1. **No production verification yet.** Production has no catalog and no rules.
    See §9.
@@ -277,14 +427,20 @@ written either way.
 
 ---
 
-## 9. Production verification checklist
+## 11. Production verification checklist
 
 Extends the Phase 4 checklist in [ORDERS.md](ORDERS.md) §12. Requires migrations
-0008, 0009 and 0010 applied through the gated sequence.
+0008–0012 applied in order through the gated sequence — see ORDERS.md §13.
+
+### Privileges — before anything else
+
+- [ ] §8 SQL executed by the owner
+- [ ] `npm run verify:privileges` reports **all PASS** against the app role
+- [ ] The fingerprint it printed matches `/api/health`
 
 ### Schema
 
-- [ ] Journal at 11 entries
+- [ ] Journal at 13 entries
 - [ ] `user_permissions` exists with its partial unique index
 - [ ] `purchase_limit_rules` has `version`, `change_reason`, `published_by`,
       `published_at`, `reauthenticated_at`, `supersedes_rule_id`,
@@ -292,6 +448,8 @@ Extends the Phase 4 checklist in [ORDERS.md](ORDERS.md) §12. Requires migration
 - [ ] Both guard triggers exist and are enabled (`tgenabled = 'O'`)
 - [ ] `order_lines.purchase_limit_rule_id` exists with `ON DELETE RESTRICT`
 - [ ] Existing rules were backfilled with the pre-versioning `change_reason`
+- [ ] `purchase_limit_rules_no_overlap` exclusion constraint present
+- [ ] `scheduler_runs` exists with `scheduler_runs_one_running`
 
 ### Permission
 
@@ -326,9 +484,51 @@ Extends the Phase 4 checklist in [ORDERS.md](ORDERS.md) §12. Requires migration
 - [ ] After publishing a new version, that order still cites the original
 - [ ] Deleting the cited rule is rejected
 
+### Audit atomicity
+
+- [ ] The published rule and its `PURCHASE_LIMIT_RULE_PUBLISHED` row share a
+      timestamp to the second — they were written in one transaction
+- [ ] Every rule row in production has a matching `PUBLISHED` audit row
+      (`seed script` rows excepted; they predate versioning)
+
 ### Cleanup
 
 - [ ] No test rule was published to production — rules cannot be removed, so
       **only publish values you intend to keep**
 - [ ] Any test account removed by captured id
 - [ ] Pre-existing audit rows all survive
+
+---
+
+## 12. Baseline rule values — AWAITING LEGAL CONFIRMATION
+
+These are what `scripts/seed-purchase-limits.mjs` currently carries, and what
+development is seeded with. **They must be confirmed by counsel before being
+published to production**, because publishing them is one-way.
+
+| Class | Factor | Daily cap | Concentrate cap |
+| --- | --- | --- | --- |
+| `flower` | 1.0000 | 70.870 g | 15.000 g |
+| `concentrate` | 5.0000 | 70.870 g | 15.000 g |
+| `edible` | 1.0000 | 70.870 g | 15.000 g |
+| `other` | 0.0000 | 70.870 g | 15.000 g |
+
+Basis: Michigan adult-use is commonly stated as 2.5 oz (70.87 g) of usable
+marijuana per day, of which no more than 15 g may be concentrate.
+
+**The three things to confirm, specifically:**
+
+1. **Edible equivalence.** Edibles are usually counted by THC content, not mass.
+   A factor of 1.0 per gram is a placeholder and is very likely wrong; the
+   schema has `thc_percent` on the variant if the rule should be potency-based,
+   but the current `LimitRule` shape cannot express that.
+2. **The concentrate factor of 5.** Widely used, not something found in the
+   statute text.
+3. **Whether `other` should be 0.** It currently means accessories contribute
+   nothing to any cap, which is right for a lighter and wrong for anything
+   cannabis-bearing that ends up classified as `other`.
+
+Until confirmed, publishing to production is blocked — and because `other` has
+a factor of zero, mis-classifying a product into it would sell it without a cap.
+That is why §12 of ORDERS.md requires every variant's `cannabis_class` to be
+checked before checkout is enabled.
