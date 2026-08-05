@@ -25,11 +25,6 @@ import {
   taxOnCents,
   type TaxRates,
 } from '../lib/orders/pricing'
-import {
-  evaluateOrderLimits,
-  roundGrams,
-  type LimitRule,
-} from '../lib/orders/limits'
 
 let passed = 0
 let failed = 0
@@ -344,133 +339,16 @@ forAll(
 )
 
 /* ====================================================== PURCHASE LIMITS === */
-console.log('\n[6] Purchase limits')
-
-const RULES: LimitRule[] = [
-  {
-    cannabisClass: 'flower',
-    equivalentGramsPerGram: 1,
-    dailyEquivalentGramsCap: 70.87,
-    dailyConcentrateGramsCap: 15,
-  },
-  {
-    cannabisClass: 'concentrate',
-    equivalentGramsPerGram: 5,
-    dailyEquivalentGramsCap: 70.87,
-    dailyConcentrateGramsCap: 15,
-  },
-]
-
-forAll(
-  'equivalent grams scale linearly with quantity',
-  2000,
-  () => ({ quantity: randomInt(1, 30), grams: randomInt(1, 2800) / 100 }),
-  (v: { quantity: number; grams: number }) => {
-    const single = evaluateOrderLimits(
-      [
-        {
-          variantId: 'v',
-          quantity: v.quantity,
-          cannabisClass: 'flower',
-          unitWeightGrams: v.grams,
-        },
-      ],
-      RULES,
-    )
-    const double = evaluateOrderLimits(
-      [
-        {
-          variantId: 'v',
-          quantity: v.quantity * 2,
-          cannabisClass: 'flower',
-          unitWeightGrams: v.grams,
-        },
-      ],
-      RULES,
-    )
-    return (
-      Math.abs(double.totalEquivalentGrams - single.totalEquivalentGrams * 2) < 0.01
-    )
-  },
-)
-
-forAll(
-  'weightless items never contribute to a limit',
-  1000,
-  () => randomInt(1, 50),
-  (quantity: number) =>
-    evaluateOrderLimits(
-      [{ variantId: 'v', quantity, cannabisClass: 'other', unitWeightGrams: null }],
-      RULES,
-    ).totalEquivalentGrams === 0,
-)
-
-forAll(
-  'only concentrate counts toward the concentrate cap',
-  1500,
-  () => ({ quantity: randomInt(1, 20), grams: randomInt(1, 500) / 100 }),
-  (v: { quantity: number; grams: number }) =>
-    evaluateOrderLimits(
-      [
-        {
-          variantId: 'v',
-          quantity: v.quantity,
-          cannabisClass: 'flower',
-          unitWeightGrams: v.grams,
-        },
-      ],
-      RULES,
-    ).totalConcentrateGrams === 0,
-)
-
-check(
-  'exactly at the cap is allowed',
-  evaluateOrderLimits(
-    [{ variantId: 'v', quantity: 1, cannabisClass: 'flower', unitWeightGrams: 70.87 }],
-    RULES,
-  ).allowed,
-)
-
-check(
-  'one milligram over the cap is refused',
-  !evaluateOrderLimits(
-    [{ variantId: 'v', quantity: 1, cannabisClass: 'flower', unitWeightGrams: 70.871 }],
-    RULES,
-  ).allowed,
-)
-
-check(
-  'prior purchases count toward the cap',
-  !evaluateOrderLimits(
-    [{ variantId: 'v', quantity: 1, cannabisClass: 'flower', unitWeightGrams: 40 }],
-    RULES,
-    { equivalentGrams: 40, concentrateGrams: 0 },
-  ).allowed,
-)
-
-check(
-  'the concentrate cap binds before the equivalent cap',
-  (() => {
-    /** 4g concentrate = 20g equivalent (under 70.87) but 4g is under 15 too. */
-    const under = evaluateOrderLimits(
-      [{ variantId: 'v', quantity: 4, cannabisClass: 'concentrate', unitWeightGrams: 1 }],
-      RULES,
-    )
-    /** 16g concentrate = 80g equivalent AND 16g concentrate: both caps broken. */
-    const over = evaluateOrderLimits(
-      [{ variantId: 'v', quantity: 16, cannabisClass: 'concentrate', unitWeightGrams: 1 }],
-      RULES,
-    )
-    return under.allowed && !over.allowed
-  })(),
-)
-
-forAll(
-  'gram rounding stays within a milligram',
-  2000,
-  () => random() * 100,
-  (value: number) => Math.abs(roundGrams(value) - value) <= 0.0005 + 1e-9,
-)
+/**
+ * The limit properties MOVED to `scripts/verify-compliance.ts`.
+ *
+ * They no longer belong here. This suite is about money: rounding, tax
+ * allocation, and the arithmetic of a receipt, all of it in integer cents. The
+ * limit calculation is now exact rational arithmetic over three independent
+ * caps with unit conversions, which is a different subject with different
+ * failure modes — and mixing them meant a change to the tax code and a change
+ * to a legal cap shared one pass/fail number.
+ */
 
 /* ========================================================================= */
 

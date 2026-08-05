@@ -6,8 +6,8 @@ import { z } from 'zod'
 import { recordAuditEvent } from '@/lib/auth/audit'
 import { requirePermission } from '@/lib/auth/dal'
 import { reauthenticate, reauthMessage } from '@/lib/auth/reauth'
-import { cannabisClass } from '@/lib/db/schema'
-import { publishRuleSafely } from '@/lib/orders/limit-admin'
+import { CLASS_MEASUREMENT, SUPPORTED_CANNABIS_CLASSES } from '@/lib/orders/limits'
+import { previewPublish, publishRuleSafely, type PublishInput } from '@/lib/orders/limit-admin'
 import {
   fail,
   formDataToObject,
@@ -20,90 +20,69 @@ import {
  * Publishing a purchase limit rule.
  *
  * This is the highest-consequence write a human can make in this application:
- * it changes the legal cap enforced at every checkout. The gates below are
- * therefore deliberately redundant, and each one catches something the others
- * do not.
+ * it changes the legal caps enforced at every checkout. The gates are
+ * deliberately redundant, and each catches something the others do not.
  *
- *   1. `requirePermission` — a named grant, not a role. An administrator
- *      without it is refused.
- *   2. `reauthenticate` — the password again, in this request. Proves a person
- *      is present, not merely that a session exists.
- *   3. Validation — the numbers must be sane before anyone is asked to confirm.
- *   4. Confirmation — the class name typed by hand, so the class being changed
- *      has been read rather than left at whatever the select box defaulted to.
- *   5. `publishRule` — inserts and supersedes; never updates, never deletes.
- *   6. Audit — every outcome, including the refusals.
+ *   1. `requirePermission` — a named grant, not a role.
+ *   2. Validation — shape, then units, then dangerous values.
+ *   3. Confirmation — the class typed by hand, plus an explicit acknowledgement.
+ *   4. `reauthenticate` — the password again, in this request.
+ *   5. `publishRuleSafely` — validates the calculation, then inserts and
+ *      supersedes. Never updates, never deletes.
+ *   6. Audit — inside the publishing transaction, and for every refusal here.
  *
- * ORDERING MATTERS. Validation runs BEFORE re-authentication so a typo does not
- * cost a password entry, but the permission check runs before everything: an
- * unauthorised caller must not be able to use this action as an oracle for
- * whether a password is correct.
+ * The permission check runs first so an unauthorised caller cannot use this as
+ * an oracle for whether a password is correct.
  */
 
 /**
- * Grams as a positive decimal, parsed from a text input.
+ * The conversion is entered as a RATIO, not a decimal.
  *
- * `z.coerce.number()` is avoided on purpose — it maps '' to 0 and 'abc' to NaN,
- * and a silently-zero daily cap is an unlimited daily cap. This rejects
- * anything that is not a finite number outright.
+ * 28.349523125/36 grams per fluid ounce is not a terminating decimal. A field
+ * that accepted "0.7875" would silently publish an approximation of a legal
+ * conversion, and nothing downstream could tell it apart from the exact value.
  */
-const decimal = (label: string, max: number) =>
+const positiveInteger = (label: string) =>
   z
     .string()
     .trim()
-    .min(1, `Enter ${label}`)
-    .refine((raw) => Number.isFinite(Number(raw)), `${label} must be a number`)
-    .transform(Number)
-    .refine((n) => n >= 0, `${label} cannot be negative`)
-    .refine((n) => n <= max, `${label} looks too large — check the units`)
+    .regex(/^\d+$/, `${label} must be a whole number`)
+    .transform((raw) => BigInt(raw))
+
+const exactDecimal = (label: string) =>
+  z
+    .string()
+    .trim()
+    .regex(/^\d+(\.\d+)?$/, `${label} must be a decimal number`)
 
 const publishSchema = z
   .object({
-    cannabisClass: z.enum(cannabisClass.enumValues),
+    cannabisClass: z.enum(SUPPORTED_CANNABIS_CLASSES),
 
-    equivalentGramsPerGram: decimal('the equivalence factor', 1000),
-    dailyEquivalentGramsCap: decimal('the daily equivalent cap', 100000),
+    equivalenceNumerator: positiveInteger('The conversion numerator'),
+    equivalenceDenominator: positiveInteger('The conversion denominator'),
 
-    /** Blank means "no separate concentrate cap", which is a real choice. */
-    dailyConcentrateGramsCap: z
+    usableEquivalentCapGrams: exactDecimal('The usable-equivalent cap'),
+    concentrateCapGrams: exactDecimal('The concentrate cap'),
+    immaturePlantCapUnits: z
       .string()
       .trim()
-      .optional()
-      .transform((raw) => (raw === '' || raw === undefined ? null : raw))
-      .refine(
-        (raw) => raw === null || (Number.isFinite(Number(raw)) && Number(raw) >= 0),
-        'The concentrate cap must be a number, or blank for no separate cap',
-      )
-      .transform((raw) => (raw === null ? null : Number(raw))),
+      .regex(/^\d+$/, 'The immature plant cap must be a whole number')
+      .transform(Number),
 
-    /**
-     * Immediately, or at a stated instant.
-     *
-     * "Immediately" deliberately carries NO date across the wire. The database
-     * stamps it, so the rule is in force the moment the transaction commits
-     * rather than whenever this machine's clock catches up to the value it put
-     * in the form. See `PublishInput.effectiveFrom`.
-     */
     timing: z.enum(['now', 'scheduled']),
-
-    /** Read only when `timing` is 'scheduled'. `datetime-local` gives no zone. */
     effectiveFrom: z
       .string()
       .trim()
       .optional()
       .transform((raw) => (raw === '' || raw === undefined ? null : raw)),
 
-    /**
-     * Long enough to be a reason rather than a shrug. "updated" explains
-     * nothing to whoever reads this during an audit two years from now.
-     */
     changeReason: z
       .string()
       .trim()
       .min(20, 'Give a reason of at least 20 characters — this is the audit record')
       .max(1000),
 
-    /** The typed confirmation. Checked against the class below. */
     confirmClass: z.string().trim(),
 
     acknowledgeImmutable: z.literal('on', {
@@ -120,34 +99,82 @@ const publishSchema = z
     (data) =>
       data.timing === 'now' ||
       (data.effectiveFrom !== null && !Number.isNaN(Date.parse(data.effectiveFrom))),
-    {
-      path: ['effectiveFrom'],
-      message: 'Choose the date and time this takes effect',
-    },
+    { path: ['effectiveFrom'], message: 'Choose the date and time this takes effect' },
   )
-  .refine(
-    (data) =>
-      data.dailyConcentrateGramsCap === null ||
-      data.dailyConcentrateGramsCap <= data.dailyEquivalentGramsCap,
-    {
-      path: ['dailyConcentrateGramsCap'],
-      message: 'The concentrate cap cannot exceed the overall daily cap',
-    },
+  .refine((data) => data.equivalenceDenominator > 0n, {
+    path: ['equivalenceDenominator'],
+    message: 'The denominator must be greater than zero',
+  })
+
+/**
+ * A dry run: what would change, and what would stop it.
+ *
+ * Called by the confirmation step so an operator sees the outgoing and incoming
+ * caps side by side BEFORE entering a password. It writes nothing and needs no
+ * re-authentication — it only reads the rule already in force, which the same
+ * user can already see on the page.
+ */
+export async function previewLimitRuleAction(
+  _previous: ActionResult<string> | null,
+  formData: FormData,
+): Promise<ActionResult<string>> {
+  const user = await requirePermission('compliance_admin')
+
+  /**
+   * The password is not required for a preview and is deliberately not read.
+   * A dry run that demanded the password would burn a re-authentication attempt
+   * against the throttle for a request that writes nothing.
+   */
+  const parsed = parseInput(
+    publishSchema,
+    { ...formDataToObject(formData), password: 'preview-only' },
   )
+  if (!parsed.ok) return parsed
+
+  const preview = await previewPublish(toPublishInput(parsed.data, user.id, new Date()))
+  return ok(JSON.stringify(preview))
+}
+
+function toPublishInput(
+  data: z.output<typeof publishSchema>,
+  userId: string,
+  reauthenticatedAt: Date,
+): PublishInput {
+  return {
+    cannabisClass: data.cannabisClass,
+    equivalenceNumerator: data.equivalenceNumerator,
+    equivalenceDenominator: data.equivalenceDenominator,
+    /**
+     * Derived from the class, not accepted from the form.
+     *
+     * The basis is a property of the classification — flower is measured in
+     * grams, liquid infused product in fluid ounces — so letting the operator
+     * pick it independently would create a field whose only possible value is
+     * already known, and whose wrong value is a silent factor-of-two error.
+     * `validateRuleValues` checks it anyway, because this function is not the
+     * only caller.
+     */
+    expectedBasis: CLASS_MEASUREMENT[data.cannabisClass].basis,
+    usableEquivalentCapGrams: data.usableEquivalentCapGrams,
+    concentrateCapGrams: data.concentrateCapGrams,
+    immaturePlantCapUnits: data.immaturePlantCapUnits,
+    effectiveFrom: data.timing === 'now' ? null : new Date(data.effectiveFrom as string),
+    changeReason: data.changeReason,
+    publishedBy: userId,
+    reauthenticatedAt,
+  }
+}
 
 export async function publishLimitRuleAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  /* 1 — permission, before anything else can be learned from this action. */
   const user = await requirePermission('compliance_admin')
 
-  /* 3 — validation before the password prompt is spent on a typo. */
   const parsed = parseInput(publishSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
   const input = parsed.data
 
-  /* 2 — re-authentication. Audited inside, whatever the outcome. */
   const reauth = await reauthenticate(user.id, input.password)
   if (!reauth.ok) {
     await recordAuditEvent({
@@ -162,25 +189,9 @@ export async function publishLimitRuleAction(
     )
   }
 
-  /* 5 — insert-and-supersede. */
-  const published = await publishRuleSafely({
-    cannabisClass: input.cannabisClass,
-    equivalentGramsPerGram: input.equivalentGramsPerGram,
-    dailyEquivalentGramsCap: input.dailyEquivalentGramsCap,
-    dailyConcentrateGramsCap: input.dailyConcentrateGramsCap,
-    /** Null hands the timestamp to the database. See PublishInput. */
-    effectiveFrom:
-      input.timing === 'now' ? null : new Date(input.effectiveFrom as string),
-    changeReason: input.changeReason,
-    publishedBy: user.id,
-    reauthenticatedAt: reauth.at,
-  })
+  const published = await publishRuleSafely(toPublishInput(input, user.id, reauth.at))
 
   if (!published.ok) {
-    /**
-     * A refusal is audited too. Someone re-authenticated and attempted a change
-     * to a legal cap; that it did not land does not make it uninteresting.
-     */
     await recordAuditEvent({
       event: 'PURCHASE_LIMIT_RULE_REJECTED',
       userId: user.id,
@@ -211,21 +222,47 @@ export async function publishLimitRuleAction(
           'Someone else published a change to this class while you were working. ' +
             'Reload to see it, then decide whether yours is still needed.',
         )
+      case 'unsupported_class':
+        return fail(
+          'conflict',
+          `"${published.failure.cannabisClass}" is not a class this calculation supports. ` +
+            'Publishing a rule for it would have no defined conversion.',
+        )
+      case 'zero_conversion':
+        return fail(
+          'conflict',
+          'A conversion of zero means this class counts toward no limit at all — ' +
+            'an unlimited sale. Only immature plants and explicitly non-cannabis ' +
+            'merchandise may contribute nothing.',
+        )
+      case 'incompatible_units':
+        return fail(
+          'conflict',
+          `This class is measured in ${published.failure.expected.replace(/_/g, ' ')}, ` +
+            `but the rule expects ${published.failure.supplied.replace(/_/g, ' ')}. ` +
+            'A conversion applied to the wrong unit is silently wrong.',
+        )
+      case 'invalid_cap':
+        return fail(
+          'conflict',
+          `The ${published.failure.cap.replace(/_/g, ' ')} cap of ` +
+            `"${published.failure.value}" is not a usable limit. A cap of zero would ` +
+            'prohibit the class entirely, which needs to be stated deliberately ' +
+            'rather than reached by leaving a field empty.',
+        )
+      case 'would_orphan_class':
+        return fail(
+          'conflict',
+          `Publishing this would leave ${published.failure.classes.join(', ')} with no ` +
+            'rule in force, and those products would stop being sellable.',
+        )
     }
   }
 
   /**
-   * 6 — the record of what happened is already written.
-   *
-   * `PURCHASE_LIMIT_RULE_PUBLISHED` and `_SUPERSEDED` are inserted INSIDE the
-   * publishing transaction, not here. Writing them from the action would put
-   * them outside it, and a crash between COMMIT and this line would leave a
-   * changed legal cap with no record of who changed it. Reaching this point
-   * means both the rule and its audit row committed together, or neither did.
-   *
-   * The refusal paths above are audited from here on purpose: those are
-   * non-transactional by nature — there is no publication to be atomic with —
-   * and a lost refusal record must not turn into a 500 for the operator.
+   * The PUBLISHED and SUPERSEDED audit rows are written INSIDE the publishing
+   * transaction — see `publishRule`. Reaching this line means both the rule and
+   * its audit row committed together, or neither did.
    */
   revalidatePath('/admin/purchase-limits')
   return ok()

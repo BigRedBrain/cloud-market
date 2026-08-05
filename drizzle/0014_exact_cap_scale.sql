@@ -1,0 +1,2 @@
+ALTER TABLE "purchase_limit_rules" ALTER COLUMN "usable_equivalent_cap_grams" SET DATA TYPE numeric(18, 11);--> statement-breakpoint
+ALTER TABLE "purchase_limit_rules" ALTER COLUMN "concentrate_cap_grams" SET DATA TYPE numeric(18, 11);

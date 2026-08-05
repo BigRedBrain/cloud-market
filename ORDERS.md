@@ -148,21 +148,29 @@ Configuration, not constants. `purchase_limit_rules` holds one row per cannabis
 class with an equivalence factor and daily caps, versioned by effective date.
 Checkout code contains no gram figures.
 
-Each order line snapshots `equivalent_grams`, `concentrate_grams`,
-`equivalent_factor_applied` and `purchase_limit_rule_id`, so a check can be
-reproduced after the rules change — the factor says what arithmetic was done,
-the rule id says on whose authority.
+Each order line snapshots the classification, the measurement basis, the value
+and its unit, the usable equivalent, concentrate grams, the immature-plant
+count, the exact conversion ratio, the rule id and the calculation version — so
+a check can be reproduced after the rules change. See
+[COMPLIANCE.md](COMPLIANCE.md) §4.
 
 Enforced at **both** draft creation and placement. A failure at placement rolls
 back completely: no placed order, and the hold is left for the customer to fix
 their basket rather than stranded.
 
-"Today" is a **rolling 24 hours**, not a calendar day — a calendar boundary lets
-someone buy the maximum at 23:55 and again at 00:05.
+**THREE INDEPENDENT CAPS, PER TRANSACTION.** Usable-marijuana equivalent
+≤ 70.87380781250 g (2.5 oz exactly), concentrate ≤ 15 g, immature plants ≤ 3.
+A basket must pass every one; they are not combined into a weighted total.
 
-**The default numbers need legal confirmation.** Michigan adult-use is commonly
-stated as 2.5 oz (70.87 g) per day with no more than 15 g concentrate; edible
-equivalence varies by interpretation. That is exactly why they are data.
+Two things this section previously described are now known to be wrong and have
+been removed: a **rolling 24-hour window** (adult-use limits apply per
+transaction — the window was the medical-caregiver model) and a **5:1
+concentrate weighting** (it is 1:1 by gram weight, plus its own ceiling). See
+COMPLIANCE.md §1.
+
+**Nothing falls back.** There is no compiled-in default: a class with no
+published rule, no supported classification, or no authoritative measurement is
+refused at checkout.
 
 Rules are **immutable and versioned**, published through an admin screen gated
 on a named `compliance_admin` grant, with re-authentication and a full audit
@@ -373,11 +381,24 @@ exactly when it matters: the customer who abandoned checkout is by definition
 not coming back to trigger it, and a quiet evening is precisely when nothing
 gets released.
 
-> **Check the plan.** Per-minute cron requires Vercel Pro. On Hobby, cron runs
-> at most **once a day**, which makes a 15-minute reservation window meaningless.
-> Verify the interval after deploying — see below — and if the plan cannot
-> support it, either shorten nothing and accept the exposure, or move the job to
-> an external scheduler hitting the same authenticated endpoint.
+> ### ⚠️ Vercel plan requirements — read before deploying
+>
+> - **Per-minute cron requires Vercel Pro or Enterprise.**
+> - **Hobby supports once-daily cron only.**
+> - **`* * * * *` does not silently degrade to daily on Hobby — the deployment
+>   fails.** An earlier version of this document said the interval would be
+>   "limited"; it is not, it is rejected, and a project on Hobby will find the
+>   deploy blocked rather than the sweeper running slowly.
+> - **If the project stays on Hobby, remove the `crons` entry from
+>   `vercel.json` and point an approved external scheduler at the same
+>   authenticated endpoint, at least every few minutes.** The route is
+>   bearer-authenticated and idempotent, so any scheduler that can send an
+>   `Authorization` header will do.
+>
+> **Do not lower `RESERVATION_TTL_MINUTES` to make a daily sweep look adequate,
+> and do not treat a daily sweep as sufficient.** A 15-minute hold released once
+> a day means stock is unavailable for up to 24 hours after a customer walks
+> away — the exact failure the sweeper exists to prevent, wearing a schedule.
 
 ### Deployment
 
@@ -398,8 +419,23 @@ gets released.
 }
 ```
 
-`ageSeconds` climbing past a few minutes means the schedule is not running.
-Alert on it.
+### The threshold to alert on
+
+| `scheduler.ageSeconds` | Meaning |
+| --- | --- |
+| under 180 | Healthy at a one-minute cadence |
+| **180–900** | Degraded. Investigate; holds are outliving their window |
+| **over 900 (15 min)** | **Unhealthy — treat checkout as unhealthy too.** A hold's entire TTL has now elapsed with no sweep, so released stock is not being returned and availability is understated |
+| absent | The schedule has never run — a fresh deploy, or a cron that was never installed |
+
+**900 seconds is the number**, and it is `RESERVATION_TTL_MINUTES` expressed in
+seconds on purpose: once a full reservation window has passed without a sweep,
+there can be expired holds that nothing has released, and the storefront is
+showing less stock than it has.
+
+The signal is deliberately **fail-visible**: it reports the last run that
+COMPLETED, so a job that is being invoked and failing every minute shows a
+climbing age rather than a fresh timestamp. Silence is the alarm.
 
 `CRON_SECRET` unset returns **503 and does not run** — a scheduled job that
 silently becomes a public endpoint when an environment variable is dropped is

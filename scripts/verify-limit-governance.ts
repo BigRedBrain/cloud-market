@@ -45,6 +45,7 @@ import {
   placeOrder,
 } from '../lib/orders/core'
 import { recordAuditEvent } from '../lib/auth/audit'
+import { toFixed, type Rational } from '../lib/orders/exact'
 
 const PRODUCTION_FP = '2b968b3cbe06'
 const fp = (u: string) =>
@@ -59,7 +60,16 @@ if (fp(process.env.DATABASE_URL) === PRODUCTION_FP) {
   process.exit(1)
 }
 
-const WORKING_CLASS = 'edible' as const
+/**
+ * A SUPPORTED class, and one nothing else in the corpus publishes for.
+ *
+ * Was `edible`, which is now a legacy value with no conversion — every basket
+ * containing it fails closed, so the order-retention section could no longer
+ * place an order. `concentrate` is measured in grams like flower, so the
+ * publish inputs below stay simple, and the sweeper and concurrency suites use
+ * `flower` exclusively.
+ */
+const WORKING_CLASS = 'concentrate' as const
 
 /**
  * The trigger probes get their own class.
@@ -194,6 +204,16 @@ async function publish(input: PublishInput) {
  */
 const syntheticRules = new Set<string>()
 
+/**
+ * The usable cap a loaded rule carries, as an exact decimal string.
+ *
+ * Loaded rules hold rationals now, so an assertion cannot compare them with
+ * `===` against a number. Rendering to the stored scale keeps the comparison
+ * exact and keeps the failure messages readable.
+ */
+const capGrams = (rule: { usableEquivalentCapGrams: Rational } | undefined) =>
+  rule ? toFixed(rule.usableEquivalentCapGrams, 11) : 'none'
+
 async function main() {
   console.log('Purchase limit governance')
   console.log(`database ${fp(process.env.DATABASE_URL!)} (not production)`)
@@ -239,9 +259,12 @@ async function main() {
       .values({
         cannabisClass: PROBE_CLASS,
         version: 9000,
-        equivalentGramsPerGram: '1.0000',
-        dailyEquivalentGramsCap: '10.000',
-        dailyConcentrateGramsCap: '5.000',
+        equivalenceNumerator: '1',
+        equivalenceDenominator: '1',
+        expectedBasis: 'net_weight_grams',
+        usableEquivalentCapGrams: '10.00000000000',
+        concentrateCapGrams: '5.00000000000',
+        immaturePlantCapUnits: 3,
         effectiveFrom: probeFrom,
         effectiveUntil: probeUntil,
         changeReason: 'governance probe',
@@ -255,7 +278,7 @@ async function main() {
       () =>
         db
           .update(schema.purchaseLimitRules)
-          .set({ dailyEquivalentGramsCap: '999.000' })
+          .set({ usableEquivalentCapGrams: '999.00000' })
           .where(eq(schema.purchaseLimitRules.id, probe.id)),
       /immutable/i,
     )
@@ -265,7 +288,7 @@ async function main() {
       () =>
         db
           .update(schema.purchaseLimitRules)
-          .set({ equivalentGramsPerGram: '99.0000' })
+          .set({ equivalenceNumerator: '99' })
           .where(eq(schema.purchaseLimitRules.id, probe.id)),
       /immutable/i,
     )
@@ -333,8 +356,8 @@ async function main() {
     const stillThere = await ruleById(probe.id)
     check(
       'the probe survived every rejected statement',
-      stillThere !== undefined && stillThere.dailyEquivalentGramsCap === '10.000',
-      `cap is ${stillThere?.dailyEquivalentGramsCap}`,
+      stillThere !== undefined && stillThere.usableEquivalentCapGrams === '10.00000000000',
+      `cap is ${stillThere?.usableEquivalentCapGrams}`,
     )
 
     await rejects(
@@ -343,9 +366,12 @@ async function main() {
         db.insert(schema.purchaseLimitRules).values({
           cannabisClass: PROBE_CLASS,
           version: 9001,
-          equivalentGramsPerGram: '1.0000',
-          dailyEquivalentGramsCap: '10.000',
-          dailyConcentrateGramsCap: null,
+          equivalenceNumerator: '1',
+          equivalenceDenominator: '1',
+          expectedBasis: 'net_weight_grams',
+          usableEquivalentCapGrams: '10.00000000000',
+          concentrateCapGrams: '15.00000000000',
+          immaturePlantCapUnits: 3,
           effectiveFrom: new Date('2019-06-01T00:00:00Z'),
           effectiveUntil: new Date('2019-01-01T00:00:00Z'),
           changeReason: 'backwards window',
@@ -361,9 +387,12 @@ async function main() {
 
     const result = await publish({
       cannabisClass: WORKING_CLASS,
-      equivalentGramsPerGram: 1.5,
-      dailyEquivalentGramsCap: 60,
-      dailyConcentrateGramsCap: 12,
+      equivalenceNumerator: 1n,
+      equivalenceDenominator: 1n,
+      expectedBasis: 'net_weight_grams' as const,
+      usableEquivalentCapGrams: '60',
+      concentrateCapGrams: '12',
+      immaturePlantCapUnits: 3,
       /** Null: the database stamps it, so it is in force on commit. */
       effectiveFrom: null,
       changeReason: 'Governance suite: first published version under test.',
@@ -381,7 +410,7 @@ async function main() {
     const newRow = await ruleById(result.ruleId)
 
     check('the previous version still holds its original numbers',
-      oldRow.dailyEquivalentGramsCap === before.dailyEquivalentGramsCap)
+      oldRow.usableEquivalentCapGrams === before.usableEquivalentCapGrams)
     check('the previous version was closed at the new start instant',
       oldRow.effectiveUntil?.getTime() === newRow.effectiveFrom.getTime())
     check('the previous version points forward to its successor',
@@ -402,8 +431,8 @@ async function main() {
 
     const rules = await loadLimitRules()
     const applied = rules.find((r) => r.cannabisClass === WORKING_CLASS)
-    check('checkout would use the new cap', applied?.dailyEquivalentGramsCap === 60,
-      `saw ${applied?.dailyEquivalentGramsCap}`)
+    check('checkout would use the new cap', capGrams(applied) === '60.00000000000',
+      `saw ${capGrams(applied)}`)
     check('checkout carries the rule id', applied?.ruleId === result.ruleId)
   }
 
@@ -414,9 +443,12 @@ async function main() {
 
     const identical = await publish({
       cannabisClass: WORKING_CLASS,
-      equivalentGramsPerGram: Number(current.equivalentGramsPerGram),
-      dailyEquivalentGramsCap: Number(current.dailyEquivalentGramsCap),
-      dailyConcentrateGramsCap: Number(current.dailyConcentrateGramsCap),
+      equivalenceNumerator: BigInt(current.equivalenceNumerator!),
+      equivalenceDenominator: BigInt(current.equivalenceDenominator!),
+      expectedBasis: current.expectedBasis!,
+      usableEquivalentCapGrams: current.usableEquivalentCapGrams!,
+      concentrateCapGrams: current.concentrateCapGrams!,
+      immaturePlantCapUnits: current.immaturePlantCapUnits!,
       effectiveFrom: null,
       changeReason: 'Governance suite: republishing identical values on purpose.',
       publishedBy: publisher,
@@ -426,9 +458,12 @@ async function main() {
 
     const past = await publish({
       cannabisClass: WORKING_CLASS,
-      equivalentGramsPerGram: 2,
-      dailyEquivalentGramsCap: 55,
-      dailyConcentrateGramsCap: 10,
+      equivalenceNumerator: 1n,
+      equivalenceDenominator: 1n,
+      expectedBasis: 'net_weight_grams' as const,
+      usableEquivalentCapGrams: '55',
+      concentrateCapGrams: '10',
+      immaturePlantCapUnits: 3,
       effectiveFrom: new Date(Date.now() - 86_400_000),
       changeReason: 'Governance suite: a start date in the past, which is refused.',
       publishedBy: publisher,
@@ -449,9 +484,12 @@ async function main() {
 
     const scheduled = await publish({
       cannabisClass: WORKING_CLASS,
-      equivalentGramsPerGram: 3,
-      dailyEquivalentGramsCap: 42,
-      dailyConcentrateGramsCap: 9,
+      equivalenceNumerator: 1n,
+      equivalenceDenominator: 1n,
+      expectedBasis: 'net_weight_grams' as const,
+      usableEquivalentCapGrams: '42',
+      concentrateCapGrams: '9',
+      immaturePlantCapUnits: 3,
       effectiveFrom: when,
       changeReason: 'Governance suite: scheduled to take effect in one hour.',
       publishedBy: publisher,
@@ -467,8 +505,8 @@ async function main() {
     const rules = await loadLimitRules()
     const applied = rules.find((r) => r.cannabisClass === WORKING_CLASS)
     check('checkout still uses the OLD cap before the start date',
-      applied?.dailyEquivalentGramsCap === Number(current.dailyEquivalentGramsCap),
-      `saw ${applied?.dailyEquivalentGramsCap}`)
+      capGrams(applied) === current.usableEquivalentCapGrams,
+      `saw ${capGrams(applied)}`)
     check('checkout still cites the old rule id', applied?.ruleId === current.id)
 
     const history = await ruleHistory()
@@ -482,9 +520,12 @@ async function main() {
     /* Cancelling a pending change by publishing over it at the same instant. */
     const replaced = await publish({
       cannabisClass: WORKING_CLASS,
-      equivalentGramsPerGram: 4,
-      dailyEquivalentGramsCap: 41,
-      dailyConcentrateGramsCap: 8,
+      equivalenceNumerator: 1n,
+      equivalenceDenominator: 1n,
+      expectedBasis: 'net_weight_grams' as const,
+      usableEquivalentCapGrams: '41',
+      concentrateCapGrams: '8',
+      immaturePlantCapUnits: 3,
       effectiveFrom: when,
       changeReason: 'Governance suite: replacing a scheduled change before it lands.',
       publishedBy: publisher,
@@ -505,8 +546,8 @@ async function main() {
 
     const stillOld = await loadLimitRules()
     check('checkout is still on the old cap after both scheduled changes',
-      stillOld.find((r) => r.cannabisClass === WORKING_CLASS)?.dailyEquivalentGramsCap ===
-        Number(current.dailyEquivalentGramsCap))
+      capGrams(stillOld.find((r) => r.cannabisClass === WORKING_CLASS)) ===
+        current.usableEquivalentCapGrams)
 
     /**
      * The urgent case: a correction that must apply NOW, while a change is
@@ -514,9 +555,12 @@ async function main() {
      */
     const urgent = await publish({
       cannabisClass: WORKING_CLASS,
-      equivalentGramsPerGram: 1.25,
-      dailyEquivalentGramsCap: 50,
-      dailyConcentrateGramsCap: 11,
+      equivalenceNumerator: 1n,
+      equivalenceDenominator: 1n,
+      expectedBasis: 'net_weight_grams' as const,
+      usableEquivalentCapGrams: '50',
+      concentrateCapGrams: '11',
+      immaturePlantCapUnits: 3,
       effectiveFrom: null,
       changeReason: 'Governance suite: urgent change while another was scheduled.',
       publishedBy: publisher,
@@ -527,8 +571,8 @@ async function main() {
 
     const nowRules = await loadLimitRules()
     check('checkout immediately uses the urgent cap',
-      nowRules.find((r) => r.cannabisClass === WORKING_CLASS)?.dailyEquivalentGramsCap === 50,
-      `saw ${nowRules.find((r) => r.cannabisClass === WORKING_CLASS)?.dailyEquivalentGramsCap}`)
+      capGrams(nowRules.find((r) => r.cannabisClass === WORKING_CLASS)) === '50.00000000000',
+      `saw ${capGrams(nowRules.find((r) => r.cannabisClass === WORKING_CLASS))}`)
 
     const inForce = (await effectiveRules()).filter((r) => r.cannabisClass === WORKING_CLASS)
     check('exactly one rule is in force after the overtake', inForce.length === 1,
@@ -570,9 +614,12 @@ async function main() {
     const [a, b] = await Promise.all([
       publish({
         cannabisClass: WORKING_CLASS,
-        equivalentGramsPerGram: 1.75,
-        dailyEquivalentGramsCap: 33,
-        dailyConcentrateGramsCap: 7,
+        equivalenceNumerator: 1n,
+        equivalenceDenominator: 1n,
+        expectedBasis: 'net_weight_grams' as const,
+        usableEquivalentCapGrams: '33',
+        concentrateCapGrams: '7',
+        immaturePlantCapUnits: 3,
         effectiveFrom: null,
         changeReason: 'Governance suite: simultaneous publish, first writer.',
         publishedBy: publisher,
@@ -580,9 +627,12 @@ async function main() {
       }),
       publish({
         cannabisClass: WORKING_CLASS,
-        equivalentGramsPerGram: 1.85,
-        dailyEquivalentGramsCap: 34,
-        dailyConcentrateGramsCap: 6,
+        equivalenceNumerator: 1n,
+        equivalenceDenominator: 1n,
+        expectedBasis: 'net_weight_grams' as const,
+        usableEquivalentCapGrams: '34',
+        concentrateCapGrams: '6',
+        immaturePlantCapUnits: 3,
         effectiveFrom: null,
         changeReason: 'Governance suite: simultaneous publish, second writer.',
         publishedBy: publisher,
@@ -673,6 +723,8 @@ async function main() {
         active: true,
         cannabisClass: WORKING_CLASS,
         weightGrams: '1.000',
+        measurementBasis: 'net_weight_grams',
+        measurementValue: '1.0000',
       })
       .returning({ id: schema.productVariants.id })
     created.variants.push(variant.id)
@@ -712,9 +764,12 @@ async function main() {
     /* Now change the rule underneath it. */
     const after = await publish({
       cannabisClass: WORKING_CLASS,
-      equivalentGramsPerGram: 2.5,
-      dailyEquivalentGramsCap: 25,
-      dailyConcentrateGramsCap: 5,
+      equivalenceNumerator: 1n,
+      equivalenceDenominator: 1n,
+      expectedBasis: 'net_weight_grams' as const,
+      usableEquivalentCapGrams: '25',
+      concentrateCapGrams: '5',
+      immaturePlantCapUnits: 3,
       effectiveFrom: null,
       changeReason: 'Governance suite: changing the rule after an order was placed.',
       publishedBy: publisher,
@@ -725,7 +780,7 @@ async function main() {
     const [lineAfterChange] = await db
       .select({
         ruleId: schema.orderLines.purchaseLimitRuleId,
-        factor: schema.orderLines.equivalentFactorApplied,
+        numerator: schema.orderLines.equivalenceNumerator,
       })
       .from(schema.orderLines)
       .where(eq(schema.orderLines.orderId, draft.orderId))
@@ -734,8 +789,8 @@ async function main() {
       lineAfterChange.ruleId === ruleAtOrderTime.id,
       `${lineAfterChange.ruleId} vs ${ruleAtOrderTime.id}`)
     check('the placed order kept its original factor',
-      Number(lineAfterChange.factor) === Number(ruleAtOrderTime.equivalentGramsPerGram),
-      `${lineAfterChange.factor} vs ${ruleAtOrderTime.equivalentGramsPerGram}`)
+      lineAfterChange.numerator === ruleAtOrderTime.equivalenceNumerator,
+      `${lineAfterChange.numerator} vs ${ruleAtOrderTime.equivalenceNumerator}`)
 
     /** The FK is the second lock: a cited rule cannot be removed. */
     await rejects(
@@ -751,6 +806,87 @@ async function main() {
     const citedRow = cited.find((r) => r.id === ruleAtOrderTime.id)
     check('the history shows how many order lines cite the rule',
       (citedRow?.citedByLines ?? 0) >= 1, `${citedRow?.citedByLines}`)
+
+    /* ---- a rule change landing INSIDE a live draft ---------------------- */
+
+    /**
+     * The window is fifteen minutes and a scheduled change can land inside it.
+     * Placement re-resolves the rules rather than trusting the draft, so the
+     * order must be checked against — and must cite — the rule in force at the
+     * moment of PLACEMENT, not the one that happened to be live when the
+     * customer started.
+     */
+    const ruleBeforeDraft = await openRuleFor(WORKING_CLASS)
+
+    const draft2 = await createDraft({
+      userId: customer,
+      userEmail: `gov.customer.${stamp}@example.invalid`,
+      userName: 'Governance Customer',
+      userPhone: null,
+      dateOfBirth: '1990-01-01',
+      cartLines: [{ variantId: variant.id, quantity: 1 }],
+    })
+    check('a second draft was created', draft2.ok)
+    if (!draft2.ok) return
+    created.orders.push(draft2.orderId)
+
+    const [lineAtDraft] = await db
+      .select({ ruleId: schema.orderLines.purchaseLimitRuleId })
+      .from(schema.orderLines)
+      .where(eq(schema.orderLines.orderId, draft2.orderId))
+    check('the draft cites the rule in force when it was created',
+      lineAtDraft.ruleId === ruleBeforeDraft.id)
+
+    /** The change lands while the draft is still open. */
+    const landed = await publish({
+      cannabisClass: WORKING_CLASS,
+      equivalenceNumerator: 1n,
+      equivalenceDenominator: 1n,
+      expectedBasis: 'net_weight_grams' as const,
+      usableEquivalentCapGrams: '44',
+      concentrateCapGrams: '14',
+      immaturePlantCapUnits: 3,
+      effectiveFrom: null,
+      changeReason: 'Governance suite: a change landing while a draft is open.',
+      publishedBy: publisher,
+      reauthenticatedAt: new Date(),
+    })
+    check('the rule changed mid-draft', landed.ok)
+    if (!landed.ok) return
+
+    const placed2 = await placeOrder({
+      userId: customer,
+      orderId: draft2.orderId,
+      idempotencyKey: `gov-mid-${stamp}`,
+      actorId: customer,
+    })
+    check('the draft still places', placed2.ok)
+
+    const [lineAtPlacement] = await db
+      .select({
+        ruleId: schema.orderLines.purchaseLimitRuleId,
+        version: schema.orderLines.calculationVersion,
+      })
+      .from(schema.orderLines)
+      .where(eq(schema.orderLines.orderId, draft2.orderId))
+
+    check(
+      'placement re-checked against the NEW rule and cites it',
+      lineAtPlacement.ruleId === landed.ruleId,
+      `${lineAtPlacement.ruleId} vs new ${landed.ruleId} (draft had ${ruleBeforeDraft.id})`,
+    )
+    check('and it is no longer the rule the draft was built with',
+      lineAtPlacement.ruleId !== ruleBeforeDraft.id)
+    check('the calculation version is recorded on the line',
+      lineAtPlacement.version === 2, String(lineAtPlacement.version))
+
+    /** The FIRST order, placed earlier, is untouched by any of this. */
+    const [firstOrderLine] = await db
+      .select({ ruleId: schema.orderLines.purchaseLimitRuleId })
+      .from(schema.orderLines)
+      .where(eq(schema.orderLines.orderId, draft.orderId))
+    check('the earlier placed order still cites its own original rule',
+      firstOrderLine.ruleId === ruleAtOrderTime.id)
   }
 
   /* ======================================= 7. RE-AUTHENTICATION ========= */
@@ -904,9 +1040,12 @@ async function main() {
     try {
       const attempt = await publishRuleSafely({
         cannabisClass: WORKING_CLASS,
-        equivalentGramsPerGram: 9.5,
-        dailyEquivalentGramsCap: 12,
-        dailyConcentrateGramsCap: 3,
+        equivalenceNumerator: 1n,
+        equivalenceDenominator: 1n,
+        expectedBasis: 'net_weight_grams' as const,
+        usableEquivalentCapGrams: '12',
+        concentrateCapGrams: '3',
+        immaturePlantCapUnits: 3,
         effectiveFrom: null,
         changeReason: 'Governance suite: this publication must not survive.',
         publishedBy: publisher,
@@ -937,8 +1076,8 @@ async function main() {
     check('the previous rule is unchanged — no successor link',
       after.supersededByRuleId === null)
     check('the previous rule is unchanged — caps identical',
-      after.dailyEquivalentGramsCap === before.dailyEquivalentGramsCap &&
-        after.equivalentGramsPerGram === before.equivalentGramsPerGram)
+      after.usableEquivalentCapGrams === before.usableEquivalentCapGrams &&
+        after.equivalenceNumerator === before.equivalenceNumerator)
 
     const supersededAfter = (
       await db
@@ -953,9 +1092,12 @@ async function main() {
     /** And the path still works once the induced failure is removed. */
     const recovery = await publish({
       cannabisClass: WORKING_CLASS,
-      equivalentGramsPerGram: 1.1,
-      dailyEquivalentGramsCap: 49,
-      dailyConcentrateGramsCap: 10,
+      equivalenceNumerator: 1n,
+      equivalenceDenominator: 1n,
+      expectedBasis: 'net_weight_grams' as const,
+      usableEquivalentCapGrams: '49',
+      concentrateCapGrams: '10',
+      immaturePlantCapUnits: 3,
       effectiveFrom: null,
       changeReason: 'Governance suite: publishing succeeds again after the induced failure.',
       publishedBy: publisher,
@@ -1023,9 +1165,12 @@ async function main() {
         db.insert(schema.purchaseLimitRules).values({
           cannabisClass: WORKING_CLASS,
           version: 9500,
-          equivalentGramsPerGram: '1.0000',
-          dailyEquivalentGramsCap: '5.000',
-          dailyConcentrateGramsCap: null,
+          equivalenceNumerator: '1',
+          equivalenceDenominator: '1',
+          expectedBasis: 'net_weight_grams',
+          usableEquivalentCapGrams: '5.00000000000',
+          concentrateCapGrams: '15.00000000000',
+          immaturePlantCapUnits: 3,
           effectiveFrom: current.effectiveFrom,
           effectiveUntil: null,
           changeReason: 'overlap probe',
@@ -1039,9 +1184,12 @@ async function main() {
         db.insert(schema.purchaseLimitRules).values({
           cannabisClass: WORKING_CLASS,
           version: 9501,
-          equivalentGramsPerGram: '1.0000',
-          dailyEquivalentGramsCap: '5.000',
-          dailyConcentrateGramsCap: null,
+          equivalenceNumerator: '1',
+          equivalenceDenominator: '1',
+          expectedBasis: 'net_weight_grams',
+          usableEquivalentCapGrams: '5.00000000000',
+          concentrateCapGrams: '15.00000000000',
+          immaturePlantCapUnits: 3,
           effectiveFrom: new Date(current.effectiveFrom.getTime() + 1000),
           effectiveUntil: new Date(current.effectiveFrom.getTime() + 3_600_000),
           changeReason: 'partial overlap probe',
@@ -1055,9 +1203,12 @@ async function main() {
       .values({
         cannabisClass: WORKING_CLASS,
         version: 9502,
-        equivalentGramsPerGram: '1.0000',
-        dailyEquivalentGramsCap: '5.000',
-        dailyConcentrateGramsCap: null,
+        equivalenceNumerator: '1',
+        equivalenceDenominator: '1',
+        expectedBasis: 'net_weight_grams',
+        usableEquivalentCapGrams: '5.00000000000',
+        concentrateCapGrams: '15.00000000000',
+        immaturePlantCapUnits: 3,
         effectiveFrom: current.effectiveFrom,
         effectiveUntil: current.effectiveFrom,
         changeReason: 'empty window probe',

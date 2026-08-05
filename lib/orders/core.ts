@@ -1,11 +1,10 @@
 import 'server-only'
 
 import { randomBytes } from 'node:crypto'
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 
 import type { DbExecutor } from '@/lib/auth/tokens'
 import { db, schema } from '@/lib/db'
-import type { CannabisClass } from '@/lib/db/schema'
 import {
   claimInventoryTransition,
   commitStock,
@@ -16,11 +15,15 @@ import {
   type ReservationFailure,
 } from '@/lib/orders/inventory'
 import {
+  CALCULATION_VERSION,
   evaluateOrderLimits,
-  FALLBACK_LIMIT_RULES,
+  formatGrams,
+  isSupportedClass,
   type LimitEvaluation,
+  type LimitLineInput,
   type LimitRule,
 } from '@/lib/orders/limits'
+import { fromDecimalString, rational, type Rational } from '@/lib/orders/exact'
 import {
   DEFAULT_EXCISE_TAX_BPS,
   DEFAULT_SALES_TAX_BPS,
@@ -95,7 +98,7 @@ export async function recordTransition(
 }
 
 /**
- * The rules IN FORCE right now, falling back only when the table is empty.
+ * The rules IN FORCE right now. There is no fallback.
  *
  * "In force" is the half-open window `[effective_from, effective_until)`, not
  * "the open row". Those differ whenever a change has been scheduled: the
@@ -120,21 +123,105 @@ export async function loadLimitRules(): Promise<LimitRule[]> {
       ),
     )
 
-  if (rows.length === 0) return FALLBACK_LIMIT_RULES
+  /**
+   * NO FALLBACK. An empty table returns an empty list and every basket is
+   * refused downstream.
+   *
+   * This used to return `FALLBACK_LIMIT_RULES`, which meant an unconfigured
+   * database sold cannabis against numbers compiled into the bundle that nobody
+   * had approved, published or audited — and did so silently, because a working
+   * checkout looks exactly like a correctly configured one.
+   */
+  const usable: LimitRule[] = []
+  for (const row of rows) {
+    /**
+     * A row that cannot be read exactly is DROPPED rather than coerced.
+     *
+     * Dropping it makes its class unresolvable, which refuses the basket. The
+     * alternative — defaulting a missing numerator to 1, or a missing cap to
+     * some constant — invents a legal limit at runtime.
+     */
+    if (
+      row.equivalenceNumerator === null ||
+      row.equivalenceDenominator === null ||
+      row.expectedBasis === null ||
+      row.usableEquivalentCapGrams === null ||
+      row.concentrateCapGrams === null ||
+      row.immaturePlantCapUnits === null
+    ) {
+      continue
+    }
 
-  return rows.map((row) => ({
-    ruleId: row.id,
-    cannabisClass: row.cannabisClass,
-    equivalentGramsPerGram: Number(row.equivalentGramsPerGram),
-    dailyEquivalentGramsCap: Number(row.dailyEquivalentGramsCap),
-    dailyConcentrateGramsCap:
-      row.dailyConcentrateGramsCap === null ? null : Number(row.dailyConcentrateGramsCap),
-  }))
+    let equivalence: Rational
+    let usableCap: Rational
+    let concentrateCap: Rational
+    try {
+      equivalence = rational(
+        BigInt(row.equivalenceNumerator),
+        BigInt(row.equivalenceDenominator),
+      )
+      usableCap = fromDecimalString(row.usableEquivalentCapGrams)
+      concentrateCap = fromDecimalString(row.concentrateCapGrams)
+    } catch {
+      continue
+    }
+
+    usable.push({
+      ruleId: row.id,
+      cannabisClass: row.cannabisClass,
+      equivalence,
+      expectedBasis: row.expectedBasis,
+      usableEquivalentCapGrams: usableCap,
+      concentrateCapGrams: concentrateCap,
+      immaturePlantCapUnits: row.immaturePlantCapUnits,
+    })
+  }
+
+  return usable
+}
+
+/**
+ * Everything an order line needs to reproduce its own compliance decision.
+ *
+ * One function so the draft path and the placement path cannot drift: the two
+ * used to build this object separately, and a column added to one would have
+ * been silently absent from the other.
+ *
+ * `equivalent_grams` and `equivalent_factor_applied` are still written for
+ * continuity with rows created under calculation version 1, but the columns
+ * that matter now are the exact numerator/denominator pair and the version —
+ * the decimal factor cannot represent the liquid conversion.
+ */
+function limitSnapshot(limit: {
+  usableEquivalentGrams: Rational
+  concentrateGrams: Rational
+  immaturePlantCount: number
+  measurementBasis: string
+  measurementUnit: string
+  measurementValue: string
+  equivalence: Rational
+  ruleIdApplied: string | null
+}) {
+  return {
+    equivalentGrams: formatGrams(limit.usableEquivalentGrams),
+    usableEquivalentGrams: formatGrams(limit.usableEquivalentGrams),
+    concentrateGrams: formatGrams(limit.concentrateGrams),
+    immaturePlantCount: limit.immaturePlantCount,
+    measurementBasis: limit.measurementBasis as 'net_weight_grams',
+    measurementUnit: limit.measurementUnit,
+    measurementValue: limit.measurementValue,
+    equivalenceNumerator: limit.equivalence.n.toString(),
+    equivalenceDenominator: limit.equivalence.d.toString(),
+    equivalentFactorApplied: null,
+    calculationVersion: CALCULATION_VERSION,
+    /** The published rule that authorised this line's contribution. */
+    purchaseLimitRuleId: limit.ruleIdApplied,
+  }
 }
 
 export type RuleResolution =
   | { ok: true; rules: LimitRule[] }
-  | { ok: false; reason: 'missing' | 'ambiguous'; classes: CannabisClass[] }
+  | { ok: false; reason: 'missing' | 'ambiguous' | 'unsupported'; classes: string[] }
 
 /**
  * Resolves the rules for the classes a basket actually contains — and REFUSES
@@ -142,12 +229,13 @@ export type RuleResolution =
  *
  * FAILING CLOSED IS THE WHOLE POINT.
  *
- * Two database states must never reach a customer. If a class has NO rule in
- * force, `evaluateLine` applies a factor of zero and the item counts toward
- * nothing — an unlimited sale, arrived at silently. If a class has MORE THAN
- * ONE, the arithmetic picks whichever row the map happened to keep, so the cap
- * enforced depends on row order. Both are worse than an outage: an outage is
- * visible and a licence is not at risk.
+ * Three database states must never reach a customer. If a class has NO rule in
+ * force, there is no published conversion and no approved cap. If a class has
+ * MORE THAN ONE, the cap enforced depends on which row a map happened to keep.
+ * If the class is not one this calculation SUPPORTS — the legacy `edible` and
+ * `other` values, which cannot be removed from the enum — there is no defined
+ * conversion at all. All three are worse than an outage: an outage is visible
+ * and a licence is not at risk.
  *
  * The database is supposed to make the second impossible — migration 0011 adds
  * an exclusion constraint over (class, effective window) — and this check is
@@ -160,13 +248,18 @@ export type RuleResolution =
  * class is unconfigured would be failing closed in the unhelpful direction.
  */
 export async function resolveLimitRules(
-  classes: readonly CannabisClass[],
+  classes: readonly string[],
 ): Promise<RuleResolution> {
   const rules = await loadLimitRules()
   const needed = [...new Set(classes)]
 
-  const missing: CannabisClass[] = []
-  const ambiguous: CannabisClass[] = []
+  const unsupported = needed.filter((cls) => !isSupportedClass(cls))
+  if (unsupported.length > 0) {
+    return { ok: false, reason: 'unsupported', classes: unsupported }
+  }
+
+  const missing: string[] = []
+  const ambiguous: string[] = []
 
   for (const cls of needed) {
     const matches = rules.filter((rule) => rule.cannabisClass === cls)
@@ -186,36 +279,20 @@ export async function resolveLimitRules(
 }
 
 /**
- * What the customer has already bought today.
+ * `priorPurchasesToday` HAS BEEN REMOVED. It is not deprecated; it is gone.
  *
- * "Today" is the last 24 hours rather than a calendar day, deliberately: a
- * calendar boundary lets someone buy the daily maximum at 23:55 and again at
- * 00:05. A rolling window is the stricter reading, and with a licence at stake
- * the stricter reading is the right default. Cancelled and expired orders do
- * not count.
+ * It summed a rolling 24-hour window of the customer's previous orders and
+ * added it to the basket before comparing against the cap. That is the
+ * medical-caregiver model. Adult-use limits under the CRA guidance apply PER
+ * TRANSACTION, so the window refused lawful baskets on the strength of a rule
+ * that does not exist — and it did so invisibly, since "you have reached your
+ * daily limit" reads like a real refusal.
+ *
+ * Left as a comment rather than deleted silently because the absence is the
+ * decision. Anything reintroducing a cross-transaction total needs its own
+ * legal basis, and medical caregiver limits are a separate scheme that is not
+ * implemented here at all.
  */
-export async function priorPurchasesToday(userId: string) {
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
-
-  const [row] = await db
-    .select({
-      equivalent: sql<string>`coalesce(sum(${schema.orders.totalEquivalentGrams}), 0)`,
-      concentrate: sql<string>`coalesce(sum(${schema.orders.totalConcentrateGrams}), 0)`,
-    })
-    .from(schema.orders)
-    .where(
-      and(
-        eq(schema.orders.userId, userId),
-        gte(schema.orders.placedAt, since),
-        inArray(schema.orders.currentStatus, ['placed', 'preparing', 'ready', 'completed']),
-      ),
-    )
-
-  return {
-    equivalentGrams: Number(row?.equivalent ?? 0),
-    concentrateGrams: Number(row?.concentrate ?? 0),
-  }
-}
 
 /** Catalog facts for a set of variants, resolved once and snapshotted. */
 async function loadVariantFacts(variantIds: string[]) {
@@ -233,6 +310,9 @@ async function loadVariantFacts(variantIds: string[]) {
       deletedAt: schema.productVariants.deletedAt,
       cannabisClass: schema.productVariants.cannabisClass,
       weightGrams: schema.productVariants.weightGrams,
+      /** The authoritative compliance measurement. Never `weight_grams`. */
+      measurementBasis: schema.productVariants.measurementBasis,
+      measurementValue: schema.productVariants.measurementValue,
       thcPercent: schema.products.thcPercent,
       cbdPercent: schema.products.cbdPercent,
       productName: schema.products.name,
@@ -255,7 +335,11 @@ export type DraftFailure =
   | { kind: 'insufficient_stock'; failures: ReservationFailure[] }
   | { kind: 'limit_exceeded'; evaluation: LimitEvaluation }
   /** No rule in force, or more than one, for a class in the basket. */
-  | { kind: 'limit_rules_unavailable'; reason: 'missing' | 'ambiguous'; classes: CannabisClass[] }
+  | {
+      kind: 'limit_rules_unavailable'
+      reason: 'missing' | 'ambiguous' | 'unsupported'
+      classes: string[]
+    }
 
 export type DraftResult =
   | { ok: true; orderId: string; orderNumber: string }
@@ -332,8 +416,14 @@ export async function createDraft(params: {
       variantId: line.variantId,
       quantity: line.quantity,
       cannabisClass: fact.cannabisClass,
-      unitWeightGrams: fact.weightGrams === null ? null : Number(fact.weightGrams),
-    }
+      /**
+       * The compliance measurement, as an exact decimal STRING. Never parsed
+       * through `Number` — see `lib/orders/exact.ts` for why a legal cap must
+       * not be compared in binary floating point.
+       */
+      measurementValue: fact.measurementValue,
+      measurementBasis: fact.measurementBasis,
+    } satisfies LimitLineInput
   })
 
   /** Refuses on a missing or duplicated rule. See `resolveLimitRules`. */
@@ -349,8 +439,14 @@ export async function createDraft(params: {
     }
   }
 
-  const prior = await priorPurchasesToday(params.userId)
-  const evaluation = evaluateOrderLimits(limitLines, resolved.rules, prior)
+  /**
+   * PER TRANSACTION. No prior-purchases term.
+   *
+   * Adult-use limits apply to the transaction under the CRA guidance. The
+   * rolling 24-hour window this used to add is the medical-caregiver model, and
+   * applying it here refused lawful baskets on a rule that does not exist.
+   */
+  const evaluation = evaluateOrderLimits(limitLines, resolved.rules)
 
   if (!evaluation.allowed) {
     return { ok: false, failure: { kind: 'limit_exceeded', evaluation } }
@@ -404,8 +500,9 @@ export async function createDraft(params: {
         customerName: params.userName,
         customerPhone: params.userPhone,
         dateOfBirthAtPurchase: params.dateOfBirth,
-        totalEquivalentGrams: String(evaluation.totalEquivalentGrams),
-        totalConcentrateGrams: String(evaluation.totalConcentrateGrams),
+        totalEquivalentGrams: formatGrams(evaluation.totalUsableEquivalentGrams),
+        totalConcentrateGrams: formatGrams(evaluation.totalConcentrateGrams),
+        totalImmaturePlants: evaluation.totalImmaturePlants,
       })
       .returning({ id: schema.orders.id, orderNumber: schema.orders.orderNumber })
 
@@ -433,11 +530,7 @@ export async function createDraft(params: {
           unitWeightGrams: fact.weightGrams,
           thcPercent: fact.thcPercent,
           cbdPercent: fact.cbdPercent,
-          equivalentGrams: String(limit.equivalentGrams),
-          concentrateGrams: String(limit.concentrateGrams),
-          equivalentFactorApplied: String(limit.equivalentFactorApplied),
-          /** The published rule that authorised this line's contribution. */
-          purchaseLimitRuleId: limit.ruleIdApplied,
+          ...limitSnapshot(limit),
         }
       }),
     )
@@ -522,7 +615,11 @@ export type PlacementFailure =
   | { kind: 'price_changed'; previousTotalCents: number; currentTotalCents: number }
   | { kind: 'unavailable'; items: string[] }
   | { kind: 'limit_exceeded'; evaluation: LimitEvaluation }
-  | { kind: 'limit_rules_unavailable'; reason: 'missing' | 'ambiguous'; classes: CannabisClass[] }
+  | {
+      kind: 'limit_rules_unavailable'
+      reason: 'missing' | 'ambiguous' | 'unsupported'
+      classes: string[]
+    }
 
 export type PlacementResult =
   | { ok: true; orderId: string; orderNumber: string; alreadyPlaced: boolean }
@@ -643,8 +740,14 @@ export async function placeOrder(params: {
       variantId: line.variantId,
       quantity: line.quantity,
       cannabisClass: fact.cannabisClass,
-      unitWeightGrams: fact.weightGrams === null ? null : Number(fact.weightGrams),
-    }
+      /**
+       * The compliance measurement, as an exact decimal STRING. Never parsed
+       * through `Number` — see `lib/orders/exact.ts` for why a legal cap must
+       * not be compared in binary floating point.
+       */
+      measurementValue: fact.measurementValue,
+      measurementBasis: fact.measurementBasis,
+    } satisfies LimitLineInput
   })
 
   /**
@@ -666,8 +769,14 @@ export async function placeOrder(params: {
     }
   }
 
-  const prior = await priorPurchasesToday(params.userId)
-  const evaluation = evaluateOrderLimits(limitLines, resolved.rules, prior)
+  /**
+   * PER TRANSACTION. No prior-purchases term.
+   *
+   * Adult-use limits apply to the transaction under the CRA guidance. The
+   * rolling 24-hour window this used to add is the medical-caregiver model, and
+   * applying it here refused lawful baskets on a rule that does not exist.
+   */
+  const evaluation = evaluateOrderLimits(limitLines, resolved.rules)
 
   if (!evaluation.allowed) {
     return { ok: false, failure: { kind: 'limit_exceeded', evaluation } }
@@ -708,13 +817,7 @@ export async function placeOrder(params: {
     for (const line of evaluation.lines) {
       await tx
         .update(schema.orderLines)
-        .set({
-          equivalentGrams: String(line.equivalentGrams),
-          concentrateGrams: String(line.concentrateGrams),
-          equivalentFactorApplied: String(line.equivalentFactorApplied),
-          purchaseLimitRuleId: line.ruleIdApplied,
-          updatedAt: new Date(),
-        })
+        .set({ ...limitSnapshot(line), updatedAt: new Date() })
         .where(
           and(
             eq(schema.orderLines.orderId, params.orderId),
@@ -726,8 +829,9 @@ export async function placeOrder(params: {
     await tx
       .update(schema.orders)
       .set({
-        totalEquivalentGrams: String(evaluation.totalEquivalentGrams),
-        totalConcentrateGrams: String(evaluation.totalConcentrateGrams),
+        totalEquivalentGrams: formatGrams(evaluation.totalUsableEquivalentGrams),
+        totalConcentrateGrams: formatGrams(evaluation.totalConcentrateGrams),
+        totalImmaturePlants: evaluation.totalImmaturePlants,
         updatedAt: new Date(),
       })
       .where(eq(schema.orders.id, params.orderId))

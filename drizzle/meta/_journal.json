@@ -92,6 +92,20 @@
       "when": 1785914281173,
       "tag": "0012_scheduler_run_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1785917438473,
+      "tag": "0013_cra_measurement_model",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1785917622837,
+      "tag": "0014_exact_cap_scale",
+      "breakpoints": true
     }
   ]
 }

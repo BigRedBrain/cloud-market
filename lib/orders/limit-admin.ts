@@ -4,7 +4,20 @@ import { and, asc, desc, eq, isNull, ne, sql } from 'drizzle-orm'
 
 import { recordAuditEventWithin } from '@/lib/auth/audit'
 import { db, schema } from '@/lib/db'
-import type { CannabisClass } from '@/lib/db/schema'
+import type { CannabisClass, MeasurementBasis } from '@/lib/db/schema'
+import {
+  compare as compareExact,
+  fromDecimalString,
+  rational,
+  toRatioString,
+  ZERO,
+} from '@/lib/orders/exact'
+import {
+  CALCULATION_VERSION,
+  CLASS_MEASUREMENT,
+  isSupportedClass,
+  SUPPORTED_CANNABIS_CLASSES,
+} from '@/lib/orders/limits'
 
 /**
  * Publishing and reading purchase limit rules.
@@ -26,9 +39,15 @@ import type { CannabisClass } from '@/lib/db/schema'
 
 export type PublishInput = {
   cannabisClass: CannabisClass
-  equivalentGramsPerGram: number
-  dailyEquivalentGramsCap: number
-  dailyConcentrateGramsCap: number | null
+  /** The exact conversion, as integers. Never a decimal. */
+  equivalenceNumerator: bigint
+  equivalenceDenominator: bigint
+  /** Which measurement the conversion expects. Checked for compatibility. */
+  expectedBasis: MeasurementBasis
+  /** Exact decimal strings — parsed into rationals, never through `Number`. */
+  usableEquivalentCapGrams: string
+  concentrateCapGrams: string
+  immaturePlantCapUnits: number
   /**
    * When the new rule takes effect, or `null` for immediately.
    *
@@ -52,6 +71,17 @@ export type PublishFailure =
   | { kind: 'before_current'; currentEffectiveFrom: Date }
   | { kind: 'identical' }
   | { kind: 'concurrent_publish' }
+  /* --- refusals that protect the calculation itself --------------------- */
+  /** The class is not one this calculation supports (`edible`, `other`). */
+  | { kind: 'unsupported_class'; cannabisClass: string }
+  /** A conversion of zero on a class that actually contains cannabis. */
+  | { kind: 'zero_conversion'; cannabisClass: string }
+  /** The basis does not match what the class is measured in. */
+  | { kind: 'incompatible_units'; expected: MeasurementBasis; supplied: MeasurementBasis }
+  /** A cap of zero or below, which would prohibit rather than limit. */
+  | { kind: 'invalid_cap'; cap: 'usable' | 'concentrate' | 'immature_plants'; value: string }
+  /** Publishing this would leave a supported class with no rule in force. */
+  | { kind: 'would_orphan_class'; classes: string[] }
 
 export type PublishResult =
   | {
@@ -104,6 +134,14 @@ export async function ruleHistory() {
       id: schema.purchaseLimitRules.id,
       cannabisClass: schema.purchaseLimitRules.cannabisClass,
       version: schema.purchaseLimitRules.version,
+      equivalenceNumerator: schema.purchaseLimitRules.equivalenceNumerator,
+      equivalenceDenominator: schema.purchaseLimitRules.equivalenceDenominator,
+      expectedBasis: schema.purchaseLimitRules.expectedBasis,
+      usableEquivalentCapGrams: schema.purchaseLimitRules.usableEquivalentCapGrams,
+      concentrateCapGrams: schema.purchaseLimitRules.concentrateCapGrams,
+      immaturePlantCapUnits: schema.purchaseLimitRules.immaturePlantCapUnits,
+      calculationVersion: schema.purchaseLimitRules.calculationVersion,
+      /** Legacy decimals, shown labelled so they cannot be mistaken for current. */
       equivalentGramsPerGram: schema.purchaseLimitRules.equivalentGramsPerGram,
       dailyEquivalentGramsCap: schema.purchaseLimitRules.dailyEquivalentGramsCap,
       dailyConcentrateGramsCap: schema.purchaseLimitRules.dailyConcentrateGramsCap,
@@ -153,8 +191,200 @@ export async function ruleHistory() {
 
 export type RuleHistoryRow = Awaited<ReturnType<typeof ruleHistory>>[number]
 
-const numbersMatch = (a: string | null, b: number | null) =>
-  a === null ? b === null : b !== null && Number(a) === b
+/**
+ * Which supported classes currently have no rule in force.
+ *
+ * Surfaced on the admin screen and checked at publication. A class with no rule
+ * cannot be sold — `resolveLimitRules` refuses it — so this is the difference
+ * between "the shop sells six categories" and "the shop sells four and silently
+ * refuses two at the last step of checkout".
+ */
+export async function classesWithoutRules(): Promise<string[]> {
+  const live = await effectiveRules()
+  const covered = new Set(live.map((rule) => rule.cannabisClass as string))
+  return SUPPORTED_CANNABIS_CLASSES.filter((cls) => !covered.has(cls))
+}
+
+/**
+ * What the operator is shown before they confirm.
+ *
+ * Built server-side from the rule actually in force, not from what the form
+ * remembers, so the "outgoing" column cannot be stale. Every figure that could
+ * be dangerous is here: the three caps, the conversion, the measurement basis,
+ * and the exact instant it takes effect with its zone.
+ */
+export type PublishPreview = {
+  cannabisClass: string
+  measurementBasis: MeasurementBasis
+  measurementUnit: string
+  outgoing: {
+    version: number
+    equivalence: string
+    basis: string
+    usableCapGrams: string
+    concentrateCapGrams: string
+    plantCap: string
+    effectiveFrom: string
+  } | null
+  incoming: {
+    equivalence: string
+    basis: string
+    usableCapGrams: string
+    concentrateCapGrams: string
+    plantCap: string
+  }
+  /** Refusal that would occur, computed before the password is asked for. */
+  blockedBy: PublishFailure | null
+}
+
+export async function previewPublish(input: PublishInput): Promise<PublishPreview> {
+  const [current] = await db
+    .select()
+    .from(schema.purchaseLimitRules)
+    .where(
+      and(
+        eq(schema.purchaseLimitRules.cannabisClass, input.cannabisClass),
+        isNull(schema.purchaseLimitRules.effectiveUntil),
+      ),
+    )
+    .limit(1)
+
+  const spec = isSupportedClass(input.cannabisClass)
+    ? CLASS_MEASUREMENT[input.cannabisClass]
+    : { basis: 'exempt' as MeasurementBasis, unit: '?' }
+
+  return {
+    cannabisClass: input.cannabisClass,
+    measurementBasis: spec.basis,
+    measurementUnit: spec.unit,
+    outgoing: current
+      ? {
+          version: current.version,
+          equivalence:
+            current.equivalenceNumerator && current.equivalenceDenominator
+              ? toRatioString(
+                  rational(
+                    BigInt(current.equivalenceNumerator),
+                    BigInt(current.equivalenceDenominator),
+                  ),
+                )
+              : (current.equivalentGramsPerGram ?? 'not recorded'),
+          basis: current.expectedBasis ?? 'not recorded',
+          usableCapGrams:
+            current.usableEquivalentCapGrams ?? current.dailyEquivalentGramsCap ?? 'not recorded',
+          concentrateCapGrams:
+            current.concentrateCapGrams ?? current.dailyConcentrateGramsCap ?? 'not recorded',
+          plantCap:
+            current.immaturePlantCapUnits === null
+              ? 'not recorded'
+              : String(current.immaturePlantCapUnits),
+          effectiveFrom: current.effectiveFrom.toISOString(),
+        }
+      : null,
+    incoming: {
+      equivalence: toRatioString(
+        rational(input.equivalenceNumerator, input.equivalenceDenominator),
+      ),
+      basis: input.expectedBasis,
+      usableCapGrams: input.usableEquivalentCapGrams,
+      concentrateCapGrams: input.concentrateCapGrams,
+      plantCap: String(input.immaturePlantCapUnits),
+    },
+    blockedBy: validateRuleValues(input),
+  }
+}
+
+const exactMatch = (stored: string | null, supplied: string) => {
+  if (stored === null) return false
+  try {
+    return compareExact(fromDecimalString(stored), fromDecimalString(supplied)) === 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Everything that must be true before a rule may be published.
+ *
+ * Pure, and exported, so the admin screen can show the operator exactly what
+ * would be refused BEFORE they enter a password — and so the tests can assert
+ * each refusal without a database.
+ *
+ * These are refusals about the CALCULATION, distinct from the refusals about
+ * the timeline (`before_current`, `identical`, `concurrent_publish`) which need
+ * the current row and therefore live inside the transaction.
+ */
+export function validateRuleValues(input: PublishInput): PublishFailure | null {
+  if (!isSupportedClass(input.cannabisClass)) {
+    return { kind: 'unsupported_class', cannabisClass: input.cannabisClass }
+  }
+
+  const spec = CLASS_MEASUREMENT[input.cannabisClass]
+
+  /**
+   * The unit check. A conversion written for grams applied to a fluid-ounce
+   * measurement is wrong by more than a factor of two, and every other field in
+   * the row would look perfectly reasonable.
+   */
+  if (input.expectedBasis !== spec.basis) {
+    return {
+      kind: 'incompatible_units',
+      expected: spec.basis,
+      supplied: input.expectedBasis,
+    }
+  }
+
+  /**
+   * A conversion of zero means the class contributes nothing to any cap — an
+   * unlimited sale. Permitted ONLY for the two classes where contributing
+   * nothing is the correct, deliberate answer: plants are counted against
+   * their own cap, and `non_cannabis` is an explicit exemption.
+   */
+  if (input.equivalenceNumerator === 0n && spec.countsAsCannabis && input.cannabisClass !== 'immature_plant') {
+    return { kind: 'zero_conversion', cannabisClass: input.cannabisClass }
+  }
+  if (input.equivalenceDenominator <= 0n) {
+    return { kind: 'invalid_cap', cap: 'usable', value: 'denominator must be positive' }
+  }
+
+  /**
+   * Caps of zero or below. Zero would mean "this class is prohibited", which
+   * is a legitimate thing to want and NOT something to arrive at by leaving a
+   * field blank — so it is refused here and a prohibition would need its own
+   * explicit representation.
+   */
+  const caps: [PublishFailure & { kind: 'invalid_cap' }, boolean][] = []
+  try {
+    const usable = fromDecimalString(input.usableEquivalentCapGrams)
+    caps.push([
+      { kind: 'invalid_cap', cap: 'usable', value: input.usableEquivalentCapGrams },
+      compareExact(usable, ZERO) <= 0,
+    ])
+    const concentrate = fromDecimalString(input.concentrateCapGrams)
+    caps.push([
+      { kind: 'invalid_cap', cap: 'concentrate', value: input.concentrateCapGrams },
+      compareExact(concentrate, ZERO) <= 0,
+    ])
+  } catch {
+    return {
+      kind: 'invalid_cap',
+      cap: 'usable',
+      value: 'caps must be exact decimals',
+    }
+  }
+  caps.push([
+    {
+      kind: 'invalid_cap',
+      cap: 'immature_plants',
+      value: String(input.immaturePlantCapUnits),
+    },
+    !Number.isInteger(input.immaturePlantCapUnits) || input.immaturePlantCapUnits <= 0,
+  ])
+
+  for (const [failure, breached] of caps) if (breached) return failure
+
+  return null
+}
 
 /**
  * Publishes a new version of a class's rule.
@@ -183,6 +413,16 @@ const numbersMatch = (a: string | null, b: number | null) =>
  * cancelled without deleting the evidence that it was scheduled.
  */
 export async function publishRule(input: PublishInput): Promise<PublishResult> {
+  /**
+   * Value validation first, outside the transaction.
+   *
+   * None of these refusals need to see the database, and running them before
+   * anything is locked means an operator with a bad number never contends with
+   * a colleague publishing a good one.
+   */
+  const invalid = validateRuleValues(input)
+  if (invalid) return { ok: false, failure: invalid }
+
   let result: PublishResult = { ok: false, failure: { kind: 'concurrent_publish' } }
 
   await db.transaction(async (tx) => {
@@ -286,13 +526,51 @@ export async function publishRule(input: PublishInput): Promise<PublishResult> {
        * for.
        */
       if (
-        numbersMatch(current.equivalentGramsPerGram, input.equivalentGramsPerGram) &&
-        numbersMatch(current.dailyEquivalentGramsCap, input.dailyEquivalentGramsCap) &&
-        numbersMatch(current.dailyConcentrateGramsCap, input.dailyConcentrateGramsCap)
+        current.equivalenceNumerator === input.equivalenceNumerator.toString() &&
+        current.equivalenceDenominator === input.equivalenceDenominator.toString() &&
+        current.expectedBasis === input.expectedBasis &&
+        exactMatch(current.usableEquivalentCapGrams, input.usableEquivalentCapGrams) &&
+        exactMatch(current.concentrateCapGrams, input.concentrateCapGrams) &&
+        current.immaturePlantCapUnits === input.immaturePlantCapUnits
       ) {
         result = { ok: false, failure: { kind: 'identical' } }
         return
       }
+    }
+
+    /**
+     * Would this publication REMOVE coverage from a class that has it?
+     *
+     * Deliberately a regression check, not "does the result cover everything".
+     * The absolute version cannot be right: on an empty table no class is
+     * covered, so publishing the first rule would be refused and coverage could
+     * never be established. What must never happen is a class that IS sellable
+     * today becoming unsellable because of an unrelated publication.
+     *
+     * In the current design this cannot fire — a publication always inserts a
+     * successor for the same class. It is here because the consequence is
+     * severe and silent: a class with no rule in force is refused at the last
+     * step of checkout, and the first person to discover it is a customer.
+     *
+     * The absolute question — "is every supported class covered?" — is answered
+     * where it is actionable: `classesWithoutRules()` on the admin screen, the
+     * catalog readiness gate, and `resolveLimitRules` failing closed.
+     */
+    const coveredBefore = new Set<string>(
+      (
+        await tx
+          .select({ cls: schema.purchaseLimitRules.cannabisClass })
+          .from(schema.purchaseLimitRules)
+          .where(currentlyEffective())
+      ).map((row) => row.cls as string),
+    )
+    const coveredAfter = new Set(coveredBefore)
+    coveredAfter.add(input.cannabisClass)
+
+    const lost = [...coveredBefore].filter((cls) => !coveredAfter.has(cls))
+    if (lost.length > 0) {
+      result = { ok: false, failure: { kind: 'would_orphan_class', classes: lost } }
+      return
     }
 
     const cancelledPending = pending
@@ -374,12 +652,17 @@ export async function publishRule(input: PublishInput): Promise<PublishResult> {
       .values({
         cannabisClass: input.cannabisClass,
         version: (tally?.maxVersion ?? 0) + 1,
-        equivalentGramsPerGram: String(input.equivalentGramsPerGram),
-        dailyEquivalentGramsCap: String(input.dailyEquivalentGramsCap),
-        dailyConcentrateGramsCap:
-          input.dailyConcentrateGramsCap === null
-            ? null
-            : String(input.dailyConcentrateGramsCap),
+        equivalenceNumerator: input.equivalenceNumerator.toString(),
+        equivalenceDenominator: input.equivalenceDenominator.toString(),
+        expectedBasis: input.expectedBasis,
+        usableEquivalentCapGrams: input.usableEquivalentCapGrams,
+        concentrateCapGrams: input.concentrateCapGrams,
+        immaturePlantCapUnits: input.immaturePlantCapUnits,
+        calculationVersion: CALCULATION_VERSION,
+        /** Legacy decimal columns stay null; they cannot hold these ratios. */
+        equivalentGramsPerGram: null,
+        dailyEquivalentGramsCap: null,
+        dailyConcentrateGramsCap: null,
         effectiveFrom: effectiveAt,
         changeReason: input.changeReason,
         publishedBy: input.publishedBy,
@@ -415,11 +698,12 @@ export async function publishRule(input: PublishInput): Promise<PublishResult> {
       entityType: 'purchase_limit_rule',
       entityId: inserted.id,
       summary:
-        `${input.cannabisClass} v${inserted.version}: factor ` +
-        `${input.equivalentGramsPerGram}, cap ${input.dailyEquivalentGramsCap}g` +
-        (input.dailyConcentrateGramsCap === null
-          ? ''
-          : `, concentrate ${input.dailyConcentrateGramsCap}g`),
+        `${input.cannabisClass} v${inserted.version}: ` +
+        `${toRatioString(rational(input.equivalenceNumerator, input.equivalenceDenominator))} ` +
+        `per ${CLASS_MEASUREMENT[input.cannabisClass as 'flower']?.unit ?? '?'}, ` +
+        `usable cap ${input.usableEquivalentCapGrams}g, ` +
+        `concentrate cap ${input.concentrateCapGrams}g, ` +
+        `plants ${input.immaturePlantCapUnits}`,
     })
 
     if (current) {

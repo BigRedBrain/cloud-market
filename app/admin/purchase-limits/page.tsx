@@ -5,8 +5,29 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert } from '@/components/ui/feedback'
 import { requirePermission } from '@/lib/auth/dal'
-import { cannabisClass } from '@/lib/db/schema'
-import { effectiveRules, ruleHistory, type RuleHistoryRow } from '@/lib/orders/limit-admin'
+import { rational, toRatioString } from '@/lib/orders/exact'
+import {
+  CLASS_EQUIVALENCE,
+  CLASS_MEASUREMENT,
+  SUPPORTED_CANNABIS_CLASSES,
+  type SupportedCannabisClass,
+} from '@/lib/orders/limits'
+import {
+  classesWithoutRules,
+  effectiveRules,
+  ruleHistory,
+  type RuleHistoryRow,
+} from '@/lib/orders/limit-admin'
+
+/** Why each suggested ratio is what it is, shown beside the class picker. */
+const SUGGESTION_NOTE: Record<SupportedCannabisClass, string> = {
+  flower: '1:1 by actual gram weight.',
+  concentrate: '1:1 by gram weight, plus its own 15 g ceiling.',
+  infused_solid: '16 oz of finished product equals 1 oz usable — a mass ratio.',
+  infused_liquid: '36 fl oz equals 1 oz usable, so 28.349523125/36 g per fluid ounce.',
+  immature_plant: 'Counted against the plant cap; contributes no usable weight.',
+  non_cannabis: 'Explicitly exempt retail merchandise.',
+}
 
 export const metadata: Metadata = {
   title: 'Purchase limits',
@@ -42,6 +63,23 @@ const STATE_LABEL = {
   superseded: 'Superseded',
 } as const
 
+/**
+ * The exact conversion, or the legacy decimal for rows published before the
+ * ratio columns existed — labelled so the two are never confused.
+ */
+function ratioOf(rule: {
+  equivalenceNumerator: string | null
+  equivalenceDenominator: string | null
+  equivalentGramsPerGram: string | null
+}) {
+  if (rule.equivalenceNumerator && rule.equivalenceDenominator) {
+    return toRatioString(
+      rational(BigInt(rule.equivalenceNumerator), BigInt(rule.equivalenceDenominator)),
+    )
+  }
+  return rule.equivalentGramsPerGram ? `${rule.equivalentGramsPerGram} (legacy)` : '—'
+}
+
 function formatWhen(value: Date | null) {
   if (!value) return '—'
   return value.toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
@@ -65,18 +103,32 @@ function HistoryRow({ rule }: { rule: RuleHistoryRow }) {
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-xs text-smoke sm:grid-cols-4">
         <div>
-          <dt className="inline">factor </dt>
-          <dd className="inline text-white">{rule.equivalentGramsPerGram}</dd>
+          <dt className="inline">conversion </dt>
+          <dd className="inline text-white">{ratioOf(rule)}</dd>
         </div>
         <div>
-          <dt className="inline">cap </dt>
-          <dd className="inline text-white">{rule.dailyEquivalentGramsCap}g</dd>
+          <dt className="inline">usable cap </dt>
+          <dd className="inline text-white">
+            {rule.usableEquivalentCapGrams ?? rule.dailyEquivalentGramsCap ?? '—'}g
+          </dd>
         </div>
         <div>
           <dt className="inline">concentrate </dt>
           <dd className="inline text-white">
-            {rule.dailyConcentrateGramsCap ? `${rule.dailyConcentrateGramsCap}g` : 'none'}
+            {rule.concentrateCapGrams ?? rule.dailyConcentrateGramsCap ?? '—'}g
           </dd>
+        </div>
+        <div>
+          <dt className="inline">plants </dt>
+          <dd className="inline text-white">{rule.immaturePlantCapUnits ?? '—'}</dd>
+        </div>
+        <div>
+          <dt className="inline">basis </dt>
+          <dd className="inline text-white">{rule.expectedBasis ?? '—'}</dd>
+        </div>
+        <div>
+          <dt className="inline">calc </dt>
+          <dd className="inline text-white">v{rule.calculationVersion}</dd>
         </div>
         <div>
           <dt className="inline">by </dt>
@@ -111,14 +163,41 @@ export default async function AdminPurchaseLimitsPage() {
   const currentForForm = live.map((rule) => ({
     cannabisClass: rule.cannabisClass,
     version: rule.version,
-    equivalentGramsPerGram: rule.equivalentGramsPerGram,
-    dailyEquivalentGramsCap: rule.dailyEquivalentGramsCap,
-    dailyConcentrateGramsCap: rule.dailyConcentrateGramsCap,
+    equivalence:
+      rule.equivalenceNumerator && rule.equivalenceDenominator
+        ? toRatioString(
+            rational(BigInt(rule.equivalenceNumerator), BigInt(rule.equivalenceDenominator)),
+          )
+        : (rule.equivalentGramsPerGram ?? 'not recorded'),
+    usableCapGrams:
+      rule.usableEquivalentCapGrams ?? rule.dailyEquivalentGramsCap ?? 'not recorded',
+    concentrateCapGrams:
+      rule.concentrateCapGrams ?? rule.dailyConcentrateGramsCap ?? 'not recorded',
+    plantCap:
+      rule.immaturePlantCapUnits === null ? 'not recorded' : String(rule.immaturePlantCapUnits),
+    measurementUnit:
+      CLASS_MEASUREMENT[rule.cannabisClass as SupportedCannabisClass]?.unit ?? '?',
   }))
 
-  const missing = cannabisClass.enumValues.filter(
-    (name) => !live.some((rule) => rule.cannabisClass === name),
-  )
+  /**
+   * Only SUPPORTED classes are offered. `edible` and `other` remain in the
+   * database enum because Postgres cannot remove a value and rows reference
+   * them, but publishing a rule for either is refused — there is no defined
+   * conversion, and the old `other = 0` behaviour meant an unlimited sale.
+   */
+  const classSpecs = SUPPORTED_CANNABIS_CLASSES.map((cls) => ({
+    cannabisClass: cls,
+    unit: CLASS_MEASUREMENT[cls].unit,
+    basis: CLASS_MEASUREMENT[cls].basis,
+    countsAsCannabis: CLASS_MEASUREMENT[cls].countsAsCannabis,
+    suggested: {
+      numerator: CLASS_EQUIVALENCE[cls].n.toString(),
+      denominator: CLASS_EQUIVALENCE[cls].d.toString(),
+      note: SUGGESTION_NOTE[cls],
+    },
+  }))
+
+  const missing = await classesWithoutRules()
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
@@ -134,8 +213,9 @@ export default async function AdminPurchaseLimitsPage() {
       {missing.length > 0 && (
         <div className="mb-6">
           <Alert tone="warning" title="Some classes have no rule in force">
-            {missing.join(', ')} — products in these classes contribute nothing
-            to any cap until a rule is published.
+            {missing.join(', ')} — products in these classes <strong>cannot be
+            sold</strong> until a rule is published. Checkout refuses them rather
+            than letting them through uncapped.
           </Alert>
         </div>
       )}
@@ -146,20 +226,22 @@ export default async function AdminPurchaseLimitsPage() {
         </CardHeader>
         <CardContent>
           {live.length === 0 ? (
-            <p className="text-sm text-smoke">
-              No rules are in force. Checkout is using the fallback values
-              compiled into the application.
+            <p className="text-sm text-flare">
+              No rules are in force. <strong>Checkout is refusing every cannabis
+              item</strong> — there is no compiled-in fallback, deliberately.
             </p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[36rem] border-collapse font-mono text-sm">
+              <table className="w-full min-w-[48rem] border-collapse font-mono text-sm">
                 <thead>
                   <tr className="border-b-2 border-ink text-left text-xs tracking-widest text-smoke uppercase">
                     <th className="py-2 pr-4 font-normal">Class</th>
                     <th className="py-2 pr-4 font-normal">Ver</th>
-                    <th className="py-2 pr-4 font-normal">Factor</th>
-                    <th className="py-2 pr-4 font-normal">Daily cap</th>
+                    <th className="py-2 pr-4 font-normal">Measured in</th>
+                    <th className="py-2 pr-4 font-normal">Conversion</th>
+                    <th className="py-2 pr-4 font-normal">Usable cap</th>
                     <th className="py-2 pr-4 font-normal">Concentrate</th>
+                    <th className="py-2 pr-4 font-normal">Plants</th>
                     <th className="py-2 font-normal">Since</th>
                   </tr>
                 </thead>
@@ -168,13 +250,18 @@ export default async function AdminPurchaseLimitsPage() {
                     <tr key={rule.id} className="border-b border-ink-600 text-white">
                       <td className="py-2 pr-4">{rule.cannabisClass}</td>
                       <td className="py-2 pr-4">v{rule.version}</td>
-                      <td className="py-2 pr-4">{rule.equivalentGramsPerGram}</td>
-                      <td className="py-2 pr-4">{rule.dailyEquivalentGramsCap}g</td>
                       <td className="py-2 pr-4">
-                        {rule.dailyConcentrateGramsCap
-                          ? `${rule.dailyConcentrateGramsCap}g`
-                          : 'none'}
+                        {CLASS_MEASUREMENT[rule.cannabisClass as SupportedCannabisClass]
+                          ?.unit ?? '—'}
                       </td>
+                      <td className="py-2 pr-4">{ratioOf(rule)}</td>
+                      <td className="py-2 pr-4">
+                        {rule.usableEquivalentCapGrams ?? rule.dailyEquivalentGramsCap ?? '—'}g
+                      </td>
+                      <td className="py-2 pr-4">
+                        {rule.concentrateCapGrams ?? rule.dailyConcentrateGramsCap ?? '—'}g
+                      </td>
+                      <td className="py-2 pr-4">{rule.immaturePlantCapUnits ?? '—'}</td>
                       <td className="py-2">{formatWhen(rule.effectiveFrom)}</td>
                     </tr>
                   ))}
@@ -190,10 +277,7 @@ export default async function AdminPurchaseLimitsPage() {
           <CardTitle>Publish a change</CardTitle>
         </CardHeader>
         <CardContent>
-          <PublishRuleForm
-            classes={cannabisClass.enumValues}
-            current={currentForForm}
-          />
+          <PublishRuleForm classes={classSpecs} current={currentForForm} />
         </CardContent>
       </Card>
 

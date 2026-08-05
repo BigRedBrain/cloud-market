@@ -16,7 +16,7 @@ import {
 } from 'drizzle-orm/pg-core'
 
 import { primaryKeyColumn, timestampColumns } from './_shared'
-import { cannabisClass, productVariants } from './catalog'
+import { cannabisClass, measurementBasis, productVariants } from './catalog'
 import { stores } from './stores'
 import { users } from './auth'
 
@@ -161,26 +161,98 @@ export const purchaseLimitRules = pgTable(
     version: integer('version').notNull().default(1),
 
     /**
-     * Grams of cannabis-equivalent per gram of product. Flower is 1.0;
-     * concentrate is weighted higher; edibles are usually counted by THC
-     * content rather than mass, which the factor approximates.
+     * DEPRECATED — retained only so historical rows remain readable.
+     *
+     * A single decimal "grams per gram" cannot express the conversions the CRA
+     * guidance actually requires. Liquid infused product converts at
+     * 28.349523125 / 36 grams per fluid ounce, which is not a terminating
+     * decimal: any fixed-scale column stores an approximation, and an
+     * approximation in a legal cap is a number that is wrong in a direction
+     * nobody chose. Replaced by the exact numerator/denominator pair below.
+     *
+     * Nullable now. New rows leave it null; old rows keep whatever they had.
      */
     equivalentGramsPerGram: numeric('equivalent_grams_per_gram', {
       precision: 10,
       scale: 4,
-    }).notNull(),
+    }),
 
-    /** Total cannabis-equivalent grams allowed per customer per day. */
+    /**
+     * THE CONVERSION, AS AN EXACT RATIO.
+     *
+     * `usable_equivalent_grams = measurement_value × numerator / denominator`,
+     * evaluated in `bigint` rational arithmetic with no rounding until the
+     * result is written down. Stored as two integers because that is the only
+     * representation in which 28.349523125/36 is exact.
+     *
+     *   flower           1 / 1                       (grams, 1:1)
+     *   concentrate      1 / 1                       (grams, 1:1)
+     *   infused_solid    1 / 16                      (16 oz finished = 1 oz usable)
+     *   infused_liquid   28349523125 / 36000000000   (36 fl oz = 1 oz usable)
+     *   immature_plant   0 / 1                       (counted separately)
+     *   non_cannabis     0 / 1                       (explicitly exempt)
+     *
+     * A zero numerator is legitimate ONLY for the two classes above, and
+     * publication is refused for any other class that tries it — a zero
+     * conversion on a cannabis class means unlimited sales.
+     */
+    equivalenceNumerator: numeric('equivalence_numerator', { precision: 30, scale: 0 }),
+    equivalenceDenominator: numeric('equivalence_denominator', { precision: 30, scale: 0 }),
+
+    /**
+     * The measurement basis this conversion expects.
+     *
+     * Checked against the variant's basis before any arithmetic happens. A
+     * fluid-ounce measurement fed through a mass ratio is off by a factor of
+     * more than two and nothing else in the row would disagree with it.
+     */
+    expectedBasis: measurementBasis('expected_basis'),
+
+    /**
+     * THE THREE CAPS, ENFORCED INDEPENDENTLY. A basket must pass every one.
+     *
+     * Not folded into a single weighted total, deliberately: 15 g of
+     * concentrate is inside the 2.5 oz usable ceiling and still illegal, and a
+     * combined score cannot express that. Renamed from `daily_*` because adult-
+     * use limits apply PER TRANSACTION under the CRA guidance, not over a
+     * rolling window — the old name described an enforcement model that was
+     * simply wrong.
+     */
+    /**
+     * Scale 11, not 5, so 2.5 oz fits EXACTLY.
+     *
+     * An ounce is 28.349523125 g, so the cap is 70.87380781250 g. At five
+     * decimal places that stores as 70.87381 — two micrograms ABOVE the legal
+     * maximum, which is the wrong direction to round a cap, and it also made
+     * the seed script non-idempotent because the value it wrote back never
+     * matched the value it had written.
+     */
+    usableEquivalentCapGrams: numeric('usable_equivalent_cap_grams', {
+      precision: 18,
+      scale: 11,
+    }),
+    concentrateCapGrams: numeric('concentrate_cap_grams', { precision: 18, scale: 11 }),
+    immaturePlantCapUnits: integer('immature_plant_cap_units'),
+
+    /** Legacy names, kept readable for rows published before the reshape. */
     dailyEquivalentGramsCap: numeric('daily_equivalent_grams_cap', {
       precision: 10,
       scale: 3,
-    }).notNull(),
-
-    /** Separate, lower cap applying only to concentrate mass. Null = none. */
+    }),
     dailyConcentrateGramsCap: numeric('daily_concentrate_grams_cap', {
       precision: 10,
       scale: 3,
     }),
+
+    /**
+     * Identifies the calculation this rule was written for.
+     *
+     * Bumped when the SHAPE of the arithmetic changes, not when a number does —
+     * a number change is a new rule version. Snapshotted onto every order line
+     * so a historical check can be reproduced by the code that made it rather
+     * than by whatever the code has since become.
+     */
+    calculationVersion: integer('calculation_version').notNull().default(1),
 
     /**
      * The window this rule governs: `[effective_from, effective_until)`.
@@ -357,9 +429,18 @@ export const orders = pgTable(
       onDelete: 'set null',
     }),
 
-    /** Totals used for the limit check, snapshotted for reproducibility. */
-    totalEquivalentGrams: numeric('total_equivalent_grams', { precision: 10, scale: 3 }),
-    totalConcentrateGrams: numeric('total_concentrate_grams', { precision: 10, scale: 3 }),
+    /**
+     * The three independent totals the check compared against the three caps,
+     * snapshotted so the decision can be reproduced without re-deriving it.
+     *
+     * `total_equivalent_grams` keeps its name and now holds the usable-marijuana
+     * equivalent under the 1:1 rules; `total_immature_plants` is new because
+     * plants are a count, not a weight, and were previously not represented at
+     * all.
+     */
+    totalEquivalentGrams: numeric('total_equivalent_grams', { precision: 12, scale: 5 }),
+    totalConcentrateGrams: numeric('total_concentrate_grams', { precision: 12, scale: 5 }),
+    totalImmaturePlants: integer('total_immature_plants').notNull().default(0),
 
     placedAt: timestamp('placed_at', { withTimezone: true, mode: 'date' }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true, mode: 'date' }),
@@ -463,6 +544,45 @@ export const orderLines = pgTable(
       () => purchaseLimitRules.id,
       { onDelete: 'restrict' },
     ),
+
+    /* --- the compliance decision, reproducible from the row alone -------- */
+
+    /**
+     * What was measured, how much of it, and in what unit — copied from the
+     * variant at the moment of the check.
+     *
+     * Without the basis and the unit, `measurement_value` is a bare number and
+     * "4" could be four grams, four fluid ounces or four plants. The three
+     * columns together are what makes a historical line re-checkable rather
+     * than merely re-readable.
+     */
+    measurementBasis: measurementBasis('measurement_basis'),
+    measurementValue: numeric('measurement_value', { precision: 12, scale: 4 }),
+    measurementUnit: varchar('measurement_unit', { length: 16 }),
+
+    /**
+     * The line's contribution to each independent cap.
+     *
+     * `usable_equivalent_grams` is what `concentrate_grams` used to be summed
+     * into via a weighted factor; they are now separate figures because the
+     * caps are separate. A concentrate line populates both — 10 g of
+     * concentrate is 10 g toward the usable ceiling and 10 g toward its own.
+     */
+    usableEquivalentGrams: numeric('usable_equivalent_grams', {
+      precision: 12,
+      scale: 5,
+    }),
+    immaturePlantCount: integer('immature_plant_count').notNull().default(0),
+
+    /**
+     * The exact ratio applied, and which calculation applied it.
+     *
+     * `equivalent_factor_applied` above is a decimal and therefore lossy for
+     * the liquid conversion. These two reproduce it exactly.
+     */
+    equivalenceNumerator: numeric('equivalence_numerator', { precision: 30, scale: 0 }),
+    equivalenceDenominator: numeric('equivalence_denominator', { precision: 30, scale: 0 }),
+    calculationVersion: integer('calculation_version'),
 
     ...timestampColumns,
   },

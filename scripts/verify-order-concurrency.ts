@@ -140,6 +140,9 @@ async function makeFixtures(stock: number) {
       active: true,
       cannabisClass: 'flower',
       weightGrams: '3.500',
+      /** The compliance measurement. Without it checkout refuses the line. */
+      measurementBasis: 'net_weight_grams',
+      measurementValue: '3.5000',
     })
     .returning({ id: schema.productVariants.id })
   created.variants.push(variant.id)

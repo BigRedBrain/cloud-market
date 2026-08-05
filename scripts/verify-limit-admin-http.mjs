@@ -232,13 +232,15 @@ async function main() {
       const fields = actionFields(publishForm)
       const body = new FormData()
       for (const [k, v] of Object.entries(fields)) body.append(k, v)
-      body.append('cannabisClass', 'edible')
-      body.append('equivalentGramsPerGram', '1')
-      body.append('dailyEquivalentGramsCap', '999')
-      body.append('dailyConcentrateGramsCap', '999')
+      body.append('cannabisClass', 'infused_solid')
+      body.append('equivalenceNumerator', '1')
+      body.append('equivalenceDenominator', '16')
+      body.append('usableEquivalentCapGrams', '999')
+      body.append('concentrateCapGrams', '999')
+      body.append('immaturePlantCapUnits', '3')
       body.append('timing', 'now')
       body.append('changeReason', 'Unauthorised attempt from the HTTP verification suite.')
-      body.append('confirmClass', 'edible')
+      body.append('confirmClass', 'infused_solid')
       body.append('acknowledgeImmutable', 'on')
       body.append('password', PASSWORD)
 
@@ -268,13 +270,15 @@ async function main() {
       officer.device,
       '/admin/purchase-limits',
       {
-        cannabisClass: 'edible',
-        equivalentGramsPerGram: '1',
-        dailyEquivalentGramsCap: '65',
-        dailyConcentrateGramsCap: '14',
+        cannabisClass: 'infused_solid',
+        equivalenceNumerator: '1',
+        equivalenceDenominator: '16',
+        usableEquivalentCapGrams: '65',
+        concentrateCapGrams: '14',
+        immaturePlantCapUnits: '3',
         timing: 'now',
         changeReason: 'HTTP suite: a publish attempt with the wrong password.',
-        confirmClass: 'edible',
+        confirmClass: 'infused_solid',
         acknowledgeImmutable: 'on',
         password: 'definitely-not-the-password',
       },
@@ -294,10 +298,12 @@ async function main() {
       officer.device,
       '/admin/purchase-limits',
       {
-        cannabisClass: 'edible',
-        equivalentGramsPerGram: '1',
-        dailyEquivalentGramsCap: '64',
-        dailyConcentrateGramsCap: '14',
+        cannabisClass: 'infused_solid',
+        equivalenceNumerator: '1',
+        equivalenceDenominator: '16',
+        usableEquivalentCapGrams: '64',
+        concentrateCapGrams: '14',
+        immaturePlantCapUnits: '3',
         timing: 'now',
         changeReason: 'HTTP suite: a publish attempt with a mistyped confirmation.',
         confirmClass: 'flower',
@@ -316,13 +322,15 @@ async function main() {
       officer.device,
       '/admin/purchase-limits',
       {
-        cannabisClass: 'edible',
-        equivalentGramsPerGram: '1',
-        dailyEquivalentGramsCap: '63',
-        dailyConcentrateGramsCap: '14',
+        cannabisClass: 'infused_solid',
+        equivalenceNumerator: '1',
+        equivalenceDenominator: '16',
+        usableEquivalentCapGrams: '63',
+        concentrateCapGrams: '14',
+        immaturePlantCapUnits: '3',
         timing: 'now',
         changeReason: 'HTTP suite: a publish attempt without the acknowledgement.',
-        confirmClass: 'edible',
+        confirmClass: 'infused_solid',
         password: PASSWORD,
       },
       'confirmClass',
@@ -337,13 +345,15 @@ async function main() {
       officer.device,
       '/admin/purchase-limits',
       {
-        cannabisClass: 'edible',
-        equivalentGramsPerGram: '1',
-        dailyEquivalentGramsCap: '62',
-        dailyConcentrateGramsCap: '14',
+        cannabisClass: 'infused_solid',
+        equivalenceNumerator: '1',
+        equivalenceDenominator: '16',
+        usableEquivalentCapGrams: '62',
+        concentrateCapGrams: '14',
+        immaturePlantCapUnits: '3',
         timing: 'now',
         changeReason: 'because',
-        confirmClass: 'edible',
+        confirmClass: 'infused_solid',
         acknowledgeImmutable: 'on',
         password: PASSWORD,
       },
@@ -352,27 +362,57 @@ async function main() {
     check('a token reason is refused', (await ruleCount()) === countBefore)
     check('the reason requirement is explained', shortReason.html.includes('20 characters'))
 
-    const concentrateTooHigh = await submit(
+    /**
+     * A cap of zero. Zero would mean the class is PROHIBITED, which is a real
+     * thing to want and must be stated deliberately rather than arrived at by
+     * leaving a field empty — so publication refuses it.
+     */
+    const zeroCap = await submit(
       officer.device,
       '/admin/purchase-limits',
       {
-        cannabisClass: 'edible',
-        equivalentGramsPerGram: '1',
-        dailyEquivalentGramsCap: '10',
-        dailyConcentrateGramsCap: '50',
+        cannabisClass: 'infused_solid',
+        equivalenceNumerator: '1',
+        equivalenceDenominator: '16',
+        usableEquivalentCapGrams: '0',
+        concentrateCapGrams: '15',
+        immaturePlantCapUnits: '3',
         timing: 'now',
-        changeReason: 'HTTP suite: concentrate cap exceeding the overall cap.',
-        confirmClass: 'edible',
+        changeReason: 'HTTP suite: a cap of zero, which must be refused.',
+        confirmClass: 'infused_solid',
         acknowledgeImmutable: 'on',
         password: PASSWORD,
       },
       'confirmClass',
     )
-    check('an incoherent pair of caps is refused', (await ruleCount()) === countBefore)
-    check(
-      'the cap relationship is explained',
-      concentrateTooHigh.html.includes('cannot exceed'),
+    check('a cap of zero is refused', (await ruleCount()) === countBefore)
+    check('the zero cap is explained', zeroCap.html.includes('not a usable limit'))
+
+    /**
+     * A conversion of zero on a cannabis class — the `other = 0` failure in a
+     * new costume. It would mean the class counts toward no cap at all.
+     */
+    const zeroConversion = await submit(
+      officer.device,
+      '/admin/purchase-limits',
+      {
+        cannabisClass: 'infused_solid',
+        equivalenceNumerator: '0',
+        equivalenceDenominator: '1',
+        usableEquivalentCapGrams: '70.87380781250',
+        concentrateCapGrams: '15',
+        immaturePlantCapUnits: '3',
+        timing: 'now',
+        changeReason: 'HTTP suite: a zero conversion, which must be refused.',
+        confirmClass: 'infused_solid',
+        acknowledgeImmutable: 'on',
+        password: PASSWORD,
+      },
+      'confirmClass',
     )
+    check('a zero conversion is refused', (await ruleCount()) === countBefore)
+    check('the zero conversion is explained',
+      zeroConversion.html.includes('counts toward no limit'))
   }
 
   /* ============================================ 4. THE HAPPY PATH ======= */
@@ -382,9 +422,9 @@ async function main() {
       `${before} -> ${await ruleCount()}`)
 
     const [baseline] = await sql(
-      `select id, version, effective_until, superseded_by_rule_id
+      `select id, version, effective_until, superseded_by_rule_id, equivalence_numerator
          from purchase_limit_rules
-        where cannabis_class='edible' and effective_until is null`,
+        where cannabis_class='infused_solid' and effective_until is null`,
     )
     check('there is a rule to supersede', Boolean(baseline))
 
@@ -392,13 +432,15 @@ async function main() {
       officer.device,
       '/admin/purchase-limits',
       {
-        cannabisClass: 'edible',
-        equivalentGramsPerGram: '1.2',
-        dailyEquivalentGramsCap: '61',
-        dailyConcentrateGramsCap: '13',
+        cannabisClass: 'infused_solid',
+        equivalenceNumerator: '1',
+        equivalenceDenominator: '8',
+        usableEquivalentCapGrams: '61',
+        concentrateCapGrams: '13',
+        immaturePlantCapUnits: '3',
         timing: 'now',
         changeReason: 'HTTP suite: a genuine publish, exercising the whole path.',
-        confirmClass: 'edible',
+        confirmClass: 'infused_solid',
         acknowledgeImmutable: 'on',
         password: PASSWORD,
       },
@@ -407,14 +449,20 @@ async function main() {
 
     const [published] = await sql(
       `select * from purchase_limit_rules
-        where cannabis_class='edible' and effective_until is null`,
+        where cannabis_class='infused_solid' and effective_until is null`,
     )
     created.rules.push(published?.id)
 
     check('a new version is in force', published?.id !== baseline?.id, `status ${result.status}`)
     check('the version incremented', published?.version === baseline?.version + 1,
       `${baseline?.version} -> ${published?.version}`)
-    check('the new cap was stored', Number(published?.daily_equivalent_grams_cap) === 61)
+    check('the new cap was stored', Number(published?.usable_equivalent_cap_grams) === 61)
+    check('the exact conversion was stored',
+      published?.equivalence_numerator === '1' && published?.equivalence_denominator === '8',
+      `${published?.equivalence_numerator}/${published?.equivalence_denominator}`)
+    check('the measurement basis was stored',
+      published?.expected_basis === 'finished_net_weight_grams', published?.expected_basis)
+    check('the plant cap was stored', published?.immature_plant_cap_units === 3)
     check('the publisher was recorded', published?.published_by === officer.id)
     check('the reason was recorded',
       (published?.change_reason ?? '').includes('a genuine publish'))
@@ -427,8 +475,7 @@ async function main() {
     ])
     check('the previous version was closed, not changed',
       superseded?.effective_until !== null &&
-        Number(superseded?.daily_equivalent_grams_cap) ===
-          Number(baseline?.daily_equivalent_grams_cap ?? superseded?.daily_equivalent_grams_cap))
+        superseded?.equivalence_numerator === baseline?.equivalence_numerator)
     check('the previous version points at its successor',
       superseded?.superseded_by_rule_id === published?.id)
 

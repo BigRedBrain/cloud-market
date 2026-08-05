@@ -1,6 +1,10 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
+    // ES2020, not ES2017, for BigInt literals: lib/orders/exact.ts does
+    // legal-limit arithmetic in exact rationals and requires bigint. Supported
+    // by every browser since 2020; Next still downlevels the client bundle
+    // according to browserslist, so this does not change what ships.
+    "target": "ES2020",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,

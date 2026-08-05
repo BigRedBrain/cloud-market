@@ -500,35 +500,20 @@ Extends the Phase 4 checklist in [ORDERS.md](ORDERS.md) §12. Requires migration
 
 ---
 
-## 12. Baseline rule values — AWAITING LEGAL CONFIRMATION
+## 12. Baseline rule values
 
-These are what `scripts/seed-purchase-limits.mjs` currently carries, and what
-development is seeded with. **They must be confirmed by counsel before being
-published to production**, because publishing them is one-way.
+**Superseded by the CRA guidance.** The values, the classification matrix, the
+measurement bases and the three independent caps now live in
+[COMPLIANCE.md](COMPLIANCE.md) §2 and §7.
 
-| Class | Factor | Daily cap | Concentrate cap |
-| --- | --- | --- | --- |
-| `flower` | 1.0000 | 70.870 g | 15.000 g |
-| `concentrate` | 5.0000 | 70.870 g | 15.000 g |
-| `edible` | 1.0000 | 70.870 g | 15.000 g |
-| `other` | 0.0000 | 70.870 g | 15.000 g |
+Three things this section used to say are now known to be wrong and have been
+removed from the code, the seed script and the tests:
 
-Basis: Michigan adult-use is commonly stated as 2.5 oz (70.87 g) of usable
-marijuana per day, of which no more than 15 g may be concentrate.
+- **The concentrate factor of 5** — it is **1:1 by gram weight**, with a separate
+  15 g ceiling. The weighted version refused 15 g of concentrate, which is the
+  legal maximum.
+- **A rolling 24-hour window** — adult-use limits apply **per transaction**.
+- **`other` with a factor of 0** — `other` is now unsupported and fails closed.
+  Exemption requires the explicit `non_cannabis` classification.
 
-**The three things to confirm, specifically:**
-
-1. **Edible equivalence.** Edibles are usually counted by THC content, not mass.
-   A factor of 1.0 per gram is a placeholder and is very likely wrong; the
-   schema has `thc_percent` on the variant if the rule should be potency-based,
-   but the current `LimitRule` shape cannot express that.
-2. **The concentrate factor of 5.** Widely used, not something found in the
-   statute text.
-3. **Whether `other` should be 0.** It currently means accessories contribute
-   nothing to any cap, which is right for a lighter and wrong for anything
-   cannabis-bearing that ends up classified as `other`.
-
-Until confirmed, publishing to production is blocked — and because `other` has
-a factor of zero, mis-classifying a product into it would sell it without a cap.
-That is why §12 of ORDERS.md requires every variant's `cannabis_class` to be
-checked before checkout is enabled.
+What remains open for counsel is listed in COMPLIANCE.md §7.

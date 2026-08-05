@@ -45,51 +45,100 @@ const SUPERSEDE = process.argv.includes('--supersede')
 const connectionString = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL
 
 /**
- * The Michigan adult-use figures.
+ * The Michigan CRA figures.
  *
- * THESE NEED LEGAL CONFIRMATION BEFORE PRODUCTION USE. 2.5 oz (70.87 g) of
- * usable marijuana per day, of which no more than 15 g may be concentrate, is
- * the commonly stated rule. The equivalence factors — particularly for edibles,
- * which are usually counted by THC content rather than mass — vary by
- * interpretation. An operator who disagrees with a number should change it
- * here, or in the table directly, and rerun with --supersede.
+ * PER TRANSACTION, not per day — adult-use limits attach to the transaction,
+ * and the rolling 24-hour window this file used to describe was the
+ * medical-caregiver model applied to the wrong scheme.
  *
- * These mirror FALLBACK_LIMIT_RULES in lib/orders/limits.ts, which applies only
- * while this table is empty. Once seeded the TABLE wins, so the two drifting
- * apart is visible rather than dangerous — but keep them in step anyway.
+ * Three independent caps, each of which a basket must pass:
+ *
+ *   usable-marijuana equivalent  ≤ 2.5 oz  (70.87380781250 g exactly)
+ *   concentrate                  ≤ 15 g
+ *   immature plants              ≤ 3
+ *
+ * There is NO runtime fallback any more. `lib/orders/limits.ts` exports
+ * `CRA_DEFAULT_RULES` for tests and for this file, but checkout refuses a class
+ * with no published rule rather than reaching for a compiled-in default —
+ * selling against numbers nobody approved is worse than not selling.
  */
+/**
+ * 2.5 oz of usable marijuana, exactly. An ounce is 28.349523125 g by
+ * definition, so the cap is 70.87380781250 g — written out in full rather than
+ * rounded to 70.87, because a cap that has been quietly rounded down is a cap
+ * nobody chose.
+ */
+const USABLE_CAP = '70.87380781250'
+const CONCENTRATE_CAP = '15.00000000000'
+const PLANT_CAP = 3
+
 const RULES = [
   {
     cannabisClass: 'flower',
-    equivalentGramsPerGram: '1.0000',
-    dailyEquivalentGramsCap: '70.870',
-    dailyConcentrateGramsCap: '15.000',
-    notes: 'Michigan adult-use: 2.5 oz usable marijuana per day. Confirm with counsel.',
+    equivalenceNumerator: '1',
+    equivalenceDenominator: '1',
+    expectedBasis: 'net_weight_grams',
+    notes: 'CRA: flower counts 1:1 by actual gram weight.',
   },
   {
     cannabisClass: 'concentrate',
-    equivalentGramsPerGram: '5.0000',
-    dailyEquivalentGramsCap: '70.870',
-    dailyConcentrateGramsCap: '15.000',
-    notes: 'Concentrate weighted 5:1 against the equivalent cap, plus its own 15 g cap.',
+    equivalenceNumerator: '1',
+    equivalenceDenominator: '1',
+    expectedBasis: 'net_weight_grams',
+    notes:
+      'CRA: concentrate counts 1:1 by actual gram weight toward the usable cap, ' +
+      'and is separately capped at 15 g per transaction. The former 5:1 weighting ' +
+      'matched no rule in the guidance and has been removed.',
   },
   {
-    cannabisClass: 'edible',
-    equivalentGramsPerGram: '1.0000',
-    dailyEquivalentGramsCap: '70.870',
-    dailyConcentrateGramsCap: '15.000',
-    notes: 'Edibles are commonly counted by THC content; this factor approximates by mass.',
+    cannabisClass: 'infused_solid',
+    /** 16 oz of finished product = 1 oz usable. A mass ratio, so 1/16. */
+    equivalenceNumerator: '1',
+    equivalenceDenominator: '16',
+    expectedBasis: 'finished_net_weight_grams',
+    notes:
+      'CRA: 16 ounces of solid infused product equals 1 ounce of usable marijuana, ' +
+      'by FINISHED-PRODUCT mass. Not derived from THC content.',
   },
   {
-    cannabisClass: 'other',
-    equivalentGramsPerGram: '0.0000',
-    dailyEquivalentGramsCap: '70.870',
-    dailyConcentrateGramsCap: '15.000',
-    notes: 'Accessories and non-cannabis goods contribute nothing to either cap.',
+    cannabisClass: 'infused_liquid',
+    /**
+     * 36 fl oz = 1 oz usable, so grams-usable per fluid ounce is
+     * 45359237/1600000 ÷ 36 = 45359237/57600000. Non-terminating as a decimal,
+     * which is exactly why the column pair is integers.
+     */
+    equivalenceNumerator: '45359237',
+    equivalenceDenominator: '57600000',
+    expectedBasis: 'finished_volume_fluid_ounces',
+    notes:
+      'CRA: 36 fluid ounces of liquid infused product equals 1 ounce of usable ' +
+      'marijuana, by FINISHED-PRODUCT volume. Exact ratio; not representable as a decimal.',
+  },
+  {
+    cannabisClass: 'immature_plant',
+    /** Counted against the plant cap; contributes no usable weight. */
+    equivalenceNumerator: '0',
+    equivalenceDenominator: '1',
+    expectedBasis: 'unit_count',
+    notes: 'CRA: no more than 3 immature plants per transaction.',
+  },
+  {
+    cannabisClass: 'non_cannabis',
+    /**
+     * The ONLY other class permitted to convert to zero, and it says so in its
+     * name. This replaces the old `other` rule, whose zero factor meant any
+     * unclassified product sold with no cap at all.
+     */
+    equivalenceNumerator: '0',
+    equivalenceDenominator: '1',
+    expectedBasis: 'exempt',
+    notes:
+      'Explicitly exempt retail merchandise — apparel, lighters. NOT a fallback ' +
+      'for unclassified product, which fails closed.',
   },
 ]
 
-const same = (a, b) => Number(a) === Number(b)
+const same = (a, b) => String(a) === String(b)
 
 async function main() {
   if (!connectionString) {
@@ -118,8 +167,9 @@ async function main() {
 
   try {
     const { rows: live } = await pool.query(
-      `select cannabis_class, equivalent_grams_per_gram, daily_equivalent_grams_cap,
-              daily_concentrate_grams_cap
+      `select cannabis_class, version, equivalence_numerator, equivalence_denominator,
+              expected_basis, usable_equivalent_cap_grams, concentrate_cap_grams,
+              immature_plant_cap_units
          from purchase_limit_rules
         where effective_until is null`,
     )
@@ -135,9 +185,12 @@ async function main() {
       }
 
       const unchanged =
-        same(current.equivalent_grams_per_gram, rule.equivalentGramsPerGram) &&
-        same(current.daily_equivalent_grams_cap, rule.dailyEquivalentGramsCap) &&
-        same(current.daily_concentrate_grams_cap ?? 0, rule.dailyConcentrateGramsCap ?? 0)
+        same(current.equivalence_numerator, rule.equivalenceNumerator) &&
+        same(current.equivalence_denominator, rule.equivalenceDenominator) &&
+        same(current.expected_basis, rule.expectedBasis) &&
+        same(current.usable_equivalent_cap_grams, USABLE_CAP) &&
+        same(current.concentrate_cap_grams, CONCENTRATE_CAP) &&
+        current.immature_plant_cap_units === PLANT_CAP
 
       if (unchanged) {
         console.log(`  ${rule.cannabisClass.padEnd(12)} already correct → skip`)
@@ -145,8 +198,8 @@ async function main() {
         planned.push({ rule, action: 'supersede' })
         console.log(
           `  ${rule.cannabisClass.padEnd(12)} differs → supersede ` +
-            `(${current.equivalent_grams_per_gram} × ${current.daily_equivalent_grams_cap}` +
-            ` → ${rule.equivalentGramsPerGram} × ${rule.dailyEquivalentGramsCap})`,
+            `(${current.equivalence_numerator ?? '—'}/${current.equivalence_denominator ?? '—'}` +
+            ` → ${rule.equivalenceNumerator}/${rule.equivalenceDenominator})`,
         )
       } else {
         blocked.push(rule.cannabisClass)
@@ -195,14 +248,21 @@ async function main() {
         }
         await client.query(
           `insert into purchase_limit_rules
-             (cannabis_class, equivalent_grams_per_gram, daily_equivalent_grams_cap,
-              daily_concentrate_grams_cap, notes)
-           values ($1, $2, $3, $4, $5)`,
+             (cannabis_class, version, equivalence_numerator, equivalence_denominator,
+              expected_basis, usable_equivalent_cap_grams, concentrate_cap_grams,
+              immature_plant_cap_units, calculation_version, change_reason, notes)
+           values ($1,
+                   coalesce((select max(version) + 1 from purchase_limit_rules
+                              where cannabis_class = $1), 1),
+                   $2, $3, $4, $5, $6, $7, 2, $8, $8)`,
           [
             rule.cannabisClass,
-            rule.equivalentGramsPerGram,
-            rule.dailyEquivalentGramsCap,
-            rule.dailyConcentrateGramsCap,
+            rule.equivalenceNumerator,
+            rule.equivalenceDenominator,
+            rule.expectedBasis,
+            USABLE_CAP,
+            CONCENTRATE_CAP,
+            PLANT_CAP,
             rule.notes,
           ],
         )
@@ -216,8 +276,9 @@ async function main() {
     }
 
     const { rows: after } = await pool.query(
-      `select cannabis_class, equivalent_grams_per_gram, daily_equivalent_grams_cap,
-              daily_concentrate_grams_cap
+      `select cannabis_class, version, equivalence_numerator, equivalence_denominator,
+              expected_basis, usable_equivalent_cap_grams, concentrate_cap_grams,
+              immature_plant_cap_units
          from purchase_limit_rules
         where effective_until is null
         order by cannabis_class`,
@@ -226,16 +287,41 @@ async function main() {
     console.log(`\nApplied ${planned.length} change(s). Live rules now:\n`)
     for (const row of after) {
       console.log(
-        `  ${row.cannabis_class.padEnd(12)} factor ${row.equivalent_grams_per_gram}` +
-          `  cap ${row.daily_equivalent_grams_cap}g` +
-          `  concentrate ${row.daily_concentrate_grams_cap ?? 'none'}g`,
+        `  ${row.cannabis_class.padEnd(15)} v${String(row.version).padEnd(3)} ` +
+          `${row.equivalence_numerator}/${row.equivalence_denominator}`.padEnd(22) +
+          `${row.expected_basis}`.padEnd(30) +
+          `caps ${row.usable_equivalent_cap_grams}g / ${row.concentrate_cap_grams}g / ${row.immature_plant_cap_units}`,
       )
     }
 
-    if (after.length !== RULES.length) {
+    /**
+     * Only the SUPPORTED classes are counted.
+     *
+     * `edible` and `other` may still have open rows: Postgres cannot remove an
+     * enum value, and the rows cannot be deleted. They carry no conversion and
+     * checkout refuses those classes outright, so their presence is expected
+     * rather than a failure — reporting it as one would train an operator to
+     * ignore this script's output.
+     */
+    const supported = new Set(RULES.map((r) => r.cannabisClass))
+    const covered = after.filter((row) => supported.has(row.cannabis_class))
+    const legacy = after.filter((row) => !supported.has(row.cannabis_class))
+
+    if (legacy.length > 0) {
       console.log(
-        `\nWARNING: ${after.length} live rules for ${RULES.length} classes. ` +
-          'A class with no live rule gets a factor of 0 and does not count toward any cap.',
+        `\nNote: ${legacy.map((r) => r.cannabis_class).join(', ')} are legacy classes ` +
+          'with no conversion. Checkout refuses them; they cannot be deleted and do ' +
+          'not need superseding.',
+      )
+    }
+
+    if (covered.length !== RULES.length) {
+      const absent = RULES.map((r) => r.cannabisClass).filter(
+        (cls) => !covered.some((row) => row.cannabis_class === cls),
+      )
+      console.log(
+        `\nWARNING: no live rule for ${absent.join(', ')}. Checkout REFUSES these ` +
+          'classes — products in them cannot be sold until a rule is published.',
       )
       process.exitCode = 1
     }

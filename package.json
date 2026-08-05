@@ -35,7 +35,9 @@
     "test:limits:http": "node scripts/verify-limit-admin-http.mjs",
     "test:sweeper": "tsx --env-file=.env.local --conditions=react-server scripts/verify-sweeper.ts",
     "verify:privileges": "node scripts/verify-production-privileges.mjs",
-    "perm": "node scripts/grant-permission.mjs"
+    "perm": "node scripts/grant-permission.mjs",
+    "test:compliance": "tsx scripts/verify-compliance.ts",
+    "verify:catalog": "node scripts/verify-catalog-readiness.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
