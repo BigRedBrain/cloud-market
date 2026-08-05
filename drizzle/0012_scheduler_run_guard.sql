@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "scheduler_runs_one_running" ON "scheduler_runs" USING btree ("job") WHERE "scheduler_runs"."outcome" = 'running';

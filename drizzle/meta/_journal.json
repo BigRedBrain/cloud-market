@@ -57,6 +57,62 @@
       "when": 1785536350122,
       "tag": "0007_cloudy_kulan_gath",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785904547787,
+      "tag": "0008_organic_proemial_gods",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785910777627,
+      "tag": "0009_lucky_cloak",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785911351572,
+      "tag": "0010_limit_boundary_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785913531491,
+      "tag": "0011_unknown_absorbing_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785914281173,
+      "tag": "0012_scheduler_run_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1785917438473,
+      "tag": "0013_cra_measurement_model",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1785917622837,
+      "tag": "0014_exact_cap_scale",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1785944802807,
+      "tag": "0015_catalog_compliance",
+      "breakpoints": true
     }
   ]
 }

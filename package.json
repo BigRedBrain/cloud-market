@@ -27,7 +27,22 @@
     "test:cred": "node scripts/verify-dev-credential.mjs",
     "test:prod:recovery": "node scripts/verify-recovery-production.mjs",
     "test:browser": "node scripts/verify-account-browser.mjs",
-    "test:browser:guard": "node scripts/verify-browser-guard.mjs"
+    "test:browser:guard": "node scripts/verify-browser-guard.mjs",
+    "test:math": "tsx scripts/verify-order-math.ts",
+    "test:concurrency": "tsx --env-file=.env.local --conditions=react-server scripts/verify-order-concurrency.ts",
+    "test:governance": "tsx --env-file=.env.local --conditions=react-server scripts/verify-limit-governance.ts",
+    "test:limits:http": "node scripts/verify-limit-admin-http.mjs",
+    "test:sweeper": "tsx --env-file=.env.local --conditions=react-server scripts/verify-sweeper.ts",
+    "verify:privileges": "node scripts/verify-production-privileges.mjs",
+    "perm": "node scripts/grant-permission.mjs",
+    "test:compliance": "tsx scripts/verify-compliance.ts",
+    "verify:catalog": "node scripts/verify-catalog-readiness.mjs",
+    "verify:checkout-readiness": "node scripts/verify-checkout-readiness.mjs",
+    "test:catalog-admin": "tsx --env-file=.env.local --conditions=react-server scripts/verify-catalog-admin.ts",
+    "test:readiness": "node scripts/verify-readiness-gate.mjs",
+    "rehearse:migration": "node scripts/rehearse-migration.mjs",
+    "db:seed:limits:dev": "node scripts/seed-purchase-limits-dev.mjs",
+    "test:seed-guard": "node scripts/verify-seed-guard.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

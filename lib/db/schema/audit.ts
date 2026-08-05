@@ -68,6 +68,58 @@ export const auditEvent = pgEnum('audit_event', [
   'SESSIONS_REVOKED',
   /** Transport-level delivery failure. Operational, not security. */
   'EMAIL_SEND_FAILED',
+
+  /* --- Checkout and orders (Phase 4) ------------------------------------
+   *
+   * The operational history of an order lives in `order_events`. These are
+   * the SECURITY and COMPLIANCE record: who was blocked by a purchase limit,
+   * whose ID was checked, whose money was taken. Same privacy rule as every
+   * event above — no address, no payment reference, no personal detail in
+   * summaries.
+   */
+  'ORDER_PLACED',
+  'ORDER_CANCELLED',
+  'ORDER_COMPLETED',
+  'PAYMENT_RECORDED',
+  'PAYMENT_COLLECTED',
+  'INVENTORY_RESERVED',
+  'INVENTORY_COMMITTED',
+  'INVENTORY_RELEASED',
+  'PURCHASE_LIMIT_BLOCKED',
+  'AGE_VERIFIED_AT_HANDOFF',
+
+  /* --- Compliance administration (Phase 4.1) ---------------------------
+   *
+   * Publishing a purchase limit changes the legal cap the storefront
+   * enforces. It is the highest-consequence write a human can make in this
+   * application, and every attempt at it — successful or not — leaves a row.
+   *
+   * A blocked attempt matters as much as a successful one: repeated
+   * re-authentication failures against this permission are what an intrusion
+   * looks like from the outside.
+   */
+  'PERMISSION_GRANTED',
+  'PERMISSION_REVOKED',
+  'COMPLIANCE_REAUTH_SUCCEEDED',
+  'COMPLIANCE_REAUTH_FAILED',
+  'PURCHASE_LIMIT_RULE_PUBLISHED',
+  'PURCHASE_LIMIT_RULE_SUPERSEDED',
+  'PURCHASE_LIMIT_RULE_REJECTED',
+
+  /* --- Catalog compliance (Phase 4.4) -----------------------------------
+   *
+   * Classifying a variant decides which legal cap it counts against, so a
+   * change here moves the same numbers a rule change does — just from the
+   * other direction. The summary carries the BEFORE and AFTER values and the
+   * operator's stated reason, so the log answers "what did it used to be"
+   * without a separate history table.
+   *
+   * Written inside the same transaction as the catalog write. A failed audit
+   * rolls the classification back.
+   */
+  'CATALOG_COMPLIANCE_CHANGED',
+  'CATALOG_COMPLIANCE_REJECTED',
+  'CHECKOUT_BLOCKED_BY_GATE',
 ])
 
 export const auditLog = pgTable(

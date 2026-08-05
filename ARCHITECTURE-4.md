@@ -3,6 +3,23 @@
 **Architecture proposal. Nothing implemented.** For review before any code is
 written.
 
+> ## ⚠️ SUPERSEDED IN PART — read this before acting on §6
+>
+> This is the **pre-implementation proposal**, kept as the record of what was
+> agreed before the work started. Most of it was built as described. One section
+> was not, because the Michigan CRA guidance contradicted it:
+>
+> | §6 proposes | What was built |
+> | --- | --- |
+> | Limits are "per-customer, **per-day**", summing the customer's completed orders for the day | **Per transaction.** The rolling window is the medical-caregiver model; applying it to adult-use refused lawful customers on a rule that does not exist |
+> | One `purchase_limit_rules` table mapping class → grams-equivalent per day | Three **independent** caps — usable equivalent, concentrate, immature plants — each of which a basket must pass separately |
+> | Different classes "converting at different rates" (concentrate weighted 5:1) | Flower and concentrate are **1:1 by gram weight**; concentrate additionally has its own 15 g ceiling |
+>
+> **[COMPLIANCE.md](COMPLIANCE.md) is authoritative** for the limit model, the
+> classification matrix and the caps. Everything else here — orders, snapshots,
+> inventory, payments, events, age, METRC, delivery — was implemented as
+> proposed and is documented in [ORDERS.md](ORDERS.md).
+
 ---
 
 ## 0. What already exists, and what it commits us to

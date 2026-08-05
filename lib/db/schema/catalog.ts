@@ -62,6 +62,74 @@ export const productStatus = pgEnum('product_status', ['draft', 'active', 'archi
  */
 export const strainType = pgEnum('strain_type', ['indica', 'sativa', 'hybrid', 'cbd'])
 
+/**
+ * How a variant counts against the state purchase limits.
+ *
+ * Defined here rather than in the orders module because it describes a catalog
+ * property — and because orders already imports this file, so declaring it
+ * there would make the two modules import each other, which under ESM leaves
+ * whichever loads second holding an undefined reference.
+ *
+ * The conversion RATIO is configuration (`purchase_limit_rules`); this is only
+ * the classification. Each supported class has exactly one legal measurement
+ * basis, listed below, and a variant carrying the wrong basis for its class is
+ * refused rather than converted.
+ *
+ * `edible` and `other` ARE LEGACY AND UNSUPPORTED.
+ *
+ * Postgres cannot remove an enum value, and rows already reference both, so
+ * they stay in the type. They are absent from `SUPPORTED_CANNABIS_CLASSES` and
+ * every compliance path refuses them: `other` in particular used to carry a
+ * conversion factor of zero, which meant "contributes nothing to any cap" —
+ * an unlimited sale arrived at by leaving a field on its default. `edible` was
+ * ambiguous between solid and liquid, which have different equivalencies under
+ * the CRA guidance and cannot share one classification.
+ *
+ * The replacement for a genuinely exempt item is `non_cannabis`, which is an
+ * explicit statement rather than a fallback.
+ */
+export const cannabisClass = pgEnum('cannabis_class', [
+  /** Usable marijuana. Measured as net cannabis weight in grams, 1:1. */
+  'flower',
+  /** Measured as net concentrate weight in grams. 1:1 toward the usable cap,
+   *  AND subject to its own separate 15 g ceiling. */
+  'concentrate',
+  /** Solid infused product. 16 oz of FINISHED PRODUCT mass = 1 oz usable. */
+  'infused_solid',
+  /** Liquid infused product. 36 FLUID ounces of finished product = 1 oz usable. */
+  'infused_liquid',
+  /** Counted in units against a separate cap of 3 per transaction. */
+  'immature_plant',
+  /** Explicitly outside the cannabis limit calculation — apparel, lighters. */
+  'non_cannabis',
+
+  /* --- legacy, unsupported, fail closed --------------------------------- */
+  'edible',
+  'other',
+])
+
+/**
+ * What the authoritative per-unit measurement on a variant actually measures.
+ *
+ * Stored explicitly rather than inferred from the class, because the inference
+ * is exactly where a mistake becomes invisible: a solid infused product whose
+ * measurement was recorded in fluid ounces would be converted with the mass
+ * ratio and land 36/16ths of the way off, silently, with no field disagreeing.
+ * Recording the basis lets the two be compared and the mismatch refused.
+ */
+export const measurementBasis = pgEnum('measurement_basis', [
+  /** Net cannabis weight, grams. flower, concentrate. */
+  'net_weight_grams',
+  /** Finished-product net weight, grams. infused_solid. */
+  'finished_net_weight_grams',
+  /** Finished-product volume, fluid ounces. infused_liquid. */
+  'finished_volume_fluid_ounces',
+  /** Whole units. immature_plant. */
+  'unit_count',
+  /** Explicitly exempt; the value is not used in any calculation. */
+  'exempt',
+])
+
 /* -------------------------------------------------------------------------- */
 /* Media                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -319,7 +387,57 @@ export const productVariants = pgTable(
      */
     inventoryQuantity: integer('inventory_quantity').notNull().default(0),
 
-    /** Per-unit cannabinoid content, for edibles and beverages. */
+    /**
+     * Units held by open checkout drafts but not yet sold.
+     *
+     * AVAILABLE STOCK IS `inventory_quantity - reserved_quantity`. Splitting the
+     * two keeps a reservation reversible without ever having to remember what
+     * the number used to be: releasing a hold decrements this, committing a sale
+     * decrements both. A single counter would leave an expired draft
+     * indistinguishable from a completed sale.
+     */
+    reservedQuantity: integer('reserved_quantity').notNull().default(0),
+
+    /**
+     * How this variant counts against the state daily purchase limit.
+     *
+     * Lives on the variant because weight and form are variant properties — the
+     * same strain sold as flower and as a cartridge counts differently. The
+     * conversion factor itself is configuration (`purchase_limit_rules`); this
+     * column is only the classification.
+     */
+    cannabisClass: cannabisClass('cannabis_class').notNull().default('other'),
+
+    /**
+     * THE AUTHORITATIVE COMPLIANCE MEASUREMENT. Nullable, and null fails closed.
+     *
+     * Separate from `weight_grams` above, which is a merchandising figure — the
+     * "3.5g" on the label, sometimes approximate, sometimes the packaged weight
+     * including the container. Reusing it for a legal calculation would mean the
+     * cap depended on whichever meaning the person entering the product had in
+     * mind. This column has one meaning, stated by `measurement_basis`.
+     *
+     * Both are nullable because most of the catalog predates them, and because
+     * a half-entered product must be unsellable rather than sellable-with-a-
+     * guess. Every checkout path refuses a cannabis variant that lacks them.
+     */
+    measurementBasis: measurementBasis('measurement_basis'),
+
+    /**
+     * Four decimal places, exact. Read as a STRING and parsed into exact
+     * rational arithmetic — never through `Number`. See `lib/orders/exact.ts`.
+     */
+    measurementValue: numeric('measurement_value', { precision: 12, scale: 4 }),
+
+    /**
+     * Per-unit cannabinoid content, for labelling and search.
+     *
+     * NOT USED IN ANY EQUIVALENCY CALCULATION. The CRA guidance bases infused
+     * product equivalency on finished-product mass and volume, not on potency,
+     * and deriving it from milligrams would produce a different — wrong —
+     * number that happens to look reasonable. `verify-compliance.ts` asserts
+     * that changing these does not move a single limit figure.
+     */
     thcMg: numeric('thc_mg', { precision: 8, scale: 2 }),
     cbdMg: numeric('cbd_mg', { precision: 8, scale: 2 }),
 
@@ -424,5 +542,7 @@ export type Category = typeof categories.$inferSelect
 export type CatalogProduct = typeof products.$inferSelect
 export type ProductVariant = typeof productVariants.$inferSelect
 export type MediaAsset = typeof media.$inferSelect
+export type CannabisClassValue = (typeof cannabisClass.enumValues)[number]
+export type MeasurementBasis = (typeof measurementBasis.enumValues)[number]
 export type ProductStatus = (typeof productStatus.enumValues)[number]
 export type StrainType = (typeof strainType.enumValues)[number]

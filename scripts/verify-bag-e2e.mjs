@@ -135,6 +135,47 @@ async function main() {
 
   console.log(`fixtures: inStock=${inStock.sku}(${inStock.inventory_quantity}) low=${lowStock.sku}(${lowStock.inventory_quantity}) soldOut=${soldOut?.sku} draft=${draftVariant?.sku}`)
 
+  /**
+   * COMPLIANCE FIXTURE, added in Phase 4.4.
+   *
+   * The bag now refuses a variant that is not compliance-ready, which is the
+   * required behaviour — an unclassified product must not be addable. The
+   * development catalog was seeded long before classifications existed, so
+   * every variant defaults to `other` and the whole suite would otherwise fail
+   * at the first add.
+   *
+   * These four are classified HERE, explicitly, as a test fixture, and their
+   * original values are captured and restored in teardown. This is not the
+   * automatic catalog rewrite the phase forbids: it is four rows, named by the
+   * test that needs them, put back afterwards.
+   */
+  const complianceFixtures = [inStock, lowStock, soldOut, draftVariant].filter(Boolean)
+  const originalCompliance = await sql(
+    `select id, cannabis_class, measurement_basis, measurement_value
+       from product_variants where id = any($1::uuid[])`,
+    [complianceFixtures.map((v) => v.id)],
+  )
+  await sql(
+    `update product_variants
+        set cannabis_class = 'flower',
+            measurement_basis = 'net_weight_grams',
+            measurement_value = 3.5000
+      where id = any($1::uuid[])`,
+    [complianceFixtures.map((v) => v.id)],
+  )
+  const restoreCompliance = async () => {
+    for (const row of originalCompliance) {
+      await sql(
+        `update product_variants
+            set cannabis_class = $2, measurement_basis = $3, measurement_value = $4
+          where id = $1`,
+        [row.id, row.cannabis_class, row.measurement_basis, row.measurement_value],
+      )
+    }
+  }
+  /** Reachable from the abort handler, which runs outside this scope. */
+  globalThis.__restoreCompliance = restoreCompliance
+
   /* ============================================== 1. GUEST BAG BASICS */
   section('[1] Guest bag — add, persist, increment')
   const guest = device('guest')
@@ -435,6 +476,27 @@ async function main() {
   section('[8] Cleanup')
   await sql(`update product_variants set inventory_quantity=$1 where id=$2`,
     [inStock.inventory_quantity, inStock.id])
+
+  /** The four compliance fixtures, back to exactly how they were found. */
+  await restoreCompliance()
+  const restored = await sql(
+    `select id, cannabis_class, measurement_basis, measurement_value
+       from product_variants where id = any($1::uuid[]) order by id`,
+    [complianceFixtures.map((v) => v.id)],
+  )
+  const expected = [...originalCompliance].sort((a, b) => a.id.localeCompare(b.id))
+  check(
+    'compliance fixtures restored to their original values',
+    restored
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .every(
+        (row, i) =>
+          row.cannabis_class === expected[i].cannabis_class &&
+          row.measurement_basis === expected[i].measurement_basis &&
+          String(row.measurement_value) === String(expected[i].measurement_value),
+      ),
+  )
+
   await sql(`delete from carts where user_id=$1`, [user.id])
   await sql(`delete from carts where guest_token_hash = any($1)`,
     [[token, g2Token, g4Token, g5Token].filter(Boolean)
@@ -455,6 +517,19 @@ async function main() {
 
 main().catch(async (e) => {
   console.error('\nABORTED:', e.message)
+  /**
+   * The compliance fixtures are restored even on an abort. A crashed run that
+   * left four catalog rows reclassified would be a test suite quietly editing
+   * the catalog — the exact thing this phase forbids.
+   */
+  try {
+    if (typeof globalThis.__restoreCompliance === 'function') {
+      await globalThis.__restoreCompliance()
+      console.error('compliance fixtures restored after the abort')
+    }
+  } catch (restoreError) {
+    console.error('WARNING: could not restore compliance fixtures —', restoreError.message)
+  }
   await pool.end().catch(() => {})
   process.exit(1)
 })

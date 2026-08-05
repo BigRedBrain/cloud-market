@@ -3,8 +3,10 @@ import 'server-only'
 import { cache } from 'react'
 import type { Route } from 'next'
 import { forbidden, redirect } from 'next/navigation'
+import { and, eq, isNull } from 'drizzle-orm'
 
-import type { UserRole } from '@/lib/db/schema'
+import { db } from '@/lib/db'
+import { userPermissions, type AdminPermission, type UserRole } from '@/lib/db/schema'
 import { resolveSession, type ActiveSession, type SessionUser } from './session'
 
 /**
@@ -125,4 +127,63 @@ export async function requireAdmin(): Promise<SessionUser> {
 export async function hasRole(...roles: readonly UserRole[]): Promise<boolean> {
   const user = await getCurrentUser()
   return user !== null && roles.includes(user.role)
+}
+
+/* -------------------------------------------------------------------------- */
+/* Named permissions                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Does this user hold a live grant of `permission`?
+ *
+ * Read fresh from the database rather than carried on the session, so a
+ * revocation takes effect on the next request instead of whenever the session
+ * happens to expire. For a permission that gates a legal cap, "revoked but
+ * still usable until they sign out" is not an acceptable window.
+ *
+ * `cache()` keeps it to one query per render even when the page, a form and a
+ * nav item each ask.
+ */
+export const holdsPermission = cache(
+  async (userId: string, permission: AdminPermission): Promise<boolean> => {
+    const [row] = await db
+      .select({ id: userPermissions.id })
+      .from(userPermissions)
+      .where(
+        and(
+          eq(userPermissions.userId, userId),
+          eq(userPermissions.permission, permission),
+          isNull(userPermissions.revokedAt),
+        ),
+      )
+      .limit(1)
+
+    return row !== undefined
+  },
+)
+
+/**
+ * Requires a named permission. 403 when absent.
+ *
+ * DELIBERATELY DOES NOT ACCEPT `admin` AS A SUBSTITUTE. An administrator who
+ * has not been granted `compliance_admin` is refused here exactly like a
+ * customer would be. The people who may change a legal cap are a list somebody
+ * signed, and the whole value of that list is that it is shorter than the list
+ * of administrators.
+ *
+ * The account must still be a real, verified, signed-in user — the permission
+ * is an addition to authentication, never a replacement for it.
+ */
+export async function requirePermission(
+  permission: AdminPermission,
+): Promise<SessionUser> {
+  const user = await requireUser()
+  if (!(await holdsPermission(user.id, permission))) forbidden()
+  return user
+}
+
+/** Non-redirecting probe, for conditionally rendering a nav item. */
+export async function hasPermission(permission: AdminPermission): Promise<boolean> {
+  const user = await getCurrentUser()
+  return user !== null && (await holdsPermission(user.id, permission))
 }
