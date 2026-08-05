@@ -105,6 +105,21 @@ export const auditEvent = pgEnum('audit_event', [
   'PURCHASE_LIMIT_RULE_PUBLISHED',
   'PURCHASE_LIMIT_RULE_SUPERSEDED',
   'PURCHASE_LIMIT_RULE_REJECTED',
+
+  /* --- Catalog compliance (Phase 4.4) -----------------------------------
+   *
+   * Classifying a variant decides which legal cap it counts against, so a
+   * change here moves the same numbers a rule change does — just from the
+   * other direction. The summary carries the BEFORE and AFTER values and the
+   * operator's stated reason, so the log answers "what did it used to be"
+   * without a separate history table.
+   *
+   * Written inside the same transaction as the catalog write. A failed audit
+   * rolls the classification back.
+   */
+  'CATALOG_COMPLIANCE_CHANGED',
+  'CATALOG_COMPLIANCE_REJECTED',
+  'CHECKOUT_BLOCKED_BY_GATE',
 ])
 
 export const auditLog = pgTable(

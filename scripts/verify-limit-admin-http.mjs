@@ -153,6 +153,8 @@ async function main() {
   const customer = await makeUser('customer', 'customer')
   const admin = await makeUser('admin', 'admin')
   const officer = await makeUser('officer', 'admin')
+  /** Granted `catalog_compliance_admin` only — never `compliance_admin`. */
+  const catalog = await makeUser('catalog', 'admin')
 
   /* ================================================ 1. PAGE ACCESS ===== */
   section('[1] Who can open the page')
@@ -416,6 +418,109 @@ async function main() {
   }
 
   /* ============================================ 4. THE HAPPY PATH ======= */
+  /* ================================ 3b. CATALOG COMPLIANCE ============== */
+  section('[3b] Catalog compliance is a SEPARATE grant')
+  {
+    /**
+     * The officer holds `compliance_admin` — the permission to publish legal
+     * caps — and that must not carry any authority over the catalog. Two
+     * different jobs, two different grants; if publishing a rule also let you
+     * reclassify the products it applies to, the separation would be a label.
+     */
+    const officerCatalog = await visit(officer.device, '/admin/catalog/compliance')
+    check(
+      'a compliance_admin without the catalog grant is refused the catalog page',
+      !officerCatalog.html.includes('Catalog compliance</h1>'),
+      `status ${officerCatalog.status}`,
+    )
+
+    const adminCatalog = await visit(admin.device, '/admin/catalog/compliance')
+    check(
+      'an ADMIN without the catalog grant is refused',
+      !adminCatalog.html.includes('Catalog compliance</h1>'),
+      `status ${adminCatalog.status}`,
+    )
+
+    const custCatalog = await visit(customer.device, '/admin/catalog/compliance')
+    check('a customer is refused', !custCatalog.html.includes('Catalog compliance</h1>'))
+
+    /* ---- grant it, and the page opens ---- */
+    await sql(
+      `insert into user_permissions (user_id, permission, reason)
+       values ($1, 'catalog_compliance_admin', 'http verification')`,
+      [catalog.id],
+    )
+    const holderView = await visit(catalog.device, '/admin/catalog/compliance')
+    check(
+      'the catalog grant holder can open the page',
+      holderView.status === 200 && holderView.html.includes('Catalog compliance'),
+      `status ${holderView.status}`,
+    )
+    check('the nav tab is shown to the holder',
+      (await visit(catalog.device, '/admin')).html.includes('/admin/catalog/compliance'))
+    check('and hidden from the officer',
+      !(await visit(officer.device, '/admin')).html.includes('/admin/catalog/compliance'))
+
+    /* ---- the ACTION, posted directly by an ungranted admin ---- */
+    const before = await sql(
+      `select id, cannabis_class, measurement_value from product_variants
+        where cannabis_class = 'other' limit 1`,
+    )
+
+    if (before.length === 0) {
+      check('a variant exists to attempt a classification against', false, 'none found')
+    } else {
+      const target = before[0]
+      const forms = [...holderView.html.matchAll(/<form[\s\S]*?<\/form>/g)].map((m) => m[0])
+      const classifyForm = forms.find((f) => f.includes('variantId'))
+      check('the classify form was found to copy', Boolean(classifyForm))
+
+      if (classifyForm) {
+        const fields = actionFields(classifyForm)
+        const body = new FormData()
+        for (const [k, v] of Object.entries(fields)) body.append(k, v)
+        body.append('variantId', target.id)
+        body.append('cannabisClass', 'flower')
+        body.append('measurementValue', '3.5')
+        body.append('reason', 'Unauthorised attempt from the HTTP verification suite.')
+
+        /**
+         * The ungranted admin's cookies, the granted holder's action id. This
+         * is the attack the page check does not cover — a Server Action is a
+         * public POST endpoint.
+         */
+        const attempt = await visit(admin.device, '/admin/catalog/compliance', {
+          method: 'POST',
+          body,
+        })
+        check(
+          'an ungranted admin posting the classify action directly is refused',
+          attempt.status === 403 || attempt.status === 307 ||
+            !attempt.html.includes('Saved'),
+          `status ${attempt.status}`,
+        )
+
+        const [after] = await sql(
+          `select cannabis_class, measurement_value from product_variants where id = $1`,
+          [target.id],
+        )
+        check(
+          'the variant was NOT reclassified by the unauthorised post',
+          after.cannabis_class === target.cannabis_class &&
+            after.measurement_value === target.measurement_value,
+          `${target.cannabis_class} -> ${after.cannabis_class}`,
+        )
+
+        const [{ n }] = await sql(
+          `select count(*)::int n from audit_log
+            where event = 'CATALOG_COMPLIANCE_CHANGED' and entity_id = $1`,
+          [target.id],
+        )
+        check('and nothing was audited as a change', n === 0, `${n} rows`)
+      }
+    }
+  }
+
   section('[4] A real publish, end to end')
   {
     check('nothing was published by any refused attempt', (await ruleCount()) === before,

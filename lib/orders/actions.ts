@@ -9,6 +9,7 @@ import { requireUser, requireVerifiedUser } from '@/lib/auth/dal'
 import { getBag } from '@/lib/bag/core'
 import { db, schema } from '@/lib/db'
 import { cancelOrder, createDraft, placeOrder } from '@/lib/orders/core'
+import { checkoutGate, describeGate } from '@/lib/orders/gate'
 import { formatCents } from '@/lib/orders/pricing'
 import {
   fail,
@@ -51,6 +52,28 @@ export async function startCheckoutAction(
   _formData: FormData,
 ): Promise<ActionResult<void>> {
   const user = await requireVerifiedUser()
+
+  /**
+   * The kill switch, before anything else.
+   *
+   * Checked in the ACTION, not only in the page that renders the button. A
+   * Server Action is a public POST endpoint; a hidden control stops nobody who
+   * can read an action id.
+   */
+  const gate = await checkoutGate()
+  if (!gate.open) {
+    await recordAuditEvent({
+      event: 'CHECKOUT_BLOCKED_BY_GATE',
+      userId: user.id,
+      entityType: 'order',
+      summary:
+        gate.reason === 'sweeper_stale'
+          ? `draft refused: sweeper stale (${gate.ageSeconds ?? 'unknown'}s)`
+          : 'draft refused: checkout disabled',
+    })
+    return fail('conflict', describeGate(gate))
+  }
+
   const bag = await getBag(user.id)
 
   if (bag.lines.length === 0) {
@@ -139,6 +162,27 @@ export async function placeOrderAction(
   formData: FormData,
 ): Promise<ActionResult<void>> {
   const user = await requireVerifiedUser()
+
+  /**
+   * Placement is gated too, not just draft creation.
+   *
+   * A draft created while checkout was open must not be placeable after the
+   * switch is thrown — that is the situation the switch exists for, and letting
+   * fifteen minutes of in-flight drafts through would defeat it.
+   */
+  const gate = await checkoutGate()
+  if (!gate.open) {
+    await recordAuditEvent({
+      event: 'CHECKOUT_BLOCKED_BY_GATE',
+      userId: user.id,
+      entityType: 'order',
+      summary:
+        gate.reason === 'sweeper_stale'
+          ? `placement refused: sweeper stale (${gate.ageSeconds ?? 'unknown'}s)`
+          : 'placement refused: checkout disabled',
+    })
+    return fail('conflict', describeGate(gate))
+  }
 
   const parsed = parseInput(placeSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed

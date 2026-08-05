@@ -62,6 +62,17 @@ const serverSchema = z.object({
    */
   CRON_SECRET: z.string().min(16).optional(),
 
+  /**
+   * The checkout kill switch (Phase 4.4).
+   *
+   * A STRING, not `z.coerce.boolean()`. Zod's boolean coercion treats every
+   * non-empty string as true, so `CHECKOUT_ENABLED=false` would enable
+   * checkout — the precise opposite of what an operator typing it intends. The
+   * comparison against the literal `'true'` lives in `lib/orders/gate.ts`, and
+   * absence means disabled.
+   */
+  CHECKOUT_ENABLED: z.string().optional(),
+
   EMAIL_PROVIDER: z.enum(['resend', 'console', 'capture']).default('console'),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),

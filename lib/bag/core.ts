@@ -346,6 +346,9 @@ export async function resolvePurchasableVariant(variantId: string) {
       inventoryQuantity: schema.productVariants.inventoryQuantity,
       label: schema.productVariants.label,
       productName: schema.products.name,
+      cannabisClass: schema.productVariants.cannabisClass,
+      measurementBasis: schema.productVariants.measurementBasis,
+      measurementValue: schema.productVariants.measurementValue,
     })
     .from(schema.productVariants)
     .where(

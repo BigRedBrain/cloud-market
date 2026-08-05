@@ -46,6 +46,22 @@ export const adminPermission = pgEnum('admin_permission', [
    * is a permission that can be granted by typo.
    */
   'compliance_admin',
+
+  /**
+   * Classify product variants for compliance — what an item physically is, and
+   * how it is measured.
+   *
+   * SEPARATE FROM `compliance_admin` ON PURPOSE. That permission publishes the
+   * legal caps; this one decides which cap a product falls under. They are
+   * different jobs held by different people — the officer who signs off a limit
+   * is not usually the person handling the shelf — and combining them would
+   * mean anyone who could classify a product could also change the rule it is
+   * measured against.
+   *
+   * Also NOT implicit in `admin`. An administrator without this grant is
+   * refused, exactly like a customer.
+   */
+  'catalog_compliance_admin',
 ])
 
 export const userPermissions = pgTable(

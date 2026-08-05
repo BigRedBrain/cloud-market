@@ -28,6 +28,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
    * typing the URL.
    */
   const compliance = await hasPermission('compliance_admin')
+  const catalogCompliance = await hasPermission('catalog_compliance_admin')
 
   const tabs = [
     { href: '/admin', label: 'Overview' },
@@ -41,6 +42,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     { href: '/admin/media', label: 'Media' },
     ...(compliance
       ? ([{ href: '/admin/purchase-limits', label: 'Purchase limits' }] as const)
+      : []),
+    ...(catalogCompliance
+      ? ([{ href: '/admin/catalog/compliance', label: 'Catalog compliance' }] as const)
       : []),
   ] as const
 

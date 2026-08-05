@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 
 import { getCurrentUser } from '@/lib/auth/dal'
+import { validateCompliance } from '@/lib/catalog/compliance'
 import { db, schema } from '@/lib/db'
 import {
   findActiveBag,
@@ -94,6 +95,28 @@ export async function addToBagAction(
   }
   if (variant.inventoryQuantity === 0) {
     return fail('conflict', `${variant.productName} (${variant.label}) is sold out.`)
+  }
+
+  /**
+   * Compliance is checked HERE, at the point the customer chooses the item.
+   *
+   * Checkout would refuse it anyway, but at the last step of a flow the
+   * customer has already committed to — after signing in, after entering
+   * details. An active variant that is not compliance-ready stays visible in
+   * the readiness report for the operator, and stops being addable for the
+   * customer, which is the useful place for the two audiences to diverge.
+   */
+  if (
+    validateCompliance({
+      cannabisClass: variant.cannabisClass ?? '',
+      measurementBasis: variant.measurementBasis,
+      measurementValue: variant.measurementValue,
+    })
+  ) {
+    return fail(
+      'conflict',
+      `${variant.productName} (${variant.label}) is not available for purchase right now.`,
+    )
   }
 
   const user = await getCurrentUser()

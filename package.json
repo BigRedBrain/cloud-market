@@ -37,7 +37,11 @@
     "verify:privileges": "node scripts/verify-production-privileges.mjs",
     "perm": "node scripts/grant-permission.mjs",
     "test:compliance": "tsx scripts/verify-compliance.ts",
-    "verify:catalog": "node scripts/verify-catalog-readiness.mjs"
+    "verify:catalog": "node scripts/verify-catalog-readiness.mjs",
+    "verify:checkout-readiness": "node scripts/verify-checkout-readiness.mjs",
+    "test:catalog-admin": "tsx --env-file=.env.local --conditions=react-server scripts/verify-catalog-admin.ts",
+    "test:readiness": "node scripts/verify-readiness-gate.mjs",
+    "rehearse:migration": "node scripts/rehearse-migration.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
