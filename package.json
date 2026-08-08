@@ -43,7 +43,15 @@
     "rehearse:migration": "node scripts/rehearse-migration.mjs",
     "db:seed:limits:dev": "node scripts/seed-purchase-limits-dev.mjs",
     "test:seed-guard": "node scripts/verify-seed-guard.mjs",
-    "test:migration-target": "node scripts/verify-migration-target-modes.mjs"
+    "test:migration-target": "node scripts/verify-migration-target-modes.mjs",
+    "test:media": "tsx --env-file=.env.local --conditions=react-server scripts/verify-product-media.ts",
+    "test:media:privacy": "tsx --env-file=.env.local --conditions=react-server scripts/verify-media-privacy.mts",
+    "test:env": "node scripts/verify-env-safety.mjs",
+    "test:media:http": "node scripts/verify-product-media-http.mjs",
+    "test:phase5": "tsx --env-file=.env.local --conditions=react-server scripts/verify-phase-5-units.mts",
+    "test:phase5:authz": "tsx --env-file=.env.local --conditions=react-server scripts/verify-phase-5-authz.mts",
+    "test:phase5:db": "tsx --env-file=.env.local --conditions=react-server scripts/verify-phase-5-db.mts",
+    "test": "npm run typecheck && npm run test:env && npm run test:migration-target && npm run test:phase5 && npm run test:phase5:authz && npm run test:media && npm run test:media:privacy"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

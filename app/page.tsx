@@ -13,7 +13,7 @@ import { SmokeBackground } from '@/components/brand/smoke-background'
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
 import { getBagCount } from '@/lib/bag/core'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { requireUser } from '@/lib/auth/dal'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -34,8 +34,8 @@ import { Card } from '@/components/ui/card'
 
 
 export default async function Home() {
-  const bagViewer = await getCurrentUser()
-  const bagCount = await getBagCount(bagViewer?.id ?? null)
+  const bagViewer = await requireUser()
+  const bagCount = await getBagCount(bagViewer.id)
 
   const [featured, categories, heroCampaign] = await Promise.all([
     listFeaturedProducts(3),

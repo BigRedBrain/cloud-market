@@ -134,6 +134,17 @@ export const measurementBasis = pgEnum('measurement_basis', [
 /* Media                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * What an asset fundamentally IS, independent of its exact codec.
+ *
+ * Stored rather than derived from `mime_type` because one rule depends on it
+ * everywhere: a video is never a storefront thumbnail. Re-deriving that from a
+ * MIME string at each call site is how the rule eventually gets forgotten at
+ * one of them, and the failure mode — a product card trying to render an MP4 in
+ * an `<img>` — is silent and ugly rather than loud.
+ */
+export const mediaKind = pgEnum('media_kind', ['image', 'video'])
+
 export const media = pgTable(
   'media',
   {
@@ -141,6 +152,12 @@ export const media = pgTable(
 
     /** Vercel Blob URL once Phase 3 uploads land; seed data uses placeholders. */
     url: text('url').notNull(),
+
+    /**
+     * Defaulted to `image` so every pre-existing row keeps its meaning: the
+     * table held nothing but images before videos existed.
+     */
+    kind: mediaKind('kind').notNull().default('image'),
 
     /**
      * Required, not optional. An empty string is a deliberate, valid value
@@ -153,6 +170,33 @@ export const media = pgTable(
     width: integer('width'),
     height: integer('height'),
     mimeType: varchar('mime_type', { length: 100 }),
+
+    /**
+     * Stored object size in bytes, as reported by the storage provider on
+     * completion — never as claimed by the browser. Displayed in the library and
+     * the product editor so an operator can see what they are shipping to
+     * customers on a phone connection.
+     */
+    bytes: integer('bytes'),
+
+    /**
+     * Video length. Null for images, and null for a video whose duration could
+     * not be established — the admin shows nothing rather than guessing.
+     *
+     * numeric, not float: it is displayed, sorted and compared, and 0.1 + 0.2
+     * problems in a duration column are pointless self-harm.
+     */
+    durationSeconds: numeric('duration_seconds', { precision: 9, scale: 3 }),
+
+    /**
+     * Provider-side path of the object, kept separately from `url`.
+     *
+     * Deleting a blob requires the key, and parsing it back out of a CDN URL is
+     * a guess that breaks the moment the provider changes URL shape. Null for
+     * the legacy rows that were added by pasting an external URL — those point
+     * at storage this application does not own and must never try to delete.
+     */
+    storageKey: text('storage_key'),
 
     /** Editor-facing name in the media library. */
     title: varchar('title', { length: 160 }),
@@ -479,7 +523,24 @@ export const productMedia = pgTable(
     sortOrder: smallint('sort_order').notNull().default(0),
     isPrimary: boolean('is_primary').notNull().default(false),
 
+    /**
+     * Alt text for THIS placement, overriding the asset's own.
+     *
+     * The asset-level `media.alt_text` describes the photograph; this describes
+     * what the photograph means on this product. The same lifestyle shot used on
+     * two products legitimately needs two different descriptions, and forcing
+     * one to win would make the other wrong. Null means "use the asset's".
+     *
+     * Nullable here, unlike on `media`, precisely BECAUSE it is an override:
+     * null is a meaningful third state ("inherit"), not a forgotten field.
+     */
+    altTextOverride: varchar('alt_text_override', { length: 255 }),
+
+    /** Visible caption under the asset in the gallery. Genuinely optional. */
+    caption: varchar('caption', { length: 320 }),
+
     createdAt: timestampColumns.createdAt,
+    updatedAt: timestampColumns.updatedAt,
   },
   (table) => [
     /** The same asset may not be attached to one product twice. */
@@ -542,6 +603,8 @@ export type Category = typeof categories.$inferSelect
 export type CatalogProduct = typeof products.$inferSelect
 export type ProductVariant = typeof productVariants.$inferSelect
 export type MediaAsset = typeof media.$inferSelect
+export type ProductMediaRow = typeof productMedia.$inferSelect
+export type MediaKind = (typeof mediaKind.enumValues)[number]
 export type CannabisClassValue = (typeof cannabisClass.enumValues)[number]
 export type MeasurementBasis = (typeof measurementBasis.enumValues)[number]
 export type ProductStatus = (typeof productStatus.enumValues)[number]

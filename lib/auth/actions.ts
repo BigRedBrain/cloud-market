@@ -15,10 +15,23 @@ import {
 } from '@/lib/result'
 import { withUpdatedAt } from '@/lib/db/schema'
 import { mergeGuestBagIntoUser } from '@/lib/bag/merge'
-import { recordAuditEvent } from './audit'
+import { maskInviteCode } from '@/lib/invites/codes'
+import {
+  GENERIC_INVITE_FAILURE,
+  recordRedemptionWithin,
+  redeemInviteCodeWithin,
+  type RedemptionFailure,
+} from '@/lib/invites/redeem'
+import {
+  RATE_LIMITS,
+  checkOriginRateLimit,
+  rateLimitMessage,
+} from '@/lib/security/rate-limit'
+import { recordAuditEvent, recordAuditEventWithin } from './audit'
 import { equalizeTimingForMissingUser, hashPassword, verifyPassword } from './crypto'
 import { issueAndSend } from './email-dispatch'
-import { requireAdmin, requireSession, requireUser } from './dal'
+import { getActiveBackupAdminId, requireAdminIdentity, resolveOwnerUserId } from './admin-identity'
+import { requireSession, requireUser } from './dal'
 import {
   createSession,
   destroyCurrentSession,
@@ -67,6 +80,23 @@ const LOCKOUT_MS = 15 * 60 * 1000
  */
 const GENERIC_SIGN_IN_FAILURE = 'Email or password is incorrect.'
 
+/**
+ * Control-flow signal for a refused invite, used to unwind the registration
+ * transaction.
+ *
+ * An exception rather than a returned value because `db.transaction` rolls back
+ * on a throw and commits on a return — expressing "do not commit any of this"
+ * as a return value would mean remembering to roll back by hand at every future
+ * exit point. It never escapes `signUpAction`, which catches it and converts it
+ * into the ordinary generic `ActionResult`.
+ */
+class InviteRejected extends Error {
+  constructor(readonly reason: RedemptionFailure) {
+    super(`invite rejected: ${reason}`)
+    this.name = 'InviteRejected'
+  }
+}
+
 export async function signUpAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
@@ -74,7 +104,21 @@ export async function signUpAction(
   const parsed = parseInput(signUpSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
 
-  const { email, password, name, dateOfBirth } = parsed.data
+  const { email, password, name, dateOfBirth, inviteCode } = parsed.data
+
+  /**
+   * Origin throttle, before any expensive work.
+   *
+   * Counts registration attempts — successes AND invite failures together — from
+   * this origin in the last hour. With 140 bits of entropy in a code, guessing
+   * was never a realistic threat; what this actually bounds is one host grinding
+   * through candidate codes to learn whether specific ones exist, and bulk
+   * account creation from a single source if a shared code leaks.
+   */
+  const throttle = await checkOriginRateLimit(RATE_LIMITS.signUp)
+  if (!throttle.allowed) {
+    return fail('rate_limited', rateLimitMessage(throttle.retryAfterMs))
+  }
 
   const existing = await db
     .select({ id: schema.users.id })
@@ -90,30 +134,121 @@ export async function signUpAction(
     )
   }
 
+  /**
+   * Hashed BEFORE the transaction opens. scrypt costs ~100ms and ~33MB by
+   * design, and holding a database transaction — and the row lock the invite
+   * claim is about to take — open across it would serialise every concurrent
+   * registration behind one password hash. The transaction below should be
+   * short, and this is the one part of registration that is not.
+   */
   const passwordHash = await hashPassword(password)
 
+  /**
+   * ACCOUNT CREATION AND INVITE CONSUMPTION ARE ONE ATOMIC UNIT.
+   *
+   * Both halves of section P depend on this transaction and neither works
+   * without it:
+   *
+   *  - An account can never exist without a consumed invite, because the user
+   *    INSERT and the invite claim commit together or not at all.
+   *  - A registration that fails after the claim — duplicate email from a
+   *    concurrent signup, a constraint violation, a dropped connection — rolls
+   *    the increment back, so a failed attempt never burns a use.
+   *
+   * The claim itself is a single conditional UPDATE, which is what makes two
+   * simultaneous redemptions of the FINAL use resolve to exactly one success.
+   * See the header of `lib/invites/redeem.ts`.
+   */
   let userId: string
+
   try {
-    const [created] = await db
-      .insert(schema.users)
-      .values({
-        email,
-        passwordHash,
-        name,
-        dateOfBirth,
+    const outcome = await db.transaction(async (tx) => {
+      const redemption = await redeemInviteCodeWithin(tx, inviteCode)
+
+      if (!redemption.ok) {
         /**
-         * Active, but `emailVerifiedAt` stays null. The account can browse and
-         * build a cart immediately; ordering is gated on verification via
-         * `requireVerifiedUser`. Email delivery is not yet configured — see
-         * AUTHENTICATION.md.
+         * Thrown rather than returned so the transaction unwinds. Nothing has
+         * been written yet, but rolling back explicitly keeps the "no partial
+         * registration" property true by construction rather than by inspection.
          */
-        status: 'active',
-        role: 'customer',
+        throw new InviteRejected(redemption.reason)
+      }
+
+      const [created] = await tx
+        .insert(schema.users)
+        .values({
+          email,
+          passwordHash,
+          name,
+          dateOfBirth,
+          /**
+           * Active, but `emailVerifiedAt` stays null. The account can browse and
+           * build a cart immediately; ordering is gated on verification via
+           * `requireVerifiedUser`.
+           */
+          status: 'active',
+          /**
+           * A HARD-CODED LITERAL, AND IT MUST STAY ONE.
+           *
+           * Not read from the form, not from the invite, not from a header,
+           * not from a cookie, not from any client-reachable value. `role` is
+           * not in `signUpSchema`, so a forged `role=admin` field is discarded
+           * by validation before it ever reaches this object — and even if it
+           * were not, it would be overwritten here.
+           *
+           * An invite is permission to create a CUSTOMER account. It carries no
+           * privilege of any kind, and there is no such thing as an admin
+           * invite, a staff invite or a backup-admin invite anywhere in this
+           * application. Administrators are appointed by the owner alone,
+           * through `lib/admin/backup-admin.ts`.
+           */
+          role: 'customer',
+        })
+        .returning({ id: schema.users.id })
+
+      await recordRedemptionWithin(tx, redemption.inviteCodeId, created.id)
+
+      /**
+       * Audited inside the transaction and allowed to throw, so the record of
+       * which invite created which account cannot be lost while the account
+       * survives. The invite is identified by its MASKED PREFIX — the raw code
+       * never reaches the audit log, or any other log.
+       */
+      await recordAuditEventWithin(tx, {
+        event: 'INVITE_REDEEMED',
+        userId: created.id,
+        entityType: 'invite_code',
+        entityId: redemption.inviteCodeId,
+        summary: `invite ${maskInviteCode(redemption.codePrefix)} redeemed`,
       })
-      .returning({ id: schema.users.id })
-    userId = created.id
-  } catch {
-    // Unique-index violation from a concurrent signup for the same address.
+
+      return { userId: created.id }
+    })
+
+    userId = outcome.userId
+  } catch (error) {
+    if (error instanceof InviteRejected) {
+      /**
+       * Audited with the INTERNAL reason, which is useful to an operator and
+       * unreachable by the customer. The customer gets one generic message for
+       * every failure mode, so the form cannot be used to distinguish a code
+       * that does not exist from one that is merely used up.
+       */
+      await recordAuditEvent({
+        event: 'INVITE_REDEMPTION_FAILED',
+        summary: `invite redemption refused: ${error.reason}`,
+      })
+
+      return fail('forbidden', GENERIC_INVITE_FAILURE, {
+        inviteCode: ['Invalid or unavailable'],
+      })
+    }
+
+    /**
+     * Anything else is a genuine write failure — most likely the unique index
+     * on email losing a race with a concurrent signup for the same address.
+     * The invite claim rolled back with it, so the use was not spent.
+     */
     return fail('conflict', 'An account with this email already exists.')
   }
 
@@ -156,10 +291,15 @@ export async function signUpAction(
     await issueAndSend(userId, email, 'email_verification')
   })
 
+  /**
+   * Honours the same `?next=` destination sign-in does, and through the same
+   * validator. A visitor who was bounced to sign-up from a deep link should land
+   * back on it, and `safeRedirectPath` is what stops that becoming an open
+   * redirect.
+   */
+  const destination = safeRedirectPath(parsed.data.next)
   redirect(
-    merge.unavailable.length
-      ? withQueryFlag('/account', BAG_UPDATED_FLAG)
-      : '/account',
+    merge.unavailable.length ? withQueryFlag(destination, BAG_UPDATED_FLAG) : destination,
   )
 }
 
@@ -171,6 +311,26 @@ export async function signInAction(
   if (!parsed.ok) return parsed
 
   const { email, password, next } = parsed.data
+
+  /**
+   * ORIGIN throttle, complementing the per-ACCOUNT lockout further down.
+   *
+   * Neither alone is sufficient, and they fail in opposite directions. The
+   * account lockout (5 attempts, 15 minutes) does nothing against password
+   * spraying — one guess each against ten thousand accounts never trips it,
+   * because no single account sees more than one failure. This does, because it
+   * follows the source. Conversely this does nothing against a botnet grinding
+   * one account from a thousand addresses, which is exactly what the lockout
+   * catches.
+   *
+   * Reported with the SAME `rate_limited` shape a locked account produces, so
+   * the two are indistinguishable to the caller and neither reveals whether the
+   * address they tried actually exists.
+   */
+  const throttle = await checkOriginRateLimit(RATE_LIMITS.signIn)
+  if (!throttle.allowed) {
+    return fail('rate_limited', rateLimitMessage(throttle.retryAfterMs))
+  }
 
   const rows = await db
     .select({
@@ -428,7 +588,7 @@ export async function setUserStatusAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const input = formDataToObject(formData)
   const targetUserId = String(input.userId ?? '')
@@ -440,6 +600,24 @@ export async function setUserStatusAction(
 
   if (targetUserId === admin.id) {
     return fail('conflict', 'You cannot suspend your own account.')
+  }
+
+  /**
+   * THE OWNER CANNOT BE SUSPENDED THROUGH THE WEBSITE.
+   *
+   * `requireAdminIdentity` requires `status === 'active'`, so suspending the
+   * owner would lock the only permanent administrator out of their own store —
+   * and because reinstating them is itself an administrative action, there would
+   * be no way back in through the application at all. Without this check, a
+   * backup administrator (or anyone who took over their session) could end the
+   * owner's access permanently with a single form post.
+   *
+   * Checked against the ENVIRONMENT rather than a role column, so it holds even
+   * if the owner's row has already been tampered with.
+   */
+  const owner = resolveOwnerUserId()
+  if (owner.ok && targetUserId === owner.ownerId) {
+    return fail('forbidden', 'The owner account cannot be suspended.')
   }
 
   await db
@@ -457,18 +635,35 @@ export async function setUserStatusAction(
 }
 
 /**
- * Admin-only role change.
+ * Administrative role change — for `customer` and `staff` ONLY.
  *
- * Kept here rather than in an admin module so that every write to `role` lives
- * beside the checks that guard it. Guarded by `requireAdmin` via the DAL, and
- * it revokes the target's sessions so a demotion takes effect immediately
- * rather than whenever their session next expires.
+ * THIS IS NO LONGER A WAY TO CREATE AN ADMINISTRATOR, and it is no longer a way
+ * to unmake one. Both directions are refused below, and both refusals close a
+ * real hole that existed while this was a plain `requireAdmin()` + free-text
+ * role write:
+ *
+ *  - PROMOTION. Writing `role = 'admin'` here would not by itself grant access,
+ *    because `requireAdminIdentity` also demands the account be the owner or the
+ *    backup-slot occupant. But it would collide with the two-admin database
+ *    trigger, and it would litter the user table with accounts that LOOK
+ *    administrative to anyone reading it. Promotion has exactly one door:
+ *    the owner-only backup-admin flow.
+ *
+ *  - DEMOTION. This is the sharper one. `requireAdminIdentity` requires
+ *    `role === 'admin'`, so a backup administrator who set the OWNER's role to
+ *    `customer` would lock the owner out of their own store — permanently,
+ *    since every route back in is an admin route. That is a complete privilege
+ *    inversion available to the less-privileged of the two administrators, and
+ *    it is refused explicitly rather than left to the identity model to absorb.
+ *
+ * The target's sessions are still revoked, so a `staff` demotion takes effect on
+ * their next request rather than whenever their session happens to expire.
  */
 export async function setUserRoleAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const input = formDataToObject(formData)
   const targetUserId = String(input.userId ?? '')
@@ -482,6 +677,34 @@ export async function setUserRoleAction(
     return fail(
       'conflict',
       'You cannot change your own role. Ask another admin to do it.',
+    )
+  }
+
+  if (nextRole === 'admin') {
+    return fail(
+      'forbidden',
+      'Administrators are not created here. The owner assigns the single backup administrator from Security → Admin access.',
+    )
+  }
+
+  /**
+   * Neither administrator may be demoted through this action. The owner is
+   * protected because demotion locks them out; the backup is protected because
+   * an account holding the slot while carrying `role = 'customer'` is an
+   * inconsistent state that `requireAdminIdentity` would silently refuse, making
+   * a live backup administrator mysteriously stop working. Removing a backup is
+   * done properly — and audited — through the owner-only removal flow, which
+   * resets the role as part of the same transaction.
+   */
+  const owner = resolveOwnerUserId()
+  if (owner.ok && targetUserId === owner.ownerId) {
+    return fail('forbidden', 'The owner account role cannot be changed.')
+  }
+
+  if (targetUserId === (await getActiveBackupAdminId())) {
+    return fail(
+      'forbidden',
+      'This account holds the backup administrator slot. Remove it from Security → Admin access first.',
     )
   }
 

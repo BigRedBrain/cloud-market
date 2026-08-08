@@ -12,8 +12,21 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 }
 
-export default async function SignUpPage() {
+export default async function SignUpPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
   if (await getCurrentUser()) redirect('/account')
+
+  /**
+   * The return destination, carried from the proxy's redirect. Read here and
+   * passed to the form as a hidden field; `safeRedirectPath` re-validates it
+   * server-side on submit, because a value that has been through a URL is
+   * untrusted no matter who put it there.
+   */
+  const params = await searchParams
+  const next = typeof params.next === 'string' ? params.next : undefined
 
   return (
     <div className="flex flex-col gap-6">
@@ -22,12 +35,13 @@ export default async function SignUpPage() {
           Create account
         </h1>
         <p className="text-sm text-smoke">
-          You must be {MINIMUM_AGE_YEARS} or older. We check ID at handoff.
+          Cloud Market is invite-only. You must be {MINIMUM_AGE_YEARS} or older,
+          and we check ID at handoff.
         </p>
       </div>
 
       <Card className="p-6">
-        <SignUpForm />
+        <SignUpForm next={next} />
       </Card>
 
       <p className="text-center text-sm text-smoke">

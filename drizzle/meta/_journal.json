@@ -113,6 +113,20 @@
       "when": 1785944802807,
       "tag": "0015_catalog_compliance",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1786081396918,
+      "tag": "0016_yummy_tattoo",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1786085157404,
+      "tag": "0017_phase_5_private_storefront",
+      "breakpoints": true
     }
   ]
 }

@@ -3,9 +3,10 @@ import type { Route } from 'next'
 import Link from 'next/link'
 
 import { ProductForm } from '@/components/admin/catalog-forms'
+import { MediaImage } from '@/components/catalog/media-image'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import {
   adminListBrands,
   adminListCategories,
@@ -24,7 +25,7 @@ const STATUS_VARIANT = {
 } as const
 
 export default async function AdminProductsPage() {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const [products, brands, categories] = await Promise.all([
     adminListProducts(),
@@ -59,6 +60,9 @@ export default async function AdminProductsPage() {
               </caption>
               <thead>
                 <tr className="border-b-2 border-ink text-left text-smoke">
+                  <th scope="col" className="px-4 py-2 font-normal">
+                    <span className="sr-only">Thumbnail</span>
+                  </th>
                   <th scope="col" className="px-4 py-2 font-normal">Name</th>
                   <th scope="col" className="px-4 py-2 font-normal">Brand</th>
                   <th scope="col" className="px-4 py-2 font-normal">Category</th>
@@ -70,6 +74,28 @@ export default async function AdminProductsPage() {
               <tbody>
                 {products.map((product) => (
                   <tr key={product.id} className="border-b border-ink-600 last:border-b-0">
+                    <td className="py-2 pl-4">
+                      <div className="size-12 overflow-hidden rounded-sm bg-ink-700">
+                        {product.thumbnailUrl ? (
+                          <MediaImage
+                            src={product.thumbnailUrl}
+                            alt=""
+                            width={48}
+                            height={48}
+                            mimeType={product.thumbnailMimeType}
+                            sizes="48px"
+                            className="size-full object-cover"
+                          />
+                        ) : (
+                          <div
+                            aria-hidden="true"
+                            className="flex size-full items-center justify-center text-[0.5rem] text-smoke"
+                          >
+                            NONE
+                          </div>
+                        )}
+                      </div>
+                    </td>
                     <th scope="row" className="px-4 py-3 text-left font-bold">
                       <Link
                         href={`/admin/products/${product.id}` as Route}
@@ -82,6 +108,9 @@ export default async function AdminProductsPage() {
                       )}
                       {product.newArrival && (
                         <span className="ml-2 text-[0.625rem] text-volt">NEW</span>
+                      )}
+                      {product.mediaCount === 0 && (
+                        <span className="ml-2 text-[0.625rem] text-ember">NO MEDIA</span>
                       )}
                     </th>
                     <td className="px-4 py-3 text-smoke">{product.brandName}</td>

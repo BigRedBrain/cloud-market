@@ -4,6 +4,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-o
 import type { PgColumn } from 'drizzle-orm/pg-core'
 
 import { db, schema } from '@/lib/db'
+import { mediaHref } from '@/lib/media/constants'
 import type { Product as CardProduct } from '@/components/product-card'
 
 /**
@@ -82,7 +83,7 @@ export async function getLiveCampaign(
       body: schema.campaigns.body,
       ctaLabel: schema.campaigns.ctaLabel,
       ctaHref: schema.campaigns.ctaHref,
-      heroUrl: schema.media.url,
+      heroMediaId: schema.media.id,
       heroAlt: schema.media.altText,
     })
     .from(schema.campaigns)
@@ -91,7 +92,15 @@ export async function getLiveCampaign(
     .orderBy(desc(schema.campaigns.priority), desc(schema.campaigns.publishAt))
     .limit(1)
 
-  return row ?? null
+  if (!row) return null
+
+  /**
+   * The hero is addressed through the authenticated media route, like every
+   * other asset. A campaign hero is the most public-looking thing on the site
+   * and would be the easiest place to reintroduce a world-readable URL.
+   */
+  const { heroMediaId, ...campaign } = row
+  return { ...campaign, heroUrl: heroMediaId === null ? null : mediaHref(heroMediaId) }
 }
 
 /** The announcement bar is a campaign of type `announcement`. */
@@ -290,7 +299,7 @@ export async function resolveBrandAsset(key: string) {
     .select({
       key: schema.brandAssets.key,
       name: schema.brandAssets.name,
-      url: schema.media.url,
+      mediaId: schema.media.id,
       altText: schema.media.altText,
       focalX: schema.media.focalX,
       focalY: schema.media.focalY,
@@ -301,5 +310,6 @@ export async function resolveBrandAsset(key: string) {
     .orderBy(desc(schema.brandAssets.priority))
     .limit(1)
 
-  return row ?? null
+  if (!row) return null
+  return { ...row, url: row.mediaId === null ? null : mediaHref(row.mediaId) }
 }

@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { Lock } from 'lucide-react'
 
+import { requireUser } from '@/lib/auth/dal'
 import { Logo } from '@/components/brand/logo'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -35,7 +36,24 @@ export const metadata: Metadata = {
  * The order summary is a paper panel because it is a receipt — the same
  * structural device used everywhere else for lifted-out content.
  */
-export default function CheckoutPage() {
+export default async function CheckoutPage() {
+  /**
+   * The login wall, applied server-side.
+   *
+   * This page had no guard at all before Phase 5 — it is a static shell, so
+   * there was nothing on it worth protecting and nothing to leak. That reasoning
+   * does not survive the storefront becoming private: an anonymous visitor
+   * reaching a page that says "Secure checkout" over Cloud Market branding has
+   * confirmed the site exists and what it sells, which on an invite-only
+   * cannabis storefront is exactly the disclosure the wall exists to prevent.
+   *
+   * The proxy already bounces anonymous requests here, but the proxy is
+   * optimistic UX and checks only that a cookie is PRESENT. This is the check
+   * that decides.
+   */
+  await requireUser('/checkout')
+
+
   return (
     <>
       <header className="border-b-2 border-ink bg-ink-900">

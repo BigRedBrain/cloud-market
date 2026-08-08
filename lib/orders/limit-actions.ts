@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 
 import { recordAuditEvent } from '@/lib/auth/audit'
-import { requirePermission } from '@/lib/auth/dal'
+import { requireAdminPermission } from '@/lib/auth/admin-identity'
 import { reauthenticate, reauthMessage } from '@/lib/auth/reauth'
 import { CLASS_MEASUREMENT, SUPPORTED_CANNABIS_CLASSES } from '@/lib/orders/limits'
 import { previewPublish, publishRuleSafely, type PublishInput } from '@/lib/orders/limit-admin'
@@ -23,7 +23,7 @@ import {
  * it changes the legal caps enforced at every checkout. The gates are
  * deliberately redundant, and each catches something the others do not.
  *
- *   1. `requirePermission` — a named grant, not a role.
+ *   1. `requireAdminPermission` — admin identity AND a named grant.
  *   2. Validation — shape, then units, then dangerous values.
  *   3. Confirmation — the class typed by hand, plus an explicit acknowledgement.
  *   4. `reauthenticate` — the password again, in this request.
@@ -118,7 +118,7 @@ export async function previewLimitRuleAction(
   _previous: ActionResult<string> | null,
   formData: FormData,
 ): Promise<ActionResult<string>> {
-  const user = await requirePermission('compliance_admin')
+  const { user } = await requireAdminPermission('compliance_admin')
 
   /**
    * The password is not required for a preview and is deliberately not read.
@@ -169,7 +169,7 @@ export async function publishLimitRuleAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const user = await requirePermission('compliance_admin')
+  const { user } = await requireAdminPermission('compliance_admin')
 
   const parsed = parseInput(publishSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed

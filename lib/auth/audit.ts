@@ -30,7 +30,14 @@ import type { DbExecutor } from './tokens'
  * AUTHENTICATION.md.
  */
 
-function keyedDigest(value: string | null): string | null {
+/**
+ * Exported because the rate limiter (`lib/security/rate-limit.ts`) counts rows
+ * in this table by `ip_hash`, and it can only do that if it derives the digest
+ * with the identical key and algorithm. Two implementations of "hash the IP"
+ * would silently stop matching the day one of them changed, and the failure
+ * would be a rate limit that never triggers — invisible until it mattered.
+ */
+export function keyedDigest(value: string | null): string | null {
   if (!value) return null
   return createHmac('sha256', serverEnv().AUTH_SECRET).update(value).digest('hex')
 }

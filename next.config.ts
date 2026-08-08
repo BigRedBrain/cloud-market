@@ -53,14 +53,25 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
 
   images: {
-    remotePatterns: [
-      {
-        // Product imagery served from Vercel Blob.
-        protocol: 'https',
-        hostname: '*.public.blob.vercel-storage.com',
-        pathname: '/**',
-      },
-    ],
+    /**
+     * NO REMOTE PATTERNS, DELIBERATELY.
+     *
+     * Product imagery used to be optimized from `*.public.blob.vercel-storage.com`,
+     * which required allow-listing that host here. Media is now private in
+     * storage and served through `/api/media/<id>` after a session check, so
+     * there is no remote host to optimize from — and the optimizer could not
+     * read those objects anyway, since it fetches server-side without the
+     * viewer's session.
+     *
+     * An empty list is the safe default: `next/image` refuses any remote URL,
+     * so a component that is later given one fails loudly at build or request
+     * time instead of quietly turning the optimizer into an image proxy for
+     * somebody else's host.
+     *
+     * `components/catalog/media-image.tsx` renders a plain `<img>` and explains
+     * what that costs.
+     */
+    remotePatterns: [],
     // Next 16 defaults `qualities` to [75]; declared explicitly so the
     // storefront can serve sharper hero/product photography.
     qualities: [75, 90],

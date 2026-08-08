@@ -5,7 +5,7 @@ import {
   type ComplianceRow,
 } from '@/components/admin/catalog-compliance'
 import { Alert } from '@/components/ui/feedback'
-import { requirePermission } from '@/lib/auth/dal'
+import { requireAdminPermission } from '@/lib/auth/admin-identity'
 import { CLASSIFICATION_MATRIX, loadVariantCompliance } from '@/lib/catalog/compliance'
 import { SUPPORTED_CANNABIS_CLASSES } from '@/lib/orders/limits'
 
@@ -26,7 +26,7 @@ export const metadata: Metadata = {
  * The page renders its own `<main>`, like every other admin route.
  */
 export default async function CatalogCompliancePage() {
-  await requirePermission('catalog_compliance_admin')
+  await requireAdminPermission('catalog_compliance_admin')
 
   /**
    * Inactive variants are included deliberately. A product being drafted is

@@ -2,6 +2,7 @@ import { formatCents } from '@/lib/money'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { MediaImage, MediaPlaceholder } from '@/components/catalog/media-image'
 
 /**
  * Product card.
@@ -40,7 +41,20 @@ export type Product = {
   size: string
   thcPercent: number
   priceCents: number
-  imageUrl?: string
+  /**
+   * The primary asset, or undefined for the placeholder.
+   *
+   * Carries the MIME type because an animated GIF must bypass the image
+   * optimizer — see `components/catalog/media-image.tsx`. A bare URL cannot
+   * express that, which is why this replaced `imageUrl`.
+   */
+  image?: {
+    url: string
+    mimeType: string | null
+    altText: string
+    width: number | null
+    height: number | null
+  }
   inStock: boolean
   /** Drives the low-stock warning. Omit when the count is unknown. */
   stockCount?: number
@@ -94,25 +108,23 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
       )}
     >
       <div className="relative aspect-4/3 overflow-hidden border-b-2 border-ink bg-ink-700">
-        {product.imageUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element -- next/image lands in Phase 3 with real Blob URLs.
-          <img
-            src={product.imageUrl}
+        {product.image ? (
+          <MediaImage
+            src={product.image.url}
+            /**
+             * Empty by design. The product name is the adjacent link and is
+             * already announced; repeating it here makes a screen reader say
+             * the same thing twice for one card.
+             */
             alt=""
-            width={640}
-            height={480}
-            loading="lazy"
-            decoding="async"
-            className={cn(
-              'size-full object-cover',
-              soldOut && 'opacity-40 grayscale',
-            )}
+            width={product.image.width}
+            height={product.image.height}
+            mimeType={product.image.mimeType}
+            sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
+            className={cn('size-full object-cover', soldOut && 'opacity-40 grayscale')}
           />
         ) : (
-          <div
-            aria-hidden="true"
-            className="halftone size-full text-smoke opacity-40"
-          />
+          <MediaPlaceholder />
         )}
 
         {/* Smoke accent bleeding up from the lower edge of the image. */}

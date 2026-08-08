@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert } from '@/components/ui/feedback'
 import { EmptyState } from '@/components/ui/empty-state'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { requireUser } from '@/lib/auth/dal'
 import { getBag } from '@/lib/bag/core'
 import { formatCents } from '@/lib/money'
 
@@ -35,8 +35,8 @@ export default async function BagPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
-  const user = await getCurrentUser()
-  const bag = await getBag(user?.id ?? null)
+  const user = await requireUser('/bag')
+  const bag = await getBag(user.id)
 
   /**
    * Set by sign-in when merging the guest bag dropped a line that can no longer

@@ -73,6 +73,49 @@ const serverSchema = z.object({
    */
   CHECKOUT_ENABLED: z.string().optional(),
 
+  /**
+   * The immutable `users.id` of the permanent owner (Phase 5).
+   *
+   * VALIDATED AS A LOOSE STRING HERE, STRICTLY AT THE POINT OF USE. Declaring it
+   * `z.uuid()` would make a typo in this one variable stop the entire storefront
+   * from booting — customers unable to browse or sign in because an
+   * administrative identity is malformed. That is a worse outcome than the
+   * correct one, which is that ADMIN ACCESS ALONE fails closed while the shop
+   * keeps trading. `lib/auth/admin-identity.ts` does the strict parse and denies
+   * every administrator when it fails.
+   *
+   * NEVER `NEXT_PUBLIC_`. Exposing it would publish which account is permanently
+   * privileged — the single most useful fact an attacker could learn here.
+   */
+  CLOUDMARKET_OWNER_USER_ID: z.string().optional(),
+
+  /**
+   * Server-only pepper for invite-code digests (Phase 5).
+   *
+   * A pepper, not a salt: it lives in the environment rather than beside the
+   * digest in the database, so a disclosure of the `invite_codes` table alone
+   * leaves the stored HMACs unverifiable and un-brute-forceable. Codes carry 100
+   * bits of entropy, so this is defence in depth rather than the primary
+   * control — but it is what makes a stolen table worthless without the app.
+   *
+   * Optional here and required at the point of use, so invite issuance and
+   * redemption fail closed rather than the storefront failing to boot. Rotating
+   * it invalidates every outstanding invite, which is documented and is
+   * occasionally exactly what an operator wants.
+   */
+  INVITE_CODE_PEPPER: z.string().min(32).optional(),
+
+  /**
+   * The crypto-payments kill switch (Phase 5).
+   *
+   * A STRING for the same reason `CHECKOUT_ENABLED` is one — Zod's boolean
+   * coercion treats every non-empty string as true, so
+   * `CRYPTO_PAYMENTS_ENABLED=false` would ENABLE crypto payments. The comparison
+   * against the literal `'true'` lives in `lib/payments/gate.ts`, and absence
+   * means disabled.
+   */
+  CRYPTO_PAYMENTS_ENABLED: z.string().optional(),
+
   EMAIL_PROVIDER: z.enum(['resend', 'console', 'capture']).default('console'),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),

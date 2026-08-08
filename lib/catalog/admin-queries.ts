@@ -3,6 +3,7 @@ import 'server-only'
 import { asc, desc, eq, isNull, sql } from 'drizzle-orm'
 
 import { db, schema } from '@/lib/db'
+import { mediaHref } from '@/lib/media/constants'
 
 /**
  * Admin catalogue reads.
@@ -15,7 +16,7 @@ import { db, schema } from '@/lib/db'
  * These are plain async functions, NOT Server Actions — a `'use server'` module
  * turns every export into a callable endpoint, and a list query that accepts an
  * id from the caller is exactly the wrong thing to expose. Callers are Server
- * Components that have already passed `requireAdmin()`.
+ * Components that have already passed `requireAdminIdentity()`.
  */
 
 export async function adminListBrands() {
@@ -55,7 +56,7 @@ export async function adminListCategories() {
 }
 
 export async function adminListProducts() {
-  return db
+  const rows = await db
     .select({
       id: schema.products.id,
       slug: schema.products.slug,
@@ -66,6 +67,40 @@ export async function adminListProducts() {
       brandName: schema.brands.name,
       categoryName: schema.categories.name,
       updatedAt: schema.products.updatedAt,
+      /**
+       * Thumbnail for the list, as a correlated subquery rather than a join.
+       *
+       * A join to `product_media` would multiply product rows by their media
+       * rows and silently break the row count this page displays. The subquery
+       * mirrors the storefront's own ordering — primary first, then sort order —
+       * and excludes video, because a card has no player.
+       */
+      /**
+       * The media ID, not its storage URL — the row is turned into
+       * `/api/media/<id>` below. Selecting `m.url` here would put a
+       * world-readable address into an admin DTO for no gain; the thumbnail is
+       * rendered through the authenticated route like every other asset.
+       */
+      thumbnailMediaId: sql<string | null>`(
+        select m.id from ${schema.productMedia} pm
+          join ${schema.media} m on m.id = pm.media_id
+         where pm.product_id = ${schema.products.id}
+           and m.kind = 'image' and m.archived_at is null
+         order by pm.is_primary desc, pm.sort_order asc, pm.created_at asc
+         limit 1
+      )`,
+      thumbnailMimeType: sql<string | null>`(
+        select m.mime_type from ${schema.productMedia} pm
+          join ${schema.media} m on m.id = pm.media_id
+         where pm.product_id = ${schema.products.id}
+           and m.kind = 'image' and m.archived_at is null
+         order by pm.is_primary desc, pm.sort_order asc, pm.created_at asc
+         limit 1
+      )`,
+      mediaCount: sql<number>`(
+        select count(*)::int from ${schema.productMedia} pm
+         where pm.product_id = ${schema.products.id}
+      )`,
       variantCount: sql<number>`(
         select count(*)::int from ${schema.productVariants} v
          where v.product_id = ${schema.products.id} and v.deleted_at is null
@@ -80,6 +115,11 @@ export async function adminListProducts() {
     .innerJoin(schema.categories, eq(schema.products.categoryId, schema.categories.id))
     .where(isNull(schema.products.deletedAt))
     .orderBy(desc(schema.products.updatedAt))
+
+  return rows.map(({ thumbnailMediaId, ...row }) => ({
+    ...row,
+    thumbnailUrl: thumbnailMediaId === null ? null : mediaHref(thumbnailMediaId),
+  }))
 }
 
 export async function adminGetProduct(id: string) {

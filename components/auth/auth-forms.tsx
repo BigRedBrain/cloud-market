@@ -64,14 +64,55 @@ export function SignInForm({ next }: { next?: string }) {
   )
 }
 
-export function SignUpForm() {
+export function SignUpForm({ next }: { next?: string } = {}) {
   return (
     <AuthForm action={signUpAction} submitLabel="Create account" pendingLabel="Creating account">
       {(errors) => (
         <>
+          {/* Carried through so a deep link survives the round trip. Validated
+              server-side by `safeRedirectPath` — never trusted as given. */}
+          {next && <input type="hidden" name="next" value={next} />}
+
+          {/**
+            * THE INVITE CODE IS FIRST, and that is a deliberate ordering choice.
+            *
+            * Cloud Market is invite-only, so a visitor without a code cannot
+            * create an account no matter what else they type. Putting the field
+            * last would let someone fill in their name, email, date of birth and
+            * a new password before discovering the whole form was never going to
+            * work for them. Asking for the one disqualifying thing first is the
+            * honest order.
+            *
+            * `autoFocus` moved here from the name field for the same reason.
+            *
+            * The hint says what is true without being an oracle: it does not
+            * reveal the code format, the length, or whether any particular code
+            * exists. Every failure — malformed, unknown, expired, exhausted,
+            * deactivated — comes back as one generic message.
+            */}
+          <Field
+            id="inviteCode"
+            label="Invite code"
+            hint="Cloud Market is invite-only. Paste the code from your invitation."
+            error={errors?.inviteCode?.[0]}
+            required
+          >
+            {(props) => (
+              <Input
+                name="inviteCode"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                autoFocus
+                placeholder="CM-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+                {...props}
+              />
+            )}
+          </Field>
+
           <Field id="name" label="Full name" error={errors?.name?.[0]} required>
             {(props) => (
-              <Input name="name" autoComplete="name" autoFocus {...props} />
+              <Input name="name" autoComplete="name" {...props} />
             )}
           </Field>
 

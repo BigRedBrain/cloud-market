@@ -4,6 +4,12 @@ import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm
 
 import { db, schema } from '@/lib/db'
 import type { Product as CardProduct } from '@/components/product-card'
+import {
+  primaryMediaByProduct,
+  productGallery,
+  type CardMedia,
+  type GalleryItem,
+} from '@/lib/media/queries'
 
 /**
  * Catalog read layer.
@@ -91,7 +97,7 @@ function toCardProduct(
   product: schema.CatalogProduct,
   categoryName: string,
   summary: VariantSummary | null,
-  imageUrl: string | undefined,
+  image: CardMedia | undefined,
 ): CardProduct {
   const strain = product.strainType
     ? product.strainType.charAt(0).toUpperCase() + product.strainType.slice(1)
@@ -105,7 +111,14 @@ function toCardProduct(
     size: summary?.entryLabel ?? '—',
     thcPercent: product.thcPercent ? Number(product.thcPercent) : 0,
     priceCents: summary?.entryPriceCents ?? 0,
-    imageUrl,
+    /**
+     * The whole asset, not just its URL.
+     *
+     * The card has to know the MIME type to decide whether the image optimizer
+     * is bypassed — a GIF that goes through it comes back as a still. Passing a
+     * bare URL, as this did before, made an animated thumbnail impossible.
+     */
+    image,
     inStock: (summary?.totalStock ?? 0) > 0,
     // Only surface a count when it is low enough to matter on a card.
     stockCount:
@@ -193,7 +206,7 @@ export async function listProducts(filters: CatalogFilters = {}): Promise<Catalo
     .offset((page - 1) * PAGE_SIZE)
 
   const productIds = rows.map((row) => row.product.id)
-  const { variantsByProduct, imageByProduct } = await loadVariantsAndMedia(productIds)
+  const { variantsByProduct, mediaByProduct } = await loadVariantsAndMedia(productIds)
 
   return {
     products: rows.map((row) =>
@@ -201,7 +214,7 @@ export async function listProducts(filters: CatalogFilters = {}): Promise<Catalo
         row.product,
         row.categoryName,
         summariseVariants(variantsByProduct.get(row.product.id) ?? []),
-        imageByProduct.get(row.product.id),
+        mediaByProduct.get(row.product.id),
       ),
     ),
     total: count,
@@ -213,9 +226,10 @@ export async function listProducts(filters: CatalogFilters = {}): Promise<Catalo
 /** Bulk-loads variants and primary images for a page of products. */
 async function loadVariantsAndMedia(productIds: string[]) {
   const variantsByProduct = new Map<string, schema.ProductVariant[]>()
-  const imageByProduct = new Map<string, string>()
 
-  if (productIds.length === 0) return { variantsByProduct, imageByProduct }
+  if (productIds.length === 0) {
+    return { variantsByProduct, mediaByProduct: new Map<string, CardMedia>() }
+  }
 
   const variants = await db
     .select()
@@ -234,24 +248,16 @@ async function loadVariantsAndMedia(productIds: string[]) {
     variantsByProduct.set(variant.productId, list)
   }
 
-  const images = await db
-    .select({
-      productId: schema.productMedia.productId,
-      url: schema.media.url,
-      sortOrder: schema.productMedia.sortOrder,
-      isPrimary: schema.productMedia.isPrimary,
-    })
-    .from(schema.productMedia)
-    .innerJoin(schema.media, eq(schema.productMedia.mediaId, schema.media.id))
-    .where(inArray(schema.productMedia.productId, productIds))
-    .orderBy(desc(schema.productMedia.isPrimary), asc(schema.productMedia.sortOrder))
+  /**
+   * Thumbnail selection lives in `lib/media/queries.ts` so that the storefront
+   * and the admin cannot drift on which asset a product leads with. It also
+   * excludes video in SQL — a card has no player, so a product whose only asset
+   * is a video must fall through to the placeholder rather than emit an `<img>`
+   * pointing at an MP4.
+   */
+  const mediaByProduct = await primaryMediaByProduct(productIds)
 
-  for (const image of images) {
-    // Ordered primary-first, so the first row wins.
-    if (!imageByProduct.has(image.productId)) imageByProduct.set(image.productId, image.url)
-  }
-
-  return { variantsByProduct, imageByProduct }
+  return { variantsByProduct, mediaByProduct }
 }
 
 export type ProductDetail = {
@@ -259,7 +265,13 @@ export type ProductDetail = {
   brand: { slug: string; name: string; description: string | null }
   category: { slug: string; name: string }
   variants: schema.ProductVariant[]
-  images: Array<{ url: string; altText: string; isPrimary: boolean }>
+  /**
+   * The full gallery — images, GIFs and video, primary first.
+   *
+   * Renamed from `images` because it is no longer only images, and a name that
+   * lies about its contents is how a video ends up in an `<img>` tag.
+   */
+  media: GalleryItem[]
 }
 
 export async function getProductBySlug(slug: string): Promise<ProductDetail | null> {
@@ -292,23 +304,14 @@ export async function getProductBySlug(slug: string): Promise<ProductDetail | nu
     )
     .orderBy(asc(schema.productVariants.sortOrder))
 
-  const images = await db
-    .select({
-      url: schema.media.url,
-      altText: schema.media.altText,
-      isPrimary: schema.productMedia.isPrimary,
-    })
-    .from(schema.productMedia)
-    .innerJoin(schema.media, eq(schema.productMedia.mediaId, schema.media.id))
-    .where(eq(schema.productMedia.productId, row.product.id))
-    .orderBy(desc(schema.productMedia.isPrimary), asc(schema.productMedia.sortOrder))
+  const media = await productGallery(row.product.id)
 
   return {
     product: row.product,
     brand: { slug: row.brandSlug, name: row.brandName, description: row.brandDescription },
     category: { slug: row.categorySlug, name: row.categoryName },
     variants,
-    images,
+    media,
   }
 }
 

@@ -1,10 +1,13 @@
 import type { Metadata } from 'next'
 
 import { MediaForm, ReplaceMediaForm } from '@/components/admin/cms-forms'
+import { MediaLibraryUpload } from '@/components/admin/media-upload'
+import { MediaImage } from '@/components/catalog/media-image'
+import { formatBytes, formatDuration, isAnimatedFormat } from '@/lib/media/constants'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert } from '@/components/ui/feedback'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import { adminListMedia } from '@/lib/cms/admin-queries'
 
 export const metadata: Metadata = {
@@ -24,7 +27,7 @@ export const metadata: Metadata = {
  * replacement can be undone.
  */
 export default async function AdminMediaPage() {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const assets = await adminListMedia()
   const active = assets.filter((asset) => !asset.archivedAt)
@@ -40,16 +43,25 @@ export default async function AdminMediaPage() {
         so every crop everywhere agrees.
       </p>
 
-      <Alert tone="info" title="Direct upload arrives with Vercel Blob" className="mb-6">
-        For now, add an asset by URL. The record, alt text, focal point, archive
-        and replace-lineage all work today; only the upload transport is pending.
-      </Alert>
+      <Card className="mb-8">
+        <CardHeader>
+          <CardTitle>Upload</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <MediaLibraryUpload />
+        </CardContent>
+      </Card>
 
       <Card className="mb-8">
         <CardHeader>
-          <CardTitle>Add asset</CardTitle>
+          <CardTitle>Add by URL</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-col gap-4">
+          <Alert tone="info" title="For assets hosted elsewhere">
+            An asset added this way points at storage this application does not
+            own, so it cannot be optimized or permanently deleted from here.
+            Prefer uploading.
+          </Alert>
           <MediaForm />
         </CardContent>
       </Card>
@@ -71,23 +83,55 @@ export default async function AdminMediaPage() {
                 ) : (
                   <Badge variant="smoke">Unused</Badge>
                 )}
+                {/**
+                 * An object from the public-store era: still fetchable by anyone
+                 * holding its URL, no matter what this application does. Shown
+                 * here because the fix is operational — re-upload it and delete
+                 * the original — and an operator cannot act on a finding they
+                 * cannot see. See MEDIA-PRIVACY.md.
+                 */}
+                {asset.worldReadable && <Badge variant="ember">Public URL</Badge>}
               </CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
-              <div className="panel-sm overflow-hidden rounded-md bg-ink-700">
-                {/* eslint-disable-next-line @next/next/no-img-element -- library preview; next/image arrives with Blob uploads */}
-                <img
-                  src={asset.url}
-                  alt={asset.altText}
-                  width={320}
-                  height={240}
-                  loading="lazy"
-                  decoding="async"
-                  className="aspect-4/3 w-full object-cover"
-                  style={{
-                    objectPosition: `${Number(asset.focalX) * 100}% ${Number(asset.focalY) * 100}%`,
-                  }}
-                />
+              <div className="panel-sm relative aspect-4/3 overflow-hidden rounded-md bg-ink-700">
+                {asset.kind === 'video' ? (
+                  <video
+                    /**
+                     * `src`, never `url`. The raw storage address is on this DTO
+                     * because the "Add by URL" field round-trips it; rendering
+                     * from it would put a storage address into the markup of a
+                     * page, which is the habit this release removed.
+                     */
+                    src={asset.src}
+                    controls
+                    playsInline
+                    muted
+                    preload="metadata"
+                    aria-label={asset.altText || asset.title || 'Video asset'}
+                    className="size-full object-contain"
+                  />
+                ) : (
+                  <MediaImage
+                    src={asset.src}
+                    alt={asset.altText}
+                    width={asset.width}
+                    height={asset.height}
+                    mimeType={asset.mimeType}
+                    sizes="320px"
+                    className="size-full object-cover"
+                  />
+                )}
+
+                <span className="absolute top-2 left-2 rounded-sm bg-ink-900/85 px-1.5 py-0.5 font-mono text-[0.5625rem] tracking-wider text-cream uppercase">
+                  {asset.kind === 'video'
+                    ? `Video · ${formatDuration(asset.durationSeconds)}`
+                    : isAnimatedFormat(asset.mimeType)
+                      ? 'GIF · animated'
+                      : 'Image'}
+                  {' · '}
+                  {formatBytes(asset.bytes)}
+                </span>
               </div>
 
               <MediaForm asset={asset} />

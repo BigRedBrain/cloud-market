@@ -7,7 +7,7 @@ import { CatalogFilters, CategoryChips } from '@/components/catalog/catalog-filt
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
 import { getBagCount } from '@/lib/bag/core'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { requireUser } from '@/lib/auth/dal'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import {
@@ -59,8 +59,8 @@ export default async function ShopPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
-  const bagViewer = await getCurrentUser()
-  const bagCount = await getBagCount(bagViewer?.id ?? null)
+  const bagViewer = await requireUser()
+  const bagCount = await getBagCount(bagViewer.id)
 
   const params = await searchParams
   const filters = parseCatalogSearchParams(params)

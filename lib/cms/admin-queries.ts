@@ -3,6 +3,7 @@ import 'server-only'
 import { asc, desc, eq, isNull, sql } from 'drizzle-orm'
 
 import { db, schema } from '@/lib/db'
+import { isPublicBlobUrl, mediaHref } from '@/lib/media/constants'
 
 /**
  * Admin CMS reads.
@@ -14,7 +15,7 @@ import { db, schema } from '@/lib/db'
  *
  * Plain async functions, not Server Actions — a `'use server'` export is a
  * public endpoint. Callers are Server Components that already passed
- * `requireAdmin()`.
+ * `requireAdminIdentity()`.
  */
 
 /** Derived so the admin list can show what the storefront will actually do. */
@@ -114,8 +115,25 @@ export async function adminListHomepageSections() {
     .orderBy(asc(schema.homepageSections.sortOrder))
 }
 
+/**
+ * The media library.
+ *
+ * RETURNS BOTH ADDRESSES, AND THE DISTINCTION MATTERS.
+ *
+ *   `src` — `/api/media/<id>`, the authenticated route. Everything that RENDERS
+ *           an asset uses this, admin screens included. No exceptions.
+ *   `url` — the raw storage address. Present because the "Add by URL" form
+ *           round-trips it: the field is editable, and rendering the route URL
+ *           into it would make saving the form REWRITE the row's storage
+ *           address to `/api/media/<id>`, permanently detaching the asset from
+ *           its bytes.
+ *
+ * `url` reaching an administrator's browser is not the leak this design is
+ * about — an administrator uploaded the object and can read the store. It must
+ * never reach a customer, and no customer-facing query selects it.
+ */
 export async function adminListMedia() {
-  return db
+  const rows = await db
     .select({
       id: schema.media.id,
       url: schema.media.url,
@@ -125,6 +143,10 @@ export async function adminListMedia() {
       focalY: schema.media.focalY,
       width: schema.media.width,
       height: schema.media.height,
+      kind: schema.media.kind,
+      mimeType: schema.media.mimeType,
+      bytes: schema.media.bytes,
+      durationSeconds: schema.media.durationSeconds,
       archivedAt: schema.media.archivedAt,
       replacedByMediaId: schema.media.replacedByMediaId,
       usageCount: sql<number>`(
@@ -136,6 +158,13 @@ export async function adminListMedia() {
     .from(schema.media)
     .orderBy(desc(schema.media.createdAt))
     .limit(200)
+
+  return rows.map((row) => ({
+    ...row,
+    src: mediaHref(row.id),
+    /** Flags an object left over from the public-store era. See MEDIA-PRIVACY.md. */
+    worldReadable: isPublicBlobUrl(row.url),
+  }))
 }
 
 export async function adminListBrandAssets() {

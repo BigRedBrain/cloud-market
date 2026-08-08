@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Flame, PackageOpen, Truck } from 'lucide-react'
 
+import { requireUser } from '@/lib/auth/dal'
 import { BurningCloud } from '@/components/brand/burning-cloud'
 import { CloudButton } from '@/components/brand/cloud-button'
 import { Logo } from '@/components/brand/logo'
@@ -86,7 +87,17 @@ function Section({
   )
 }
 
-export default function DesignSystemPage() {
+export default async function DesignSystemPage() {
+  /**
+   * The design-system reference is an internal page, and on a private
+   * storefront "internal" has to mean authenticated rather than merely
+   * unlinked. It renders the full component vocabulary, the brand system and
+   * sample product cards — a complete preview of the shop for anyone who
+   * guessed the URL.
+   */
+  await requireUser('/design')
+
+
   return (
     <>
       <SiteNav bagCount={3} />

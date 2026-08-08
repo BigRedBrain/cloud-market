@@ -4,7 +4,7 @@ import { PublishRuleForm } from '@/components/admin/limit-forms'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert } from '@/components/ui/feedback'
-import { requirePermission } from '@/lib/auth/dal'
+import { requireAdminPermission } from '@/lib/auth/admin-identity'
 import { rational, toRatioString } from '@/lib/orders/exact'
 import {
   CLASS_EQUIVALENCE,
@@ -156,7 +156,7 @@ function HistoryRow({ rule }: { rule: RuleHistoryRow }) {
 }
 
 export default async function AdminPurchaseLimitsPage() {
-  await requirePermission('compliance_admin')
+  await requireAdminPermission('compliance_admin')
 
   const [live, history] = await Promise.all([effectiveRules(), ruleHistory()])
 

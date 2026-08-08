@@ -4,13 +4,15 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
 import { ProductForm, VariantForm } from '@/components/admin/catalog-forms'
+import { ProductMediaManager } from '@/components/admin/product-media'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import {
   adminGetProduct,
   adminListBrands,
   adminListCategories,
 } from '@/lib/catalog/admin-queries'
+import { adminProductGallery, libraryAssetsForPicker } from '@/lib/media/queries'
 import { formatCents } from '@/lib/money'
 
 export const metadata: Metadata = {
@@ -23,13 +25,18 @@ export default async function AdminProductPage({
 }: {
   params: Promise<{ id: string }>
 }) {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const { id } = await params
   const detail = await adminGetProduct(id)
   if (!detail) notFound()
 
-  const [brands, categories] = await Promise.all([adminListBrands(), adminListCategories()])
+  const [brands, categories, mediaItems, libraryAssets] = await Promise.all([
+    adminListBrands(),
+    adminListCategories(),
+    adminProductGallery(id),
+    libraryAssetsForPicker(id),
+  ])
   const { product, variants } = detail
 
   return (
@@ -75,6 +82,27 @@ export default async function AdminProductPage({
             }}
             brands={brands}
             categories={categories}
+          />
+        </CardContent>
+      </Card>
+
+      {/**
+        * Media sits above variants deliberately.
+        *
+        * A product created a moment ago lands on this page with no imagery, and
+        * the first thing it needs is a picture — a catalogue entry with no
+        * thumbnail is not sellable however carefully its prices are entered.
+        */}
+      <h2 className="mb-4 font-display text-xl tracking-tight text-white uppercase">
+        Product media ({mediaItems.length})
+      </h2>
+
+      <Card className="mb-8">
+        <CardContent>
+          <ProductMediaManager
+            productId={product.id}
+            items={mediaItems}
+            libraryAssets={libraryAssets}
           />
         </CardContent>
       </Card>

@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 
 import { recordAuditEvent } from '@/lib/auth/audit'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import { db, schema } from '@/lib/db'
 import { withUpdatedAt } from '@/lib/db/schema'
 import {
@@ -19,7 +19,7 @@ import {
 /**
  * CMS and marketing actions.
  *
- * Every action begins with `requireAdmin()`. Server Actions are a public
+ * Every action begins with `requireAdminIdentity()`. Server Actions are a public
  * network boundary, so the admin UI being unreachable protects nothing.
  *
  * EVERY PUBLISH WRITES AN AUDIT EVENT. Publishing is the moment content becomes
@@ -162,7 +162,7 @@ export async function saveCampaignAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const parsed = parseInput(campaignSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
@@ -216,7 +216,7 @@ export async function archiveCampaignAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const id = String(formDataToObject(formData).id ?? '')
   if (!id) return fail('validation_error', 'Missing campaign.')
@@ -248,7 +248,7 @@ export async function saveCollectionAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const parsed = parseInput(collectionSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
@@ -301,7 +301,7 @@ export async function toggleCollectionProductAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const input = formDataToObject(formData)
   const collectionId = String(input.collectionId ?? '')
@@ -347,7 +347,7 @@ export async function saveBadgeAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const parsed = parseInput(badgeSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
@@ -388,7 +388,7 @@ export async function toggleProductBadgeAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const input = formDataToObject(formData)
   const productId = String(input.productId ?? '')
@@ -431,7 +431,7 @@ export async function saveHomepageSectionAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const parsed = parseInput(sectionSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
@@ -490,7 +490,7 @@ export async function saveMediaAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const parsed = parseInput(mediaSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
@@ -536,7 +536,7 @@ export async function replaceMediaAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const input = formDataToObject(formData)
   const originalId = String(input.id ?? '')
@@ -586,7 +586,7 @@ export async function archiveMediaAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   const id = String(formDataToObject(formData).id ?? '')
   if (!id) return fail('validation_error', 'Missing asset.')

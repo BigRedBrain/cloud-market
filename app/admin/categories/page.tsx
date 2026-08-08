@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 
 import { CategoryForm } from '@/components/admin/catalog-forms'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import { adminListCategories } from '@/lib/catalog/admin-queries'
 
 export const metadata: Metadata = {
@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 }
 
 export default async function AdminCategoriesPage() {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const categories = await adminListCategories()
 

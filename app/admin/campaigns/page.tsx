@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 
 import { CampaignForm, StatusPill } from '@/components/admin/cms-forms'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import { adminListCampaigns, adminListMedia } from '@/lib/cms/admin-queries'
 
 export const metadata: Metadata = {
@@ -18,7 +18,7 @@ export const metadata: Metadata = {
  * table would have meant a second scheduling implementation to keep in step.
  */
 export default async function AdminCampaignsPage() {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const [campaigns, media] = await Promise.all([adminListCampaigns(), adminListMedia()])
 

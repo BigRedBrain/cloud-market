@@ -7,6 +7,10 @@ import { after } from 'next/server'
 import { redirect } from 'next/navigation'
 
 import { recordAuditEvent } from '@/lib/auth/audit'
+import {
+  RATE_LIMITS,
+  checkOriginRateLimit,
+} from '@/lib/security/rate-limit'
 import { issueAndSend } from '@/lib/auth/email-dispatch'
 import { getCurrentUser, requireUser } from '@/lib/auth/dal'
 import { hashPassword } from '@/lib/auth/crypto'
@@ -317,6 +321,30 @@ export async function requestPasswordResetAction(
   if (!parsed.ok) redirect('/forgot-password/sent')
 
   const email = parsed.data.email
+
+  /**
+   * ORIGIN throttle, and it deliberately does NOT change the response.
+   *
+   * The per-ACCOUNT send caps in `checkSendThrottle` already stop any one
+   * mailbox being flooded, however many source addresses an attacker rotates
+   * through. What they cannot bound is one host walking a list of ten thousand
+   * candidate addresses to see which ones exist — each address is under its own
+   * cap, so nothing trips.
+   *
+   * When throttled, the send is SKIPPED and the caller still lands on the same
+   * confirmation page. Returning a visible `rate_limited` failure here would
+   * undo the property this whole action is built around: the response must be
+   * identical whether the address exists, does not exist, or was refused, or the
+   * form becomes the account-enumeration oracle it refuses to be.
+   */
+  const throttle = await checkOriginRateLimit(RATE_LIMITS.passwordReset)
+  if (!throttle.allowed) {
+    await recordAuditEvent({
+      event: 'PASSWORD_RESET_REQUESTED',
+      summary: 'throttled: too many requests from this origin',
+    })
+    redirect('/forgot-password/sent')
+  }
 
   after(async () => {
     const [user] = await db

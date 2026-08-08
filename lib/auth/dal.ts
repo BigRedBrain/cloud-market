@@ -107,15 +107,25 @@ export async function requireRole(
   return user
 }
 
-/** Staff and admin. The fulfilment side of the app. */
-export async function requireStaff(): Promise<SessionUser> {
-  return requireRole('staff', 'admin')
-}
-
-/** Admin only. User administration, pricing, licensing. */
-export async function requireAdmin(): Promise<SessionUser> {
-  return requireRole('admin')
-}
+/**
+ * THERE IS DELIBERATELY NO `requireAdmin()` IN THIS MODULE ANY MORE.
+ *
+ * It used to be `requireRole('admin')`, and that was the whole of the admin
+ * authorization story: hold the role, get the keys. Phase 5 replaced it with an
+ * identity model — at most two named accounts may administer this store — and
+ * leaving a role-only helper here would have left the weaker check one import
+ * away from any new admin page somebody writes next year.
+ *
+ * Removing it rather than deprecating it was the point. Every former call site
+ * became a type error, which is how the section G audit was actually performed:
+ * the compiler enumerated them, not a grep that might have missed one.
+ *
+ * `requireStaff()` is gone for the same reason. It granted `staff` OR `admin`
+ * and had no live callers; a role-based door into the admin surface with nobody
+ * using it is a liability with no upside.
+ *
+ * Use `requireAdminIdentity()` from `lib/auth/admin-identity.ts`.
+ */
 
 /**
  * Non-redirecting permission probe, for conditionally rendering UI.
@@ -163,24 +173,24 @@ export const holdsPermission = cache(
 )
 
 /**
- * Requires a named permission. 403 when absent.
+ * `requirePermission()` HAS ALSO BEEN REMOVED, and its replacement lives in
+ * `lib/auth/admin-identity.ts` as `requireAdminPermission()`.
  *
- * DELIBERATELY DOES NOT ACCEPT `admin` AS A SUBSTITUTE. An administrator who
- * has not been granted `compliance_admin` is refused here exactly like a
- * customer would be. The people who may change a legal cap are a list somebody
- * signed, and the whole value of that list is that it is shorter than the list
- * of administrators.
+ * The old version checked the named grant and nothing else. That was correct
+ * about the thing it was worrying about — an administrator without
+ * `compliance_admin` must not publish a legal cap — but it quietly assumed the
+ * caller was an administrator in the first place, because in practice these
+ * screens were only reachable from `/admin`.
  *
- * The account must still be a real, verified, signed-in user — the permission
- * is an addition to authentication, never a replacement for it.
+ * That assumption is exactly what section H forbids. A customer who acquired a
+ * `compliance_admin` row by any means would have passed this check. The
+ * replacement establishes identity FIRST and reads the grant second, so the
+ * permission is an addition to administrative access rather than a route into
+ * it.
+ *
+ * `holdsPermission` below survives unchanged: it is the underlying probe, and
+ * it is still the right primitive once identity has been established.
  */
-export async function requirePermission(
-  permission: AdminPermission,
-): Promise<SessionUser> {
-  const user = await requireUser()
-  if (!(await holdsPermission(user.id, permission))) forbidden()
-  return user
-}
 
 /** Non-redirecting probe, for conditionally rendering a nav item. */
 export async function hasPermission(permission: AdminPermission): Promise<boolean> {

@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 
 import { BrandForm } from '@/components/admin/catalog-forms'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import { adminListBrands } from '@/lib/catalog/admin-queries'
 
 export const metadata: Metadata = {
@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 
 export default async function AdminBrandsPage() {
   // Authoritative check, in the page rather than the layout.
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const brands = await adminListBrands()
 

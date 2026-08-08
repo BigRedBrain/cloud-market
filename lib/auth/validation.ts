@@ -59,11 +59,35 @@ const dateOfBirth = z
     message: `You must be ${MINIMUM_AGE_YEARS} or older to create an account`,
   })
 
+/**
+ * The invite code field.
+ *
+ * PRESENCE is validated here; VALIDITY is not, and cannot be. Whether a code is
+ * real, live, unexpired and unexhausted is decided by a single conditional
+ * UPDATE inside the registration transaction (`lib/invites/redeem.ts`), because
+ * any check performed out here would be stale by the time the account was
+ * created.
+ *
+ * The only rule at this layer is "they typed something", and even the length
+ * bound is generous — a customer who pastes the code with stray spaces or
+ * without the `CM-` prefix should reach the normaliser, not be turned away by a
+ * regex. A code that fails the shape check gets the same generic message as one
+ * that does not exist, so this field can never be used to probe the format.
+ */
+const inviteCode = z
+  .string()
+  .trim()
+  .min(1, 'Enter your invite code')
+  .max(64, 'That is not a valid invite code')
+
 export const signUpSchema = z.object({
   email,
   password,
   dateOfBirth,
+  inviteCode,
   name: z.string().trim().min(1, 'Enter your name').max(120, 'Name is too long'),
+  /** Relative path only — see `safeRedirectPath`. */
+  next: z.string().optional(),
 })
 
 /**

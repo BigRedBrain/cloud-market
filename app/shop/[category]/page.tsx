@@ -8,7 +8,7 @@ import { CatalogFilters, CategoryChips } from '@/components/catalog/catalog-filt
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
 import { getBagCount } from '@/lib/bag/core'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { getCurrentUser, requireUser } from '@/lib/auth/dal'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Pagination, parseCatalogSearchParams } from '@/app/shop/page'
@@ -24,15 +24,32 @@ type CategoryPageProps = {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }
 
+/**
+ * Authorization-aware metadata. See the long note on the same function in
+ * `app/product/[slug]/page.tsx` — `generateMetadata` runs concurrently with the
+ * page component, so the page's `requireUser()` redirect cannot be relied on to
+ * suppress a category name that this function has already resolved.
+ */
 export async function generateMetadata({ params }: CategoryPageProps): Promise<Metadata> {
+  if (!(await getCurrentUser())) {
+    return {
+      title: 'Cloud Market',
+      description: 'Sign in to continue.',
+      robots: { index: false, follow: false },
+    }
+  }
+
   const { category: slug } = await params
   const category = await getCategoryBySlug(slug)
 
-  if (!category) return { title: 'Category not found' }
+  if (!category) {
+    return { title: 'Category not found', robots: { index: false, follow: false } }
+  }
 
   return {
     title: category.name,
     description: category.description ?? `Browse ${category.name} at Cloud Market.`,
+    robots: { index: false, follow: false },
   }
 }
 
@@ -47,8 +64,8 @@ export async function generateMetadata({ params }: CategoryPageProps): Promise<M
  * the category instead of silently navigating out of it.
  */
 export default async function CategoryPage({ params, searchParams }: CategoryPageProps) {
-  const bagViewer = await getCurrentUser()
-  const bagCount = await getBagCount(bagViewer?.id ?? null)
+  const bagViewer = await requireUser()
+  const bagCount = await getBagCount(bagViewer.id)
 
   const { category: slug } = await params
   const query = await searchParams

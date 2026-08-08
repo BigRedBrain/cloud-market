@@ -2,9 +2,11 @@
 
 import { and, eq, isNull, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+import type { Route } from 'next'
 import { z } from 'zod'
 
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import { db, schema } from '@/lib/db'
 import { withUpdatedAt } from '@/lib/db/schema'
 import {
@@ -18,7 +20,7 @@ import {
 /**
  * Catalogue administration.
  *
- * Every action starts with `requireAdmin()`. Server Actions are a public
+ * Every action starts with `requireAdminIdentity()`. Server Actions are a public
  * network boundary — the admin UI being unreachable to a customer protects
  * nothing, because the endpoint is callable directly. Hiding a form is not an
  * authorization check.
@@ -152,7 +154,7 @@ export async function saveBrandAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const parsed = parseInput(brandSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
@@ -180,7 +182,7 @@ export async function deleteBrandAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const id = String(formDataToObject(formData).id ?? '')
   if (!id) return fail('validation_error', 'Missing brand.')
@@ -219,7 +221,7 @@ export async function saveCategoryAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const parsed = parseInput(categorySchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
@@ -250,7 +252,7 @@ export async function deleteCategoryAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const id = String(formDataToObject(formData).id ?? '')
   if (!id) return fail('validation_error', 'Missing category.')
@@ -284,17 +286,23 @@ export async function saveProductAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const parsed = parseInput(productSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
   const { id, ...values } = parsed.data
 
+  let createdId: string | undefined
+
   try {
     if (id) {
       await db.update(schema.products).set(withUpdatedAt(values)).where(eq(schema.products.id, id))
     } else {
-      await db.insert(schema.products).values(values)
+      const [created] = await db
+        .insert(schema.products)
+        .values(values)
+        .returning({ id: schema.products.id })
+      createdId = created.id
     }
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -306,6 +314,24 @@ export async function saveProductAction(
   revalidatePath('/admin/products')
   revalidatePath('/shop')
   if (id) revalidatePath(`/admin/products/${id}`)
+
+  /**
+   * A new product goes straight to its editor, which opens on the media
+   * section.
+   *
+   * Creating one from the list page previously left the operator exactly where
+   * they started, with a success message and no obvious next step — so a product
+   * would routinely get its prices before it got a photograph, and reach the
+   * storefront as a placeholder tile. The redirect makes "now add a picture" the
+   * default path rather than something to remember.
+   *
+   * OUTSIDE the try/catch above: `redirect()` signals by throwing, and catching
+   * it here would swallow the navigation and report a spurious failure.
+   */
+  if (createdId) {
+    redirect(`/admin/products/${createdId}` as Route)
+  }
+
   return ok()
 }
 
@@ -313,7 +339,7 @@ export async function deleteProductAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const id = String(formDataToObject(formData).id ?? '')
   if (!id) return fail('validation_error', 'Missing product.')
@@ -337,7 +363,7 @@ export async function saveVariantAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const parsed = parseInput(variantSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
@@ -375,7 +401,7 @@ export async function deleteVariantAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const input = formDataToObject(formData)
   const id = String(input.id ?? '')

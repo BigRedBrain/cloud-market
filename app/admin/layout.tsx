@@ -4,6 +4,7 @@ import type { Route } from 'next'
 import { Logo } from '@/components/brand/logo'
 import { Button } from '@/components/ui/button'
 import { signOutAction } from '@/lib/auth/actions'
+import { isAdminIdentity, isOwnerIdentity } from '@/lib/auth/admin-identity'
 import { getCurrentUser, hasPermission } from '@/lib/auth/dal'
 
 /**
@@ -16,37 +17,60 @@ import { getCurrentUser, hasPermission } from '@/lib/auth/dal'
  *
  * Reads the user to render the header but performs NO authorization — layouts
  * do not re-render on navigation under partial rendering, so a guard here would
- * go stale between route changes. Every admin page calls `requireAdmin()`.
+ * go stale between route changes. Every admin page calls `requireAdminIdentity()`
+ * (or `requireOwner()` / `requireAdminPermission()`, which wrap it).
  */
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const user = await getCurrentUser()
 
   /**
-   * Purchase limits are gated on a grant, not on the admin role, so the tab is
-   * shown only to holders. This is presentation, not protection — the page runs
-   * its own `requirePermission`, and hiding a link has never stopped anyone
-   * typing the URL.
+   * EVERY PROBE HERE IS PRESENTATION, NOT PROTECTION.
+   *
+   * Each of these decides whether to draw a tab. None of them protects the page
+   * behind it — that page runs its own guard, and hiding a link has never
+   * stopped anyone typing the URL.
+   *
+   * `isAdminIdentity()` gates the ordinary tabs so that a signed-in customer who
+   * reaches this shell (because a child page is about to 403 them) is not handed
+   * a menu of the administrative surface to go and probe.
+   *
+   * The two compliance tabs additionally require their named grant: those
+   * screens are gated on a signed list, not on being an administrator, so an
+   * administrator without the grant does not see them.
    */
-  const compliance = await hasPermission('compliance_admin')
-  const catalogCompliance = await hasPermission('catalog_compliance_admin')
+  const isAdmin = await isAdminIdentity()
+  const isOwner = await isOwnerIdentity()
+  const compliance = isAdmin && (await hasPermission('compliance_admin'))
+  const catalogCompliance = isAdmin && (await hasPermission('catalog_compliance_admin'))
 
-  const tabs = [
-    { href: '/admin', label: 'Overview' },
-    { href: '/admin/products', label: 'Products' },
-    { href: '/admin/categories', label: 'Categories' },
-    { href: '/admin/brands', label: 'Brands' },
-    { href: '/admin/campaigns', label: 'Campaigns' },
-    { href: '/admin/collections', label: 'Collections' },
-    { href: '/admin/badges', label: 'Badges' },
-    { href: '/admin/homepage', label: 'Homepage' },
-    { href: '/admin/media', label: 'Media' },
-    ...(compliance
-      ? ([{ href: '/admin/purchase-limits', label: 'Purchase limits' }] as const)
-      : []),
-    ...(catalogCompliance
-      ? ([{ href: '/admin/catalog/compliance', label: 'Catalog compliance' }] as const)
-      : []),
-  ] as const
+  const tabs = !isAdmin
+    ? ([] as const)
+    : ([
+        { href: '/admin', label: 'Overview' },
+        { href: '/admin/products', label: 'Products' },
+        { href: '/admin/categories', label: 'Categories' },
+        { href: '/admin/brands', label: 'Brands' },
+        { href: '/admin/campaigns', label: 'Campaigns' },
+        { href: '/admin/collections', label: 'Collections' },
+        { href: '/admin/badges', label: 'Badges' },
+        { href: '/admin/homepage', label: 'Homepage' },
+        { href: '/admin/media', label: 'Media' },
+        { href: '/admin/invites', label: 'Invites' },
+        ...(compliance
+          ? ([{ href: '/admin/purchase-limits', label: 'Purchase limits' }] as const)
+          : []),
+        ...(catalogCompliance
+          ? ([{ href: '/admin/catalog/compliance', label: 'Catalog compliance' }] as const)
+          : []),
+        /**
+         * Owner only, and the page behind it is `requireOwner()`. The backup
+         * administrator must not be able to reach the controls that would let
+         * them appoint a second backup or remove themselves from oversight.
+         */
+        ...(isOwner
+          ? ([{ href: '/admin/security/admin-access', label: 'Security' }] as const)
+          : []),
+      ] as const)
 
   return (
     <>

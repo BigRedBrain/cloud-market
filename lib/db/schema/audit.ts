@@ -120,6 +120,51 @@ export const auditEvent = pgEnum('audit_event', [
   'CATALOG_COMPLIANCE_CHANGED',
   'CATALOG_COMPLIANCE_REJECTED',
   'CHECKOUT_BLOCKED_BY_GATE',
+
+  /* --- Administrative identity (Phase 5) --------------------------------
+   *
+   * There are at most two administrators, and one of them cannot be changed
+   * through the application at all. That makes filling or emptying the single
+   * backup slot the highest-privilege write in the system — it is the only way
+   * the set of people who can administer this store ever changes.
+   *
+   * DENIED attempts are recorded as loudly as successful ones. An
+   * `ADMIN_ACCESS_DENIED` burst against /admin/security is what an attempted
+   * privilege escalation looks like from the outside, and a log that only
+   * records successes would show nothing at all during one.
+   */
+  'BACKUP_ADMIN_ASSIGNED',
+  'BACKUP_ADMIN_REMOVED',
+  'ADMIN_ACCESS_DENIED',
+  'OWNER_IDENTITY_MISCONFIGURED',
+
+  /* --- Invites (Phase 5) -------------------------------------------------
+   *
+   * PRIVACY RULE: the raw code never appears in `summary` or any other column,
+   * on any of these events. The masked prefix (`CM-ABCD-••••`) is what gets
+   * written, which is enough to identify which invite an entry is about without
+   * the log becoming a place to harvest working invites.
+   */
+  'INVITE_CREATED',
+  'INVITE_DEACTIVATED',
+  'INVITE_REDEEMED',
+  'INVITE_REDEMPTION_FAILED',
+
+  /* --- Payments (Phase 5) ------------------------------------------------
+   *
+   * Configuration and refunds are owner-only, and both are audited with the
+   * reason the operator gave. Webhook rejections are audited because a run of
+   * them is either a provider misconfiguration or someone forging callbacks,
+   * and both need to be visible.
+   */
+  'PAYMENT_INTENT_CREATED',
+  'PAYMENT_INTENT_CONFIRMED',
+  'PAYMENT_INTENT_EXPIRED',
+  'PAYMENT_INTENT_FAILED',
+  'PAYMENT_WEBHOOK_REJECTED',
+  'PAYMENT_REFUND_REQUESTED',
+  'PAYMENT_REFUND_COMPLETED',
+  'PAYMENT_CONFIG_CHANGED',
 ])
 
 export const auditLog = pgTable(

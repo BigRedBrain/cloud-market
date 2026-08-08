@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 
 export const metadata: Metadata = {
   title: 'Admin',
@@ -16,12 +16,12 @@ export const metadata: Metadata = {
  * intensity scale does not scale down still applies unchanged: focus rings,
  * press physics, and contrast are identical to the hero.
  *
- * Deliberately minimal. This exists so the `requireAdmin` role gate is
+ * Deliberately minimal. This exists so the `requireAdminIdentity` gate is
  * exercised by a real route rather than only by unit assertions; the actual
  * admin surface is Phase 2 work.
  */
 export default async function AdminPage() {
-  const admin = await requireAdmin()
+  const { user: admin } = await requireAdminIdentity()
 
   return (
     <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-10 sm:px-6">

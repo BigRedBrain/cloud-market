@@ -7,7 +7,7 @@ import {
 } from '@/components/admin/cms-forms'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import {
   adminGetProductBadgeIds,
   adminListBadges,
@@ -33,7 +33,7 @@ type AllowedVariant = (typeof ALLOWED)[number]
  * picks from the existing visual language rather than introducing a new one.
  */
 export default async function AdminBadgesPage() {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const [badges, products] = await Promise.all([
     adminListBadges(),

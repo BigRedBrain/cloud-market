@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 
 import { recordAuditEvent } from '@/lib/auth/audit'
-import { requirePermission } from '@/lib/auth/dal'
+import { requireAdminPermission } from '@/lib/auth/admin-identity'
 import {
   classifyVariants,
   describeRejection,
@@ -25,7 +25,7 @@ import { eq, inArray } from 'drizzle-orm'
 /**
  * Catalog compliance actions.
  *
- * EVERY ONE STARTS WITH `requirePermission('catalog_compliance_admin')`. Not the
+ * EVERY ONE STARTS WITH `requireAdminPermission('catalog_compliance_admin')`. Not the
  * page — the page hiding a control protects nothing, because a Server Action is
  * a public POST endpoint reachable by anyone who can read an action id out of
  * any page that embeds it. The grant is also NOT implied by `admin`: an
@@ -67,7 +67,7 @@ export async function classifyVariantAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const user = await requirePermission('catalog_compliance_admin')
+  const { user } = await requireAdminPermission('catalog_compliance_admin')
 
   const parsed = parseInput(classifySchema, formDataToObject(formData))
   if (!parsed.ok) return parsed
@@ -152,7 +152,7 @@ export async function previewBulkClassifyAction(
   _previous: ActionResult<string> | null,
   formData: FormData,
 ): Promise<ActionResult<string>> {
-  const user = await requirePermission('catalog_compliance_admin')
+  const { user } = await requireAdminPermission('catalog_compliance_admin')
   void user
 
   const parsed = parseInput(bulkSchema, formDataToObject(formData))
@@ -210,7 +210,7 @@ export async function bulkClassifyAction(
   _previous: ActionResult<void> | null,
   formData: FormData,
 ): Promise<ActionResult<void>> {
-  const user = await requirePermission('catalog_compliance_admin')
+  const { user } = await requireAdminPermission('catalog_compliance_admin')
 
   const parsed = parseInput(bulkSchema, formDataToObject(formData))
   if (!parsed.ok) return parsed

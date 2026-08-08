@@ -7,7 +7,7 @@ import {
   toggleCollectionProductAction,
 } from '@/components/admin/cms-forms'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import {
   adminGetCollectionProductIds,
   adminListCollections,
@@ -26,7 +26,7 @@ export const metadata: Metadata = {
  * and a product can be in as many as the owner likes.
  */
 export default async function AdminCollectionsPage() {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const [collections, products] = await Promise.all([
     adminListCollections(),

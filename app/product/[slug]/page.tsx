@@ -5,9 +5,10 @@ import { notFound } from 'next/navigation'
 
 import { AddToBagForm } from '@/components/bag/bag-controls'
 import { ProductCard } from '@/components/product-card'
+import { ProductGallery } from '@/components/catalog/product-gallery'
 import { SiteNav } from '@/components/site-nav'
 import { getBagCount } from '@/lib/bag/core'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { getCurrentUser, requireUser } from '@/lib/auth/dal'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { getProductBySlug, listProducts } from '@/lib/catalog/queries'
@@ -15,15 +16,45 @@ import { formatCents } from '@/lib/money'
 
 type ProductPageProps = { params: Promise<{ slug: string }> }
 
+/**
+ * Metadata is authorization-aware, and on a private storefront it has to be.
+ *
+ * `generateMetadata` runs as part of rendering, alongside the page component
+ * rather than after it. So on an anonymous request the page's `requireUser()`
+ * raises its redirect while THIS function is independently querying the catalog
+ * and putting a real product name into a `<title>`. Relying on the redirect to
+ * suppress it is relying on a race.
+ *
+ * The cost of getting it wrong is not hypothetical: `<title>` and
+ * `og:description` are the first things a crawler, a link unfurler or a shared
+ * URL preview reads, and they are the parts of a page most likely to escape it.
+ * A private cannabis storefront leaking product names through a Slack preview
+ * has leaked them, whatever the page body did.
+ *
+ * So the real title is emitted only to a session holder, and everyone else gets
+ * a constant that describes nothing. `getCurrentUser` rather than `requireUser`
+ * because throwing a redirect out of metadata generation is not its job — the
+ * page component owns that, and does it.
+ */
+const PRIVATE_METADATA: Metadata = {
+  title: 'Cloud Market',
+  description: 'Sign in to continue.',
+  robots: { index: false, follow: false },
+}
+
 export async function generateMetadata({ params }: ProductPageProps): Promise<Metadata> {
+  if (!(await getCurrentUser())) return PRIVATE_METADATA
+
   const { slug } = await params
   const detail = await getProductBySlug(slug)
 
-  if (!detail) return { title: 'Product not found' }
+  if (!detail) return { title: 'Product not found', robots: { index: false, follow: false } }
 
   return {
     title: detail.product.name,
     description: detail.product.shortDescription ?? undefined,
+    /** Nothing on a private storefront is indexable, including this page. */
+    robots: { index: false, follow: false },
   }
 }
 
@@ -51,17 +82,16 @@ function Spec({ label, value }: { label: string; value: string | null }) {
  
  */
 export default async function ProductPage({ params }: ProductPageProps) {
-  const bagViewer = await getCurrentUser()
-  const bagCount = await getBagCount(bagViewer?.id ?? null)
+  const bagViewer = await requireUser()
+  const bagCount = await getBagCount(bagViewer.id)
 
   const { slug } = await params
   const detail = await getProductBySlug(slug)
   if (!detail) notFound()
 
-  const { product, brand, category, variants, images } = detail
+  const { product, brand, category, variants, media } = detail
 
   const totalStock = variants.reduce((sum, variant) => sum + variant.inventoryQuantity, 0)
-  const primary = images[0]
 
   const related = await listProducts({ category: category.slug, sort: 'featured' })
   const alsoLike = related.products.filter((item) => item.slug !== product.slug).slice(0, 3)
@@ -98,41 +128,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
 
         <div className="grid gap-8 lg:grid-cols-2 lg:items-start">
           {/* ---- Imagery ------------------------------------------------- */}
-          <div className="flex flex-col gap-3">
-            <div className="panel overflow-hidden rounded-lg bg-ink-700">
-              {primary ? (
-                // eslint-disable-next-line @next/next/no-img-element -- next/image lands with Blob uploads in a later phase.
-                <img
-                  src={primary.url}
-                  alt={primary.altText}
-                  width={640}
-                  height={480}
-                  className="aspect-4/3 w-full object-cover"
-                />
-              ) : (
-                <div aria-hidden="true" className="halftone aspect-4/3 w-full text-smoke opacity-40" />
-              )}
-            </div>
-
-            {images.length > 1 && (
-              <ul className="grid grid-cols-4 gap-3">
-                {images.slice(1).map((image) => (
-                  <li key={image.url} className="panel-sm overflow-hidden rounded-md bg-ink-700">
-                    {/* eslint-disable-next-line @next/next/no-img-element -- see above */}
-                    <img
-                      src={image.url}
-                      alt={image.altText}
-                      width={160}
-                      height={120}
-                      loading="lazy"
-                      decoding="async"
-                      className="aspect-4/3 w-full object-cover"
-                    />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <ProductGallery media={media} productName={product.name} />
 
           {/* ---- Detail -------------------------------------------------- */}
           <div className="flex flex-col gap-5">

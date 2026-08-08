@@ -5,6 +5,7 @@ import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { cookies } from 'next/headers'
 
 import { db, schema } from '@/lib/db'
+import { mediaHref } from '@/lib/media/constants'
 
 /**
  * Bag identity and reads.
@@ -256,7 +257,7 @@ export async function getBag(userId: string | null): Promise<BagView> {
     ? await db
         .select({
           slug: schema.products.slug,
-          url: schema.media.url,
+          mediaId: schema.media.id,
           isPrimary: schema.productMedia.isPrimary,
         })
         .from(schema.productMedia)
@@ -268,7 +269,8 @@ export async function getBag(userId: string | null): Promise<BagView> {
 
   const imageBySlug = new Map<string, string>()
   for (const image of images) {
-    if (!imageBySlug.has(image.slug)) imageBySlug.set(image.slug, image.url)
+    /** The authenticated route, never the storage URL — see `lib/media/serve.ts`. */
+    if (!imageBySlug.has(image.slug)) imageBySlug.set(image.slug, mediaHref(image.mediaId))
   }
 
   const lines: BagLine[] = rows.map((row) => {

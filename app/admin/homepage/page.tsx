@@ -3,7 +3,7 @@ import type { Metadata } from 'next'
 import { HomepageSectionForm, StatusPill } from '@/components/admin/cms-forms'
 import { Alert } from '@/components/ui/feedback'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { requireAdmin } from '@/lib/auth/dal'
+import { requireAdminIdentity } from '@/lib/auth/admin-identity'
 import {
   adminListCampaigns,
   adminListCollections,
@@ -27,7 +27,7 @@ export const metadata: Metadata = {
  * changes here — only where the content comes from.
  */
 export default async function AdminHomepagePage() {
-  await requireAdmin()
+  await requireAdminIdentity()
 
   const [sections, campaigns, collections] = await Promise.all([
     adminListHomepageSections(),
