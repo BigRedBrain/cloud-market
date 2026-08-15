@@ -268,8 +268,12 @@ export function ProductForm({
                   <select name="strainType" defaultValue={product?.strainType ?? ''} className={selectClass} {...props}>
                     <option value="">None</option>
                     <option value="indica">Indica</option>
+                    <option value="">None</option>
+                    <option value="indica">Indica</option>
                     <option value="sativa">Sativa</option>
                     <option value="hybrid">Hybrid</option>
+                    <option value="hybrid_i">Hybrid I</option>
+                    <option value="hybrid_s">Hybrid S</option>
                     <option value="cbd">CBD</option>
                   </select>
                 )}

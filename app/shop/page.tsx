@@ -24,7 +24,14 @@ export const metadata: Metadata = {
 }
 
 const SORTS: CatalogSort[] = ['featured', 'newest', 'price-asc', 'price-desc', 'name']
-const STRAINS: StrainType[] = ['indica', 'sativa', 'hybrid', 'cbd']
+const STRAINS: StrainType[] = [
+  'indica',
+  'sativa',
+  'hybrid',
+  'hybrid_i',
+  'hybrid_s',
+  'cbd',
+]
 
 /**
  * Normalises untrusted query strings into typed filters.

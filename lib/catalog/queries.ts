@@ -93,9 +93,16 @@ function toCardProduct(
   summary: VariantSummary | null,
   imageUrl: string | undefined,
 ): CardProduct {
-  const strain = product.strainType
-    ? product.strainType.charAt(0).toUpperCase() + product.strainType.slice(1)
-    : null
+  const strainLabels: Record<schema.StrainType, string> = {
+  indica: 'Indica',
+  sativa: 'Sativa',
+  hybrid: 'Hybrid',
+  hybrid_i: 'Hybrid I',
+  hybrid_s: 'Hybrid S',
+  cbd: 'CBD',
+}
+
+const strain = product.strainType ? strainLabels[product.strainType] : null
 
   return {
     id: product.id,

@@ -240,7 +240,14 @@ export default async function ProductPage({ params }: ProductPageProps) {
                   label="Strain type"
                   value={
                     product.strainType
-                      ? product.strainType.charAt(0).toUpperCase() + product.strainType.slice(1)
+                      ? {
+                          indica: 'Indica',
+                          sativa: 'Sativa',
+                          hybrid: 'Hybrid',
+                          hybrid_i: 'Hybrid I',
+                          hybrid_s: 'Hybrid S',
+                          cbd: 'CBD',
+                        }[product.strainType]
                       : null
                   }
                 />
