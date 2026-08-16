@@ -1,10 +1,46 @@
-# Cloud Market — design system
+# Cloud Market — design system *(legacy reference)*
 
-> **Status: FROZEN.** This system is a product asset, not an open question.
-> From Phase 1 onward, features *consume* it — Authentication, the store
-> engine, catalogue, cart, and orders all build inside these rules rather than
-> introducing their own visual language. Changes require a bug, not a
-> preference.
+> **Status: SUPERSEDED — historical engineering reference.**
+>
+> This document is no longer the product direction. It describes the design
+> system built for the earlier Cloud Market product: a single licensed Michigan
+> dispensary with a public storefront. CloudMarket is now a private,
+> membership-gated, multi-vendor marketplace, and the visual direction has
+> changed with it.
+>
+> **`CLOUDMARKET_MASTER_WEBSITE_APP_SPEC.md` is the current source of truth**
+> for product direction, branding, marketplace architecture, and visual
+> direction. **Where this document conflicts with the master spec, the master
+> spec wins** — including on palette, typography, mascot and logo direction,
+> product-card treatment, the public/private boundary, and the brand intensity
+> assigned to any given screen.
+>
+> **What remains in force.** The engineering underneath this system was not
+> superseded, and most of it is what the master spec asks for. Continue to
+> follow it wherever it does not conflict with the master spec:
+>
+> - **Accessibility** — the ink-on-bright-fill contrast rule (§1), measured
+>   contrast pairings, focus-ring treatment, colour never carrying meaning
+>   alone, 44px touch targets.
+> - **Reduced motion** — keyframes declared only inside
+>   `prefers-reduced-motion: no-preference`, with every element's resting CSS
+>   being its *finished* state, so reduced motion is an alternative rather than
+>   a removal (§7).
+> - **Performance** — transform-and-opacity-only animation, no `feTurbulence`,
+>   no `filter: blur()` on large elements, CSS over JavaScript animation
+>   runtimes, the RSC-by-default component rule, and the measured budgets (§8).
+> - **Component architecture** — the token layer, semantic aliases, the
+>   `[data-surface="paper"]` scope flip, CVA variants, and the structural
+>   decisions inside each component (§5).
+> - **Interaction** — press physics, feedback-vs-decoration (which is a
+>   permanent engineering principle, not a style note), form error signalling,
+>   loading and empty-state behaviour.
+> - **Brand intensity as a concept** (§9) — the scale itself remains the right
+>   governance tool. The specific surfaces and percentages are re-derived from
+>   the master spec.
+>
+> Read the colour values, font choices, copy, and business framing below as a
+> record of what was built, not as instructions.
 
 Urban hip-hop flyer meets comic-book panel. Charcoal foundation, thick ink
 outlines, hard zero-blur offset shadows, halftone shading.
