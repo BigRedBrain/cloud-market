@@ -1,17 +1,25 @@
 import type { Metadata, Viewport } from 'next'
-import { Anton, Archivo, Space_Mono } from 'next/font/google'
+import { Anton, Archivo, Permanent_Marker, Space_Mono } from 'next/font/google'
 
 import { AnnouncementBar } from '@/components/cms/announcement-bar'
 import { clientEnv } from '@/lib/env'
 import './globals.css'
 
 /**
- * Three faces, three jobs.
+ * Four faces, four jobs.
  *
- * Anton — display only. A condensed poster weight that carries the flyer/comic
- * cover energy the brand is built on. It has one weight and no italic, which is
- * a feature: it forces headlines to stay short and loud instead of sprawling.
- * Never used below ~1.5rem, never for prose.
+ * Permanent Marker — the CloudMarket brand voice. Hero headlines, comic
+ * callouts, promotional display type, and the wordmark's typographic echo.
+ * Single weight, no italic, and a marker texture that closes up fast, so it is
+ * reserved for large branded moments. Per the master spec it must never carry
+ * prices, potency figures, inventory, form labels, legal copy, admin or vendor
+ * table data, long prose, or small utility text — and never takes negative
+ * letter-spacing (see the exception in globals.css).
+ *
+ * Anton — poster display. A condensed weight that carries flyer/comic-cover
+ * energy at section-heading scale, where Permanent Marker would shout. It has
+ * one weight and no italic, which is a feature: it forces headings to stay
+ * short. Never used below ~1.5rem, never for prose.
  *
  * Archivo — everything readable. A variable grotesque with a wide weight range
  * and a large x-height, which is what keeps dense product copy and checkout
@@ -20,7 +28,21 @@ import './globals.css'
  * Space Mono — data with character. Prices, weights, THC percentages, licence
  * and order numbers. Its quirks read as street-print rather than terminal, and
  * fixed advance widths stop totals jittering as they update.
+ *
+ * The `--font-display` / `--font-sans` / `--font-mono` variable names are kept
+ * exactly as they were so every existing `font-display` / `font-sans` /
+ * `font-mono` utility keeps resolving. globals.css layers the CloudMarket
+ * semantic names (`--font-brand` / `--font-poster` / `--font-ui` /
+ * `--font-data`) on top of them additively.
  */
+const brand = Permanent_Marker({
+  variable: '--font-brand',
+  subsets: ['latin'],
+  // Permanent Marker is not a variable font, so a weight is required.
+  weight: '400',
+  display: 'swap',
+})
+
 const display = Anton({
   variable: '--font-display',
   subsets: ['latin'],
@@ -95,7 +117,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`dark ${display.variable} ${sans.variable} ${mono.variable} h-full`}
+      className={`dark ${brand.variable} ${display.variable} ${sans.variable} ${mono.variable} h-full`}
     >
       <body className="flex min-h-full flex-col">
         <AnnouncementBar />

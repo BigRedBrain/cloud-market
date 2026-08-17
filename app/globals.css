@@ -67,6 +67,75 @@
   --volt: oklch(0.862 0.229 148); /* electric green — selective only */
   --volt-deep: oklch(0.732 0.201 148);
 
+  /* ======================================================================
+   * CloudMarket brand layer (Phase A foundation)
+   * ======================================================================
+   *
+   * The approved CloudMarket palette is Cloud White / Pearl / Dark Smoke /
+   * Smoke Gray / Signal Yellow / Fire Red. Five of those six already existed
+   * under the previous product's names, so they are introduced here as ALIASES
+   * onto the existing ramp rather than as new values. Nothing above this block
+   * changes, which is what keeps the live site pixel-identical while the
+   * CloudMarket vocabulary becomes available to new work.
+   *
+   * Only Signal Yellow is a genuinely new colour.
+   */
+
+  /* The one new value. Measured against the ink-on-bright-fill rule (§1 of the
+     legacy DESIGN.md, still in force): ink text on this fill is 13.53:1, and
+     the fill as text on the page foundation is 12.53:1 — both clear AA with
+     room. White on it is 1.52:1, which is exactly why bright fills take ink. */
+  --signal-yellow: oklch(0.86 0.185 96);
+
+  /* Aliases. Same values, CloudMarket names. */
+  --cloud-white: var(--white);
+  --pearl: var(--cream);
+  --dark-smoke: var(--ink-900);
+  --dark-smoke-deep: var(--ink-950);
+  --smoke-gray: var(--smoke);
+  --fire-red: var(--flare);
+
+  /* Green is NOT a CloudMarket brand colour. It survives in exactly one job —
+     "you can buy this right now" — and this token is the only sanctioned way
+     to reach it. Do not use it for primary, focus, or success treatments. */
+  --status-instock: var(--volt);
+
+  /* ---- Fire -------------------------------------------------------------
+   * Signal Yellow → Ember → Fire Red. Ember is deliberately NOT a brand
+   * colour; it exists only as the middle stop, because a flame that steps
+   * straight from yellow to red loses the heat gradient that makes it read as
+   * fire rather than as a warning stripe.
+   *
+   * 180deg puts the tip at the top and the base at the bottom, matching how
+   * the existing SVG flame gradients are already wound.
+   */
+  --fire-tip: var(--signal-yellow);
+  --fire-core: var(--ember);
+  --fire-base: var(--fire-red);
+  --fire-gradient: linear-gradient(
+    180deg,
+    var(--fire-tip) 0%,
+    var(--fire-core) 55%,
+    var(--fire-base) 100%
+  );
+
+  /* ---- Motion timing ----------------------------------------------------
+   * Named durations so "how fast" stops being retyped per component. The
+   * drift periods are co-prime on purpose — the three ambient layers must
+   * never visibly loop in sync, which is why they are 37/43/53 and not
+   * 40/45/50. These are the values the existing smoke keyframes already run
+   * at; naming them here does not change any current animation.
+   */
+  --motion-instant: 100ms; /* press */
+  --motion-fast: 150ms; /* hover, lift */
+  --motion-base: 250ms; /* panel and card transitions */
+  --motion-entrance: 400ms; /* fade-in */
+  --motion-brand: 1100ms; /* flame grow, cloud ink-draw */
+  --motion-mascot: 12s; /* mascot/cart traverse */
+  --motion-drift-a: 37s;
+  --motion-drift-b: 43s;
+  --motion-drift-c: 53s;
+
   /* ---- Semantic surfaces ----------------------------------------------- */
   --background: var(--ink-900);
   --foreground: var(--white);
@@ -193,6 +262,18 @@
   --color-flare: var(--flare);
   --color-flare-deep: var(--flare-deep);
 
+  /* CloudMarket palette, addressable as utilities (bg-signal-yellow,
+     text-pearl, border-dark-smoke-deep …). Additive — the legacy names above
+     keep working, so no existing component has to be touched. */
+  --color-cloud-white: var(--cloud-white);
+  --color-pearl: var(--pearl);
+  --color-dark-smoke: var(--dark-smoke);
+  --color-dark-smoke-deep: var(--dark-smoke-deep);
+  --color-smoke-gray: var(--smoke-gray);
+  --color-signal-yellow: var(--signal-yellow);
+  --color-fire-red: var(--fire-red);
+  --color-status-instock: var(--status-instock);
+
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -202,6 +283,15 @@
   --font-display: var(--font-display), 'Arial Narrow', ui-sans-serif, sans-serif;
   --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-mono), ui-monospace, monospace;
+
+  /* CloudMarket semantic type roles. `font-poster` / `font-ui` / `font-data`
+     are new names for the three faces already in use, so adopting them is a
+     rename at the call site and never a visual change. `font-brand` is the
+     only one that resolves to a new family. */
+  --font-brand: var(--font-brand), ui-sans-serif, sans-serif;
+  --font-poster: var(--font-display), 'Arial Narrow', ui-sans-serif, sans-serif;
+  --font-ui: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-data: var(--font-mono), ui-monospace, monospace;
 
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
@@ -440,6 +530,24 @@
   h3 {
     @apply font-display tracking-tight;
     letter-spacing: -0.01em;
+  }
+
+  /*
+   * Permanent Marker letter-spacing exception.
+   *
+   * The heading rule above tightens h1–h3 by -0.01em, which is correct for a
+   * condensed poster face and actively damaging for a marker script: the
+   * strokes already touch, so negative tracking collides them and the word
+   * turns into a blob at exactly the sizes the brand font is used at.
+   *
+   * The class selector (0,1,0) outranks the element selector (0,0,1), so any
+   * heading that opts into `font-brand` gets normal tracking back without the
+   * call site having to remember. Applying `tracking-tight` explicitly
+   * alongside `font-brand` would still win the cascade — that combination is
+   * forbidden by the master spec, not by this rule.
+   */
+  .font-brand {
+    letter-spacing: normal;
   }
 
   /*
