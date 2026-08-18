@@ -31,8 +31,10 @@ const TONES = {
   },
   success: {
     icon: CheckCircle2,
-    rule: 'border-l-volt',
-    accent: 'text-volt',
+    // Signal Yellow, not stock green. A success alert is a general UI state,
+    // and green is reserved for in-stock/availability via --status-instock.
+    rule: 'border-l-signal-yellow',
+    accent: 'text-signal-yellow',
     role: 'status' as const,
   },
   warning: {
@@ -138,7 +140,7 @@ export function StatusPanel({
           <span
             aria-hidden="true"
             className={cn(
-              'absolute size-12 rounded-full border-2 border-volt',
+              'absolute size-12 rounded-full border-2 border-signal-yellow',
               'animate-[success-ring_700ms_ease-out_both] motion-reduce:animate-none',
               'motion-reduce:opacity-0',
             )}

@@ -50,7 +50,7 @@ export const metadata: Metadata = {
  */
 
 const STATE_TONE = {
-  effective: 'volt',
+  effective: 'signal',
   scheduled: 'ember',
   cancelled: 'smoke',
   superseded: 'outline',

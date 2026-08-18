@@ -122,7 +122,7 @@ function PublishFields({
 
 /** Live / scheduled / draft, using the frozen Badge variants. */
 export function StatusPill({ status, liveNow }: { status: string; liveNow?: boolean }) {
-  if (liveNow) return <Badge variant="volt">Live now</Badge>
+  if (liveNow) return <Badge variant="signal">Live now</Badge>
   if (status === 'scheduled') return <Badge variant="ember">Scheduled</Badge>
   if (status === 'archived') return <Badge variant="outline">Archived</Badge>
   if (status === 'published') return <Badge variant="smoke">Published — outside window</Badge>
@@ -355,7 +355,7 @@ export function MembershipToggles({
                 <Button
                   type="submit"
                   size="sm"
-                  variant={isSelected ? 'volt' : 'outline'}
+                  variant={isSelected ? 'confirm' : 'outline'}
                   aria-pressed={isSelected}
                 >
                   {isSelected ? '✓ ' : '+ '}

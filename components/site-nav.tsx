@@ -78,10 +78,10 @@ export function SiteNav({ bagCount = 0 }: SiteNavProps) {
                     'inline-flex h-10 items-center rounded-md px-3',
                     'font-sans text-sm font-semibold text-cream',
                     'transition-colors hover:bg-cream/10',
-                    // Underline is drawn in volt on hover — colour alone never
+                    // Underline is drawn in Signal Yellow on hover — colour alone never
                     // carries the affordance, the movement does too.
                     'relative after:absolute after:inset-x-3 after:bottom-1.5 after:h-0.5',
-                    'after:scale-x-0 after:bg-volt after:transition-transform',
+                    'after:scale-x-0 after:bg-signal-yellow after:transition-transform',
                     'hover:after:scale-x-100',
                   )}
                 >

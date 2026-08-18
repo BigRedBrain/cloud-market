@@ -110,7 +110,7 @@ export function SessionList({
                   <span className="text-sm font-semibold text-white">
                     {describeDevice(session.userAgent)}
                   </span>
-                  {isCurrent && <Badge variant="volt">This device</Badge>}
+                  {isCurrent && <Badge variant="signal">This device</Badge>}
                 </div>
                 <p className="font-mono text-xs text-smoke">
                   {session.ipAddress ?? 'Unknown IP'} · last active{' '}

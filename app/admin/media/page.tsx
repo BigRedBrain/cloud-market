@@ -65,7 +65,7 @@ export default async function AdminMediaPage() {
               <CardTitle className="flex flex-wrap items-center gap-3 text-base">
                 <span>{asset.title ?? 'Untitled'}</span>
                 {asset.usageCount > 0 ? (
-                  <Badge variant="volt">
+                  <Badge variant="signal">
                     Used {asset.usageCount}×
                   </Badge>
                 ) : (

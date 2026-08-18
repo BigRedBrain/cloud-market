@@ -946,7 +946,7 @@ export default function DesignSystemPage() {
                 </p>
                 <div className="flex flex-wrap items-center gap-3">
                   <Button variant="primary">Apply to shop</Button>
-                  <Button variant="volt">Confirm</Button>
+                  <Button variant="confirm">Confirm</Button>
                   <Button variant="destructive">Revoke invite</Button>
                   <Button variant="paper">View drop</Button>
                   <Button variant="outline">Keep browsing</Button>
@@ -1301,6 +1301,52 @@ export default function DesignSystemPage() {
                   />
                 </tbody>
               </table>
+            </Card>
+
+            {/* Keyboard focus across the three surface types it has to survive. */}
+            <Card className="flex flex-col gap-5 p-6">
+              <div>
+                <p className="font-poster text-lg tracking-tight text-cloud-white uppercase">
+                  Keyboard focus
+                </p>
+                <p className="mt-1 max-w-2xl font-ui text-sm text-smoke-gray">
+                  Tab through the three controls below. The ring is two layers —
+                  a Signal Yellow halo outside a Dark Smoke contrast ring — so at
+                  least one layer always separates from whatever is underneath.
+                  A single yellow ring would disappear on the yellow control.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-5">
+                <div className="flex flex-col items-center gap-2">
+                  <Button variant="confirm">Signal Yellow</Button>
+                  <p className="font-data text-[0.625rem] text-smoke-gray">
+                    dark layer carries it
+                  </p>
+                </div>
+                <div className="flex flex-col items-center gap-2">
+                  <Button variant="paper">Pearl / White</Button>
+                  <p className="font-data text-[0.625rem] text-smoke-gray">
+                    both layers read
+                  </p>
+                </div>
+                <div className="flex flex-col items-center gap-2">
+                  <Button variant="outline">Dark Smoke</Button>
+                  <p className="font-data text-[0.625rem] text-smoke-gray">
+                    yellow halo carries it
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4 border-t border-ink-600 pt-5">
+                <Badge variant="volt">In stock</Badge>
+                <Badge variant="signal">Email verified</Badge>
+                <p className="font-ui text-sm text-smoke-gray">
+                  Two different jobs, two different colours: green means{' '}
+                  <span className="font-data">available</span> and nothing else;
+                  Signal Yellow carries focus, confirmation and emphasis.
+                </p>
+              </div>
             </Card>
 
             <div className="flex flex-col gap-2">

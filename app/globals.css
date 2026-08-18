@@ -100,6 +100,24 @@
      to reach it. Do not use it for primary, focus, or success treatments. */
   --status-instock: var(--volt);
 
+  /* ---- Focus ------------------------------------------------------------
+   * Keyboard focus is two layers, not one, and the reason is Signal Yellow
+   * itself: it is now both the primary emphasis colour and the focus colour,
+   * so a plain yellow ring vanishes the moment it lands on a yellow control.
+   *
+   * Pairing it with a Dark Smoke contrast layer means at least one of the two
+   * always separates from whatever is underneath:
+   *
+   *   yellow control  → the dark layer carries it
+   *   pearl / white   → both layers read
+   *   dark control    → the yellow halo carries it
+   *
+   * Crisp rings only. No blur — a soft focus glow reads as neon and, worse,
+   * gets thrown away by forced-colours modes that keep a solid outline.
+   */
+  --focus-ring: var(--signal-yellow);
+  --focus-ring-contrast: var(--dark-smoke-deep);
+
   /* ---- Fire -------------------------------------------------------------
    * Signal Yellow → Ember → Fire Red. Ember is deliberately NOT a brand
    * colour; it exists only as the middle stop, because a flame that steps
@@ -155,14 +173,16 @@
 
   --destructive: var(--flare);
   --destructive-foreground: var(--ink-950);
-  --success: var(--volt);
+  /* Generic success is a UI state, not an availability signal, so it takes
+     the brand emphasis colour rather than the stock green. */
+  --success: var(--signal-yellow);
   --success-foreground: var(--ink-950);
   --warning: var(--ember);
   --warning-foreground: var(--ink-950);
 
   --border: var(--ink-600);
   --input: var(--ink-600);
-  --ring: var(--volt);
+  --ring: var(--focus-ring);
 
   /* Ink outline weight. Panels use `ink`, controls use `ink-thin`. */
   --outline-ink: 2px;
@@ -243,6 +263,8 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-focus-ring: var(--focus-ring);
+  --color-focus-ring-contrast: var(--focus-ring-contrast);
 
   /* Brand colours addressable directly, for cases the semantic layer would
      obscure — a halftone tint, a sticker fill, a chart series. */
@@ -571,9 +593,29 @@
    * ring with an ink gap stays visible against charcoal, cream paper panels,
    * and bright fills alike — the one treatment that works everywhere.
    */
+  /*
+   * Two layers, drawn with two different mechanisms so neither can cancel the
+   * other out:
+   *
+   *   - `outline` paints the Signal Yellow halo on the outside;
+   *   - `box-shadow` paints a Dark Smoke ring that exactly fills the 2px
+   *     `outline-offset` gap, so the halo always meets a dark edge instead of
+   *     bleeding into a same-coloured control.
+   *
+   * This selector previously hard-coded `--volt` and bypassed `--ring`
+   * entirely, so retinting the token alone would have changed nothing.
+   *
+   * Buttons override box-shadow for their press physics, and that is fine:
+   * they carry a 2px ink border of their own, which is the same dark layer
+   * under another name.
+   *
+   * Still `:focus-visible`, so pointer users are unaffected. This is not
+   * permanent focus styling and nothing native was removed.
+   */
   :focus-visible {
-    outline: 3px solid var(--volt);
+    outline: 3px solid var(--focus-ring);
     outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--focus-ring-contrast);
     border-radius: 2px;
   }
 

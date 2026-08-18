@@ -54,7 +54,7 @@ export default async function AccountPage({
               <Badge variant="ember">{user.role}</Badge>
             )}
             {user.emailVerifiedAt ? (
-              <Badge variant="volt">Email verified</Badge>
+              <Badge variant="signal">Email verified</Badge>
             ) : (
               <Badge variant="smoke">Email unverified</Badge>
             )}

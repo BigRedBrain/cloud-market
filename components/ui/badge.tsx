@@ -28,7 +28,10 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
+        /** Stock green. Availability only — see --status-instock. */
         volt: 'bg-volt text-ink',
+        /** Signal Yellow. Confirmation, emphasis, "this one" states. */
+        signal: 'bg-signal-yellow text-ink',
         ember: 'bg-ember text-ink',
         flare: 'bg-flare text-ink',
         cream: 'bg-cream text-ink',

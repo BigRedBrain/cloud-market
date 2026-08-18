@@ -96,7 +96,7 @@ export default async function OrderPage({
           <h1 className="font-display text-3xl tracking-tight text-white uppercase">
             Order {order.orderNumber}
           </h1>
-          <Badge variant={order.currentStatus === 'cancelled' ? 'smoke' : 'volt'}>
+          <Badge variant={order.currentStatus === 'cancelled' ? 'smoke' : 'signal'}>
             {order.currentStatus}
           </Badge>
         </div>
