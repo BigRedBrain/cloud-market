@@ -562,11 +562,18 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Display type is set tight and loud; it only ever appears at large sizes. */
+  /*
+   * Display type is set tight and loud; it only ever appears at large sizes.
+   *
+   * `font-poster` is the CloudMarket semantic name for the face this rule has
+   * always used — `--font-poster` resolves to `--font-display` (Anton), so this
+   * is a rename at the vocabulary level and not a visual change. Headings stay
+   * Anton; Permanent Marker remains an opt-in accent via `font-brand`.
+   */
   h1,
   h2,
   h3 {
-    @apply font-display tracking-tight;
+    @apply font-poster tracking-tight;
     letter-spacing: -0.01em;
   }
 
