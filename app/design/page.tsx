@@ -4,6 +4,13 @@ import { Flame, PackageOpen } from 'lucide-react'
 
 import { BurningCloud } from '@/components/brand/burning-cloud'
 import { CloudButton } from '@/components/brand/cloud-button'
+import { CloudClusterBanner, GlowingHeadline } from '@/components/brand/cloud-cluster-banner'
+import { CloudProductFrame } from '@/components/brand/cloud-product-frame'
+import { CloudMarketMascot } from '@/components/brand/cloudmarket-mascot'
+import { CloudMarketWordmark } from '@/components/brand/cloudmarket-wordmark'
+import { FireAccent } from '@/components/brand/fire-accent'
+import { HeaderCloudFireStrip } from '@/components/brand/header-cloud-fire-strip'
+import { LoadingCloud } from '@/components/brand/loading-cloud'
 import { Logo } from '@/components/brand/logo'
 import { SmokeBackground } from '@/components/brand/smoke-background'
 import { ProductCard, type Product } from '@/components/product-card'
@@ -27,6 +34,7 @@ import { ProductCardSkeleton, Skeleton, Spinner } from '@/components/ui/skeleton
  * serves resized derivatives, so the page does not ship 20 MB of PNG.
  */
 import artMasterApproved from '@/brand/source/cloudmarket-master-approved.png'
+import artCloudFrameReference from '@/brand/reference/cloudmarket-cloudframe-approved.png'
 import artAppIcon from '@/brand/production/icons/cloudmarket-app-icon-primary.png'
 import artFaviconSource from '@/brand/production/icons/cloudmarket-favicon-source.png'
 import artSocialAvatar from '@/brand/production/icons/cloudmarket-social-avatar.png'
@@ -1315,6 +1323,435 @@ export default function DesignSystemPage() {
                 Prices, potency, invite codes, and legal copy stay in Archivo or
                 Space Mono.
               </Rule>
+            </div>
+          </Section>
+          {/* ---- 9. Brand primitives ------------------------------------- */}
+          <Section
+            id="primitives"
+            eyebrow="Section 09"
+            title="Brand primitives"
+            note="Reusable CloudMarket components, built in isolation. None of these is wired into a customer-facing page yet — this section is the only place they render."
+          >
+            <div className="flex flex-col gap-10">
+              {/* Comic cloud system — rebuilt against the approved reference */}
+              <div className="flex flex-col gap-6">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-poster text-xl tracking-tight text-cloud-white uppercase">
+                    Comic cloud system
+                  </h3>
+                  <Badge variant="ember" tilt>
+                    Phase A prototype
+                  </Badge>
+                </div>
+                <p className="max-w-2xl font-ui text-sm text-smoke-gray">
+                  Rebuilt to match the owner-approved reference. A cloud is a
+                  cluster of overlapping puffs of varying size — billowy across
+                  the top, busier underneath — never an evenly scalloped
+                  rectangle. Ink outline, halftone grain, ink runs and splatter
+                  come from the same seeded geometry, so no two clouds repeat.
+                </p>
+                <p className="max-w-2xl font-ui text-sm text-smoke-gray">
+                  Content always sits in an ordinary rectangular box on its own
+                  layer. The cloud is <span className="font-data">aria-hidden</span>{' '}
+                  and <span className="font-data">pointer-events-none</span>.
+                </p>
+
+                <details className="panel-sm rounded-md bg-ink-800 p-4">
+                  <summary className="cursor-pointer font-ui text-sm font-bold text-cloud-white">
+                    Approved visual reference (for comparison)
+                  </summary>
+                  <div className="mt-4 flex flex-col gap-2">
+                    <Image
+                      src={artCloudFrameReference}
+                      alt="Owner-approved CloudFrame visual reference"
+                      sizes="(min-width: 1024px) 900px, 95vw"
+                      className="h-auto w-full rounded-md"
+                    />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">
+                      brand/reference/cloudmarket-cloudframe-approved.png
+                    </p>
+                  </div>
+                </details>
+
+                {/* A + B — product clouds, without and with a thumbnail */}
+                <div className="grid gap-8 lg:grid-cols-2">
+                  <div className="flex flex-col gap-2">
+                    <CloudProductFrame
+                      seed={3}
+                      eyebrow="Sample · Demo data"
+                      name="Sample Product A"
+                      size="3.5g"
+                      price="$00.00"
+                    />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">
+                      A · no thumbnail · surface pearl
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <CloudProductFrame
+                      seed={7}
+                      eyebrow="Sample · Demo data"
+                      name="Sample Product B"
+                      size="7g"
+                      price="$00.00"
+                      image={{
+                        src: artFaviconSource,
+                        alt: 'Placeholder sample image — not real product photography',
+                      }}
+                    />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">
+                      B · prominent thumbnail · 80px mobile / 112px desktop, ink outline, hard shadow
+                    </p>
+                  </div>
+                </div>
+
+                {/* C — vendor accent glow */}
+                <div className="grid gap-8 lg:grid-cols-2">
+                  <div className="flex flex-col gap-2">
+                    <CloudProductFrame
+                      seed={11}
+                      surface="cloud-white"
+                      glowColor="var(--fire-red)"
+                      eyebrow="Sample · Demo data"
+                      name="Sample Product C"
+                      size="3.5g"
+                      price="$00.00"
+                      badge={<Badge variant="flare">Demo badge</Badge>}
+                    />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">
+                      C · glowColor Fire Red · tight bloom, not neon
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <CloudProductFrame
+                      seed={13}
+                      surface="cloud-white"
+                      glowColor="var(--signal-yellow)"
+                      eyebrow="Sample · Demo data"
+                      name="Sample Product D"
+                      size="14g"
+                      price="$00.00"
+                      image={{
+                        src: artFaviconSource,
+                        alt: 'Placeholder sample image — not real product photography',
+                      }}
+                    />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">
+                      D · glowColor Signal Yellow
+                    </p>
+                  </div>
+                </div>
+
+                {/* D — long title */}
+                <div className="flex max-w-2xl flex-col gap-2">
+                  <CloudProductFrame
+                    seed={17}
+                    eyebrow="Sample · Demo data"
+                    name="A deliberately extremely long sample product name that must wrap cleanly across multiple lines"
+                    size="28g"
+                    price="$00.00"
+                    image={{
+                      src: artFaviconSource,
+                      alt: 'Placeholder sample image — not real product photography',
+                    }}
+                  />
+                  <p className="font-data text-[0.625rem] text-smoke-gray">
+                    E · long title · the box grows downward, the cloud follows,
+                    text never distorts
+                  </p>
+                </div>
+
+                {/* E + F — wide multi-cloud banners */}
+                <div className="flex flex-col gap-2 pt-4">
+                  <h4 className="font-poster text-lg tracking-tight text-cloud-white uppercase">
+                    Wide banner — composed, not stretched
+                  </h4>
+                  <p className="max-w-2xl font-ui text-sm text-smoke-gray">
+                    A dominant central cloud carries the text; supporting clouds
+                    drift behind it at varying sizes and offsets. Layer order is
+                    explicit, so no decorative cloud edge can ever cross the
+                    headline. Each box keeps a 5:3 aspect ratio matching its
+                    viewBox, so the clouds scale uniformly and never smear.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <CloudClusterBanner seed={5} count={5}>
+                    <GlowingHeadline as="p">
+                      Private marketplace. Cloud 9 access only.
+                    </GlowingHeadline>
+                    <p className="mt-3 font-ui text-sm text-ink opacity-80">
+                      Apply to shop, apply to vend, or redeem an invite code.
+                    </p>
+                  </CloudClusterBanner>
+                  <p className="font-data text-[0.625rem] text-smoke-gray">
+                    F · multi-cloud banner, no glow · solid ink headline
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <CloudClusterBanner
+                    seed={23}
+                    count={4}
+                    glowColor="var(--signal-yellow)"
+                  >
+                    <GlowingHeadline as="p" glowColor="var(--signal-yellow)">
+                      Private marketplace. Cloud 9 access only.
+                    </GlowingHeadline>
+                    <p className="mt-3 font-ui text-sm text-ink opacity-80">
+                      Body copy stays Archivo and never glows.
+                    </p>
+                  </CloudClusterBanner>
+                  <p className="font-data text-[0.625rem] text-smoke-gray">
+                    G · Signal Yellow vendor banner · solid fill underneath the glow
+                  </p>
+                </div>
+
+                {/* G + H — demo vendor accents */}
+                <div className="flex flex-col gap-2">
+                  <CloudClusterBanner seed={41} count={4} glowColor="#4aa8ff">
+                    <GlowingHeadline as="p" glowColor="#4aa8ff">
+                      Demo Vendor — Blue Accent
+                    </GlowingHeadline>
+                    <p className="mt-3 font-ui text-sm text-ink opacity-80">
+                      Sample vendor storefront banner. Accent is presentational
+                      only — nothing is persisted.
+                    </p>
+                  </CloudClusterBanner>
+                  <p className="font-data text-[0.625rem] text-smoke-gray">
+                    H · blue vendor banner · glowColor #4aa8ff
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <CloudClusterBanner seed={59} count={4} glowColor="#b06cff">
+                    <GlowingHeadline as="p" glowColor="#b06cff">
+                      Demo Vendor — Purple Accent
+                    </GlowingHeadline>
+                    <p className="mt-3 font-ui text-sm text-ink opacity-80">
+                      The CloudMarket platform palette is unchanged; only the
+                      bloom, headline glow and spark marks take the accent.
+                    </p>
+                  </CloudClusterBanner>
+                  <p className="font-data text-[0.625rem] text-smoke-gray">
+                    I · purple vendor banner · glowColor #b06cff
+                  </p>
+                </div>
+
+                {/* I — compact / status */}
+                <div className="flex flex-col gap-2 pt-4">
+                  <h4 className="font-poster text-lg tracking-tight text-cloud-white uppercase">
+                    Compact / status treatment
+                  </h4>
+                </div>
+                <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
+                  <CloudProductFrame seed={29} name="Watchlist" data="4 items tracked" />
+                  <CloudProductFrame
+                    seed={31}
+                    name="Under review"
+                    data="Application submitted"
+                  />
+                  <CloudProductFrame
+                    seed={37}
+                    surface="cloud-white"
+                    glowColor="var(--signal-yellow)"
+                    name="Approved"
+                    data="Marketplace access active"
+                  />
+                </div>
+                <p className="font-data text-[0.625rem] text-smoke-gray">
+                  J · compact clouds · status is carried by the words, never by
+                  the glow alone
+                </p>
+
+                <div className="flex flex-col gap-2 pt-2">
+                  <Rule>
+                    glowColor is presentational only. It drives the outer bloom,
+                    the headline text-shadow and the spark marks — never the
+                    cloud body, the ink outline, or body copy. Nothing is
+                    persisted and no schema changed.
+                  </Rule>
+                  <Rule tone="deny">
+                    Letting the accent carry meaning. Every status above states
+                    itself in words, so it survives greyscale, forced colours,
+                    and a stripped text-shadow.
+                  </Rule>
+                </div>
+              </div>
+
+              {/* FireAccent */}
+              <div className="flex flex-col gap-4 border-t border-ink-600 pt-8">
+                <h3 className="font-poster text-xl tracking-tight text-cloud-white uppercase">
+                  FireAccent
+                </h3>
+                <Card className="flex flex-wrap items-end gap-10 p-8">
+                  <div className="flex flex-col items-center gap-2">
+                    <FireAccent size="sm" />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">sm</p>
+                  </div>
+                  <div className="flex flex-col items-center gap-2">
+                    <FireAccent size="md" />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">md</p>
+                  </div>
+                  <div className="flex flex-col items-center gap-2">
+                    <FireAccent size="lg" />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">lg</p>
+                  </div>
+                  <div className="flex flex-col items-center gap-2">
+                    <FireAccent size="lg" animated id="cloudmarket-fire-demo" />
+                    <p className="font-data text-[0.625rem] text-signal-yellow">
+                      animated · 900ms
+                    </p>
+                  </div>
+                </Card>
+                <p className="max-w-2xl font-ui text-sm text-smoke-gray">
+                  Signal Yellow at the tip, Ember through the middle, Fire Red at
+                  the base. Ember appears here and nowhere else in the brand.
+                </p>
+              </div>
+
+              {/* Artwork wrappers */}
+              <div className="flex flex-col gap-4 border-t border-ink-600 pt-8">
+                <h3 className="font-poster text-xl tracking-tight text-cloud-white uppercase">
+                  Artwork wrappers
+                </h3>
+
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <Card className="flex flex-col items-center justify-center gap-4 p-8">
+                    <CloudMarketWordmark size="lg" />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">
+                      CloudMarketWordmark · needs a dark plate
+                    </p>
+                  </Card>
+
+                  <Card className="flex flex-col items-center justify-center gap-4 p-8">
+                    <div className="w-56">
+                      <CloudMarketMascot variant="primary" decorative />
+                    </div>
+                    <p className="font-data text-[0.625rem] text-smoke-gray">
+                      CloudMarketMascot primary · decorative
+                    </p>
+                  </Card>
+                </div>
+
+                <Card className="flex flex-col gap-4 p-6">
+                  <CloudMarketMascot
+                    variant="header"
+                    alt="The CloudMarket mascot pushing a cart of products through the clouds"
+                  />
+                  <p className="font-data text-[0.625rem] text-smoke-gray">
+                    header variant with real alt text — announced, because here it
+                    carries the meaning
+                  </p>
+                </Card>
+              </div>
+
+              {/* HeaderCloudFireStrip */}
+              <div className="flex flex-col gap-4 border-t border-ink-600 pt-8">
+                <h3 className="font-poster text-xl tracking-tight text-cloud-white uppercase">
+                  HeaderCloudFireStrip
+                </h3>
+                <p className="max-w-2xl font-ui text-sm text-smoke-gray">
+                  The artwork masses smoke and fire at the left and right and
+                  leaves the centre empty, so navigation sits in the gap. The band
+                  below carries real links — tab through them to confirm the strip
+                  intercepts nothing.
+                </p>
+
+                <div className="panel relative isolate flex h-20 items-center justify-between overflow-hidden rounded-lg bg-dark-smoke px-5">
+                  <HeaderCloudFireStrip intensity="ambient" />
+                  <span className="font-brand text-xl text-cloud-white">
+                    CloudMarket
+                  </span>
+                  <nav aria-label="Cloud fire strip demo">
+                    <ul className="flex gap-4 font-ui text-sm font-semibold text-cloud-white">
+                      <li>
+                        <a
+                          href="#primitives"
+                          className="rounded-sm hover:text-signal-yellow"
+                        >
+                          Market
+                        </a>
+                      </li>
+                      <li>
+                        <a
+                          href="#primitives"
+                          className="rounded-sm hover:text-signal-yellow"
+                        >
+                          Vendors
+                        </a>
+                      </li>
+                    </ul>
+                  </nav>
+                </div>
+                <p className="font-data text-[0.625rem] text-smoke-gray">
+                  ambient · the readable default under text
+                </p>
+
+                <div className="panel relative isolate flex h-20 items-center overflow-hidden rounded-lg bg-dark-smoke px-5">
+                  <HeaderCloudFireStrip intensity="full" />
+                  <span className="font-data text-xs text-cloud-white">
+                    full — reserve for bands with no text over the busy edges
+                  </span>
+                </div>
+              </div>
+
+              {/* LoadingCloud */}
+              <div className="flex flex-col gap-4 border-t border-ink-600 pt-8">
+                <h3 className="font-poster text-xl tracking-tight text-cloud-white uppercase">
+                  LoadingCloud
+                </h3>
+                <Card className="flex flex-wrap items-end gap-10 p-8">
+                  <div className="flex flex-col items-center gap-2">
+                    <LoadingCloud size="sm" decorative />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">sm</p>
+                  </div>
+                  <div className="flex flex-col items-center gap-2">
+                    <LoadingCloud size="md" decorative />
+                    <p className="font-data text-[0.625rem] text-smoke-gray">md</p>
+                  </div>
+                  <div className="flex flex-col items-center gap-2">
+                    <LoadingCloud size="lg" label="Loading the market" />
+                    <p className="font-data text-[0.625rem] text-signal-yellow">
+                      lg · role status
+                    </p>
+                  </div>
+                </Card>
+                <p className="max-w-2xl font-ui text-sm text-smoke-gray">
+                  The two small clouds are decorative and invisible to a screen
+                  reader. The large one announces &ldquo;Loading the
+                  market&rdquo; through a status region, without stealing focus.
+                </p>
+              </div>
+
+              {/* Reduced motion */}
+              <div className="flex flex-col gap-3 border-t border-ink-600 pt-8">
+                <h3 className="font-poster text-xl tracking-tight text-cloud-white uppercase">
+                  Reduced motion
+                </h3>
+                <Rule>
+                  Every animated primitive above resolves to a complete, still
+                  composition when reduced motion is on. The flame stays fully
+                  drawn and lit; the loading cloud keeps its smoke at a resting
+                  opacity rather than emptying out. Nothing is removed and
+                  nothing races to an end frame.
+                </Rule>
+                <Rule tone="deny">
+                  Infinite motion a reduced-motion visitor cannot escape.
+                  Keyframes live inside{' '}
+                  <span className="font-data">
+                    prefers-reduced-motion: no-preference
+                  </span>
+                  , so they are never declared for those users at all.
+                </Rule>
+                <Rule>
+                  Decorative art is aria-hidden and pointer-events-none;
+                  meaningful art takes real alt text. No primitive relies on
+                  shape or colour alone to communicate.
+                </Rule>
+              </div>
             </div>
           </Section>
         </div>

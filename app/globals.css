@@ -395,6 +395,22 @@
     }
   }
 
+  /*
+   * Cloud 9 hover. A few pixels of vertical drift and nothing else — the
+   * clouds should look like they are floating, not bouncing. Paired with
+   * `alternate` and a different period per cluster so a bank of clouds never
+   * bobs in unison, which is what makes a group read as weather rather than as
+   * a carousel.
+   */
+  @keyframes cloud-float {
+    from {
+      transform: translate3d(0, 0, 0);
+    }
+    to {
+      transform: translate3d(0, -9px, 0);
+    }
+  }
+
   /* Cloud button: a puff of smoke rising inside the silhouette. */
   @keyframes smoke-rise {
     0% {
