@@ -54,9 +54,9 @@ export function EmptyState({
       )}
 
       <div className="relative flex flex-col gap-2">
-        <h3 className="font-display text-2xl tracking-tight uppercase">{title}</h3>
+        <h3 className="font-poster text-2xl tracking-tight uppercase">{title}</h3>
         {description && (
-          <p className="mx-auto max-w-sm font-sans text-sm leading-relaxed text-smoke">
+          <p className="mx-auto max-w-sm font-ui text-sm leading-relaxed text-smoke">
             {description}
           </p>
         )}

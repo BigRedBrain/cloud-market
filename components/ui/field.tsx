@@ -27,7 +27,7 @@ function Label({
   return (
     <label
       className={cn(
-        'font-sans text-sm leading-none font-semibold text-cream',
+        'font-ui text-sm leading-none font-semibold text-cream',
         'peer-disabled:opacity-50',
         className,
       )}
@@ -46,7 +46,7 @@ function Input({
       type={type}
       className={cn(
         'flex h-11 w-full rounded-md bg-ink-700 px-3 py-2',
-        'font-sans text-base text-cream',
+        'font-ui text-base text-cream',
         'border-solid border-ink [border-width:var(--outline-ink)]',
         'placeholder:text-smoke',
         'transition-[border-color,box-shadow] duration-100',
@@ -67,7 +67,7 @@ function Textarea({ className, ...props }: React.ComponentProps<'textarea'>) {
     <textarea
       className={cn(
         'flex min-h-24 w-full rounded-md bg-ink-700 px-3 py-2',
-        'font-sans text-base text-cream',
+        'font-ui text-base text-cream',
         'border-solid border-ink [border-width:var(--outline-ink)]',
         'placeholder:text-smoke',
         'disabled:cursor-not-allowed disabled:opacity-50',
@@ -133,12 +133,12 @@ function Field({
         <p
           id={messageId}
           role="alert"
-          className="font-sans text-sm font-semibold text-flare"
+          className="font-ui text-sm font-semibold text-flare"
         >
           {error}
         </p>
       ) : hint ? (
-        <p id={messageId} className="font-sans text-sm text-smoke">
+        <p id={messageId} className="font-ui text-sm text-smoke">
           {hint}
         </p>
       ) : null}

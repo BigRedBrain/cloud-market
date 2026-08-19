@@ -30,7 +30,7 @@ import { cn } from '@/lib/utils'
 const buttonVariants = cva(
   [
     'relative inline-flex items-center justify-center gap-2 whitespace-nowrap',
-    'font-sans font-semibold tracking-tight',
+    'font-ui font-semibold tracking-tight',
     'border-solid border-ink rounded-md [border-width:var(--outline-ink)]',
     'transition-[transform,box-shadow,background-color] duration-150 ease-out',
     'select-none',

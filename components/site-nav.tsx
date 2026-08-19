@@ -76,7 +76,7 @@ export function SiteNav({ bagCount = 0 }: SiteNavProps) {
                   href={link.href}
                   className={cn(
                     'inline-flex h-10 items-center rounded-md px-3',
-                    'font-sans text-sm font-semibold text-cream',
+                    'font-ui text-sm font-semibold text-cream',
                     'transition-colors hover:bg-cream/10',
                     // Underline is drawn in Signal Yellow on hover — colour alone never
                     // carries the affordance, the movement does too.
@@ -137,7 +137,7 @@ export function SiteNav({ bagCount = 0 }: SiteNavProps) {
               <li key={link.href}>
                 <a
                   href={link.href}
-                  className="flex h-12 items-center rounded-md px-3 font-sans text-base font-semibold text-cream hover:bg-cream/10"
+                  className="flex h-12 items-center rounded-md px-3 font-ui text-base font-semibold text-cream hover:bg-cream/10"
                   onClick={() => setOpen(false)}
                 >
                   {link.label}

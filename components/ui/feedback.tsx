@@ -76,7 +76,7 @@ export function Alert({ tone, title, children, action, className }: AlertProps) 
     >
       <Icon aria-hidden="true" className={cn('mt-0.5 size-5 shrink-0', accent)} />
       <div className="flex flex-col gap-1">
-        <p className="font-sans font-bold text-white">{title}</p>
+        <p className="font-ui font-bold text-white">{title}</p>
         {children && (
           <div className="text-sm leading-relaxed text-smoke">{children}</div>
         )}
@@ -158,7 +158,7 @@ export function StatusPanel({
       </span>
 
       <div className="relative flex flex-col gap-2">
-        <h2 className="font-display text-3xl tracking-tight text-white uppercase">
+        <h2 className="font-poster text-3xl tracking-tight text-white uppercase">
           {title}
         </h2>
         {description && (
@@ -170,10 +170,10 @@ export function StatusPanel({
 
       {reference && (
         <div className="relative rounded-md border-2 border-ink bg-ink-900 px-4 py-2">
-          <p className="font-mono text-[0.625rem] tracking-widest text-smoke uppercase">
+          <p className="font-data text-[0.625rem] tracking-widest text-smoke uppercase">
             {reference.label}
           </p>
-          <p className="font-mono text-lg font-bold text-white">{reference.value}</p>
+          <p className="font-data text-lg font-bold text-white">{reference.value}</p>
         </div>
       )}
 
