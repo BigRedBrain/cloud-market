@@ -56,14 +56,14 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/" className="-ml-2 rounded-md" aria-label="Cloud Market home">
               <Logo variant="mark" tone="cream" />
             </Link>
-            <span className="font-mono text-xs tracking-widest text-smoke uppercase">
+            <span className="font-data text-xs tracking-widest text-smoke uppercase">
               Admin
             </span>
           </div>
 
           {user && (
             <div className="flex items-center gap-3">
-              <span className="hidden font-mono text-xs text-smoke sm:inline">
+              <span className="hidden font-data text-xs text-smoke sm:inline">
                 {user.email}
               </span>
               <form action={signOutAction}>
@@ -82,7 +82,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <li key={tab.href}>
               <Link
                 href={tab.href as Route}
-                className="inline-flex h-10 items-center rounded-t-md px-3 font-sans text-sm font-semibold text-white transition-colors hover:bg-white/10"
+                className="inline-flex h-10 items-center rounded-t-md px-3 font-ui text-sm font-semibold text-white transition-colors hover:bg-white/10"
               >
                 {tab.label}
               </Link>

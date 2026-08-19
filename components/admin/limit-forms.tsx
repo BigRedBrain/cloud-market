@@ -89,7 +89,7 @@ export function PublishRuleForm({
                 name="cannabisClass"
                 value={selected}
                 onChange={(event) => setSelected(event.target.value)}
-                className="h-11 w-full rounded-md border-solid border-ink bg-ink-700 px-3 font-sans text-base text-cream [border-width:var(--outline-ink)]"
+                className="h-11 w-full rounded-md border-solid border-ink bg-ink-700 px-3 font-ui text-base text-cream [border-width:var(--outline-ink)]"
               >
                 {classes.map((c) => (
                   <option key={c.cannabisClass} value={c.cannabisClass}>
@@ -106,11 +106,11 @@ export function PublishRuleForm({
             stale while the incoming column is fresh.
           */}
           <div className="rounded-md border-solid border-ink bg-ink-800 p-4 [border-width:var(--outline-ink)]">
-            <h3 className="mb-3 font-mono text-xs tracking-widest text-smoke uppercase">
+            <h3 className="mb-3 font-data text-xs tracking-widest text-smoke uppercase">
               Currently in force
             </h3>
             {live ? (
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs">
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-1 font-data text-xs">
                 <dt className="text-smoke">version</dt>
                 <dd className="text-white">v{live.version}</dd>
                 <dt className="text-smoke">conversion</dt>
@@ -133,16 +133,16 @@ export function PublishRuleForm({
           </div>
 
           <fieldset className="flex flex-col gap-4">
-            <legend className="mb-1 font-sans text-sm leading-none font-semibold text-cream">
+            <legend className="mb-1 font-ui text-sm leading-none font-semibold text-cream">
               Conversion to usable-marijuana equivalent
             </legend>
-            <p className="font-sans text-sm text-smoke">
+            <p className="font-ui text-sm text-smoke">
               Entered as an exact ratio, applied to the measurement above.
               {spec && (
                 <>
                   {' '}
                   Suggested for {spec.cannabisClass}:{' '}
-                  <span className="font-mono text-white">
+                  <span className="font-data text-white">
                     {spec.suggested.numerator}/{spec.suggested.denominator}
                   </span>
                 </>
@@ -176,7 +176,7 @@ export function PublishRuleForm({
           </fieldset>
 
           <fieldset className="flex flex-col gap-4">
-            <legend className="mb-1 font-sans text-sm leading-none font-semibold text-cream">
+            <legend className="mb-1 font-ui text-sm leading-none font-semibold text-cream">
               Caps — enforced independently, a basket must pass every one
             </legend>
 
@@ -214,11 +214,11 @@ export function PublishRuleForm({
           </fieldset>
 
           <fieldset className="flex flex-col gap-3">
-            <legend className="mb-1 font-sans text-sm leading-none font-semibold text-cream">
+            <legend className="mb-1 font-ui text-sm leading-none font-semibold text-cream">
               Takes effect
             </legend>
 
-            <label className="flex items-center gap-3 font-sans text-sm text-cream">
+            <label className="flex items-center gap-3 font-ui text-sm text-cream">
               <input
                 type="radio"
                 name="timing"
@@ -230,7 +230,7 @@ export function PublishRuleForm({
               Immediately on publishing
             </label>
 
-            <label className="flex items-center gap-3 font-sans text-sm text-cream">
+            <label className="flex items-center gap-3 font-ui text-sm text-cream">
               <input
                 type="radio"
                 name="timing"
@@ -273,37 +273,37 @@ export function PublishRuleForm({
           <button
             type="button"
             onClick={() => setConfirming((value) => !value)}
-            className="self-start rounded-md border-solid border-ink px-3 py-2 font-sans text-sm font-semibold text-cream [border-width:var(--outline-ink)]"
+            className="self-start rounded-md border-solid border-ink px-3 py-2 font-ui text-sm font-semibold text-cream [border-width:var(--outline-ink)]"
           >
             {confirming ? 'Hide confirmation' : 'Review before publishing'}
           </button>
 
           {confirming && (
             <div className="rounded-md border-solid border-ember bg-ink-800 p-4 [border-width:var(--outline-ink)]">
-              <h3 className="mb-2 font-mono text-xs tracking-widest text-ember uppercase">
+              <h3 className="mb-2 font-data text-xs tracking-widest text-ember uppercase">
                 Confirm — these values become law for every checkout
               </h3>
-              <ul className="flex list-disc flex-col gap-1 pl-5 font-sans text-sm text-cream">
+              <ul className="flex list-disc flex-col gap-1 pl-5 font-ui text-sm text-cream">
                 <li>
-                  Class <span className="font-mono text-white">{selected}</span>, measured
-                  in <span className="font-mono text-white">{spec?.unit}</span>
+                  Class <span className="font-data text-white">{selected}</span>, measured
+                  in <span className="font-data text-white">{spec?.unit}</span>
                 </li>
                 <li>
                   Replaces{' '}
                   {live ? (
-                    <span className="font-mono text-white">v{live.version}</span>
+                    <span className="font-data text-white">v{live.version}</span>
                   ) : (
                     <span className="text-flare">nothing — this class has no rule</span>
                   )}
                 </li>
                 <li>
                   Takes effect{' '}
-                  <span className="font-mono text-white">
+                  <span className="font-data text-white">
                     {timing === 'now' ? 'immediately (server time, UTC)' : 'at the scheduled time (UTC)'}
                   </span>
                 </li>
                 <li>
-                  A conversion of <span className="font-mono text-white">0</span> would mean
+                  A conversion of <span className="font-data text-white">0</span> would mean
                   this class counts toward no cap at all. Publication refuses it for
                   every class except immature plants and non-cannabis merchandise.
                 </li>
@@ -329,7 +329,7 @@ export function PublishRuleForm({
               type="checkbox"
               className="mt-1 size-5 shrink-0 rounded border-solid border-ink bg-ink-700 [border-width:var(--outline-ink)]"
             />
-            <label htmlFor="acknowledgeImmutable" className="font-sans text-sm text-cream">
+            <label htmlFor="acknowledgeImmutable" className="font-ui text-sm text-cream">
               I understand this version is permanent and cannot be edited or
               deleted.
               {fieldErrors?.acknowledgeImmutable?.[0] && (

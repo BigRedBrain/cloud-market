@@ -32,7 +32,7 @@ export default async function AdminMediaPage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
-      <h1 className="mb-2 font-display text-2xl tracking-tight text-white uppercase">
+      <h1 className="mb-2 font-poster text-2xl tracking-tight text-white uppercase">
         Media library
       </h1>
       <p className="mb-6 max-w-2xl text-sm text-smoke">
@@ -54,7 +54,7 @@ export default async function AdminMediaPage() {
         </CardContent>
       </Card>
 
-      <h2 className="mb-4 font-display text-xl tracking-tight text-white uppercase">
+      <h2 className="mb-4 font-poster text-xl tracking-tight text-white uppercase">
         Active ({active.length})
       </h2>
 
@@ -93,7 +93,7 @@ export default async function AdminMediaPage() {
               <MediaForm asset={asset} />
 
               <div className="border-t border-ink-600 pt-4">
-                <h3 className="mb-2 font-mono text-xs tracking-widest text-smoke uppercase">
+                <h3 className="mb-2 font-data text-xs tracking-widest text-smoke uppercase">
                   Replace
                 </h3>
                 <ReplaceMediaForm assetId={asset.id} />
@@ -105,10 +105,10 @@ export default async function AdminMediaPage() {
 
       {archived.length > 0 && (
         <>
-          <h2 className="mb-4 font-display text-xl tracking-tight text-white uppercase">
+          <h2 className="mb-4 font-poster text-xl tracking-tight text-white uppercase">
             Archived ({archived.length})
           </h2>
-          <ul className="flex flex-col gap-2 font-mono text-sm text-smoke">
+          <ul className="flex flex-col gap-2 font-data text-sm text-smoke">
             {archived.map((asset) => (
               <li key={asset.id} className="panel-sm rounded-md bg-ink-800 p-3">
                 {asset.title ?? asset.id.slice(0, 8)}

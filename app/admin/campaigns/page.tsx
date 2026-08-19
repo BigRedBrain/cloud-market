@@ -24,7 +24,7 @@ export default async function AdminCampaignsPage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
-      <h1 className="mb-2 font-display text-2xl tracking-tight text-white uppercase">
+      <h1 className="mb-2 font-poster text-2xl tracking-tight text-white uppercase">
         Campaigns
       </h1>
       <p className="mb-6 max-w-2xl text-sm text-smoke">
@@ -48,7 +48,7 @@ export default async function AdminCampaignsPage() {
               <CardTitle className="flex flex-wrap items-center gap-3">
                 <span>{campaign.title}</span>
                 <StatusPill status={campaign.status} liveNow={campaign.liveNow} />
-                <span className="font-mono text-sm font-normal text-smoke">
+                <span className="font-data text-sm font-normal text-smoke">
                   {campaign.type} · /{campaign.slug} · priority {campaign.priority}
                 </span>
               </CardTitle>

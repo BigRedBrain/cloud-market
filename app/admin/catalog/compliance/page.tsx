@@ -56,7 +56,7 @@ export default async function CatalogCompliancePage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
-      <h1 className="mb-2 font-display text-2xl tracking-tight text-white uppercase">
+      <h1 className="mb-2 font-poster text-2xl tracking-tight text-white uppercase">
         Catalog compliance
       </h1>
       <p className="mb-6 max-w-3xl text-sm text-smoke">

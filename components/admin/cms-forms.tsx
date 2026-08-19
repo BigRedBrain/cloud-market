@@ -35,7 +35,7 @@ import { cn } from '@/lib/utils'
  */
 
 const selectClass = cn(
-  'h-11 w-full rounded-md bg-ink-700 px-3 font-sans text-base text-white',
+  'h-11 w-full rounded-md bg-ink-700 px-3 font-ui text-base text-white',
   'border-solid border-ink [border-width:var(--outline-ink)]',
 )
 
@@ -72,7 +72,7 @@ function PublishFields({
 }) {
   return (
     <fieldset className="flex flex-col gap-4 border-t border-ink-600 pt-4">
-      <legend className="font-mono text-xs tracking-widest text-smoke uppercase">
+      <legend className="font-data text-xs tracking-widest text-smoke uppercase">
         Scheduling
       </legend>
 
