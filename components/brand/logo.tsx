@@ -85,7 +85,7 @@ export function Logo({
         <CloudMark tone={tone} className="h-12" />
         <span
           className={cn(
-            'font-display text-2xl leading-none tracking-tight uppercase',
+            'font-poster text-2xl leading-none tracking-tight uppercase',
             text,
           )}
         >
@@ -100,7 +100,7 @@ export function Logo({
       <CloudMark tone={tone} />
       <span
         className={cn(
-          'font-display text-xl leading-none tracking-tight uppercase',
+          'font-poster text-xl leading-none tracking-tight uppercase',
           text,
         )}
       >
