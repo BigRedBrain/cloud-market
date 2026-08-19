@@ -10,10 +10,10 @@ import { Button } from '@/components/ui/button'
  * availability → price → action. Everything the brief calls "clearly visible"
  * is text at 12px or larger, never an icon alone and never colour alone.
  *
- * Availability is the one place electric green earns its keep. Green means "you
- * can buy this right now" and nothing else in the entire system — which is why
- * it is rationed everywhere else. Paired with the word "In stock" so it still
- * reads in greyscale.
+ * Availability is the one place green appears at all. Green is not a
+ * CloudMarket brand colour; it survives solely as an availability signal and is
+ * reachable only through `--status-instock`. Paired with the word "In stock" so
+ * it still reads in greyscale.
  *
  * Motion is hover-only and 1px: the panel lifts off its ink shadow. No scale,
  * no image zoom. A catalogue grid where every card breathes on hover is the
@@ -68,12 +68,12 @@ function Availability({ product }: { product: Product }) {
     <span
       className={cn(
         'inline-flex items-center gap-1.5 font-data text-xs',
-        low ? 'text-ember' : 'text-volt',
+        low ? 'text-ember' : 'text-status-instock',
       )}
     >
       <span
         aria-hidden="true"
-        className={cn('size-2 rounded-full', low ? 'bg-ember' : 'bg-volt')}
+        className={cn('size-2 rounded-full', low ? 'bg-ember' : 'bg-status-instock')}
       />
       {low ? `Only ${product.stockCount} left` : 'In stock'}
     </span>

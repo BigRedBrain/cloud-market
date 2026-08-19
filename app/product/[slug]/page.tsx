@@ -209,7 +209,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
                           ) : variant.inventoryQuantity <= 3 ? (
                             <span className="text-ember">Only {variant.inventoryQuantity} left</span>
                           ) : (
-                            <span className="text-volt">In stock</span>
+                            <span className="text-status-instock">In stock</span>
                           )}
                         </td>
                         <td className="px-4 py-3">
