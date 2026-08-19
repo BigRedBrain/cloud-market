@@ -72,7 +72,7 @@ export default async function CategoryPage({ params, searchParams }: CategoryPag
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-10 sm:px-6">
         <nav aria-label="Breadcrumb" className="mb-4">
-          <ol className="flex items-center gap-2 font-mono text-xs text-smoke">
+          <ol className="flex items-center gap-2 font-data text-xs text-smoke">
             <li>
               <Link href="/shop" className="underline underline-offset-4 hover:text-white">
                 Shop
@@ -92,7 +92,7 @@ export default async function CategoryPage({ params, searchParams }: CategoryPag
             className="halftone pointer-events-none absolute inset-0 text-ember opacity-20 [mask-image:linear-gradient(to_right,black,transparent_60%)]"
           />
           <div className="relative flex flex-col gap-3 py-2">
-            <h1 className="font-display text-4xl tracking-tight text-white uppercase sm:text-5xl">
+            <h1 className="font-poster text-4xl tracking-tight text-white uppercase sm:text-5xl">
               {category.name}
             </h1>
             {category.description && (
@@ -118,14 +118,14 @@ export default async function CategoryPage({ params, searchParams }: CategoryPag
         </div>
 
         <div className="mb-5 flex items-baseline justify-between gap-4" aria-live="polite">
-          <p className="font-mono text-sm text-smoke">
+          <p className="font-data text-sm text-smoke">
             {listing.total === 0
               ? 'No products'
               : `${listing.total} product${listing.total === 1 ? '' : 's'}`}
             {filters.q && ` for “${filters.q}”`}
           </p>
           {listing.pageCount > 1 && (
-            <p className="font-mono text-xs text-smoke">
+            <p className="font-data text-xs text-smoke">
               Page {listing.page} of {listing.pageCount}
             </p>
           )}

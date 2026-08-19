@@ -55,7 +55,7 @@ type ProductCardProps = {
 function Availability({ product }: { product: Product }) {
   if (!product.inStock) {
     return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-xs text-smoke">
+      <span className="inline-flex items-center gap-1.5 font-data text-xs text-smoke">
         <span aria-hidden="true" className="size-2 rounded-full bg-smoke" />
         Sold out
       </span>
@@ -67,7 +67,7 @@ function Availability({ product }: { product: Product }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 font-mono text-xs',
+        'inline-flex items-center gap-1.5 font-data text-xs',
         low ? 'text-ember' : 'text-volt',
       )}
     >
@@ -135,7 +135,7 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
 
         {soldOut && (
           <div className="absolute inset-0 flex items-center justify-center">
-            <span className="panel-sm -rotate-6 rounded-sm bg-ink px-3 py-1.5 font-display text-lg tracking-wide text-white uppercase">
+            <span className="panel-sm -rotate-6 rounded-sm bg-ink px-3 py-1.5 font-poster text-lg tracking-wide text-white uppercase">
               Sold out
             </span>
           </div>
@@ -143,11 +143,11 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
       </div>
 
       <div className="flex flex-1 flex-col gap-1 p-4">
-        <p className="font-mono text-[0.6875rem] tracking-widest text-smoke uppercase">
+        <p className="font-data text-[0.6875rem] tracking-widest text-smoke uppercase">
           {product.category}
         </p>
 
-        <h3 className="font-display text-lg leading-tight tracking-tight text-white">
+        <h3 className="font-poster text-lg leading-tight tracking-tight text-white">
           <a
             href={`/product/${product.slug}`}
             className="after:absolute after:inset-0 after:content-['']"
@@ -156,7 +156,7 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
           </a>
         </h3>
 
-        <p className="font-mono text-xs text-smoke">
+        <p className="font-data text-xs text-smoke">
           {product.size} · THC {product.thcPercent.toFixed(1)}%
         </p>
 
@@ -165,7 +165,7 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
         </div>
 
         <div className="mt-3 flex items-center justify-between gap-3">
-          <span className="font-mono text-xl font-bold text-white">
+          <span className="font-data text-xl font-bold text-white">
             {formatCents(product.priceCents)}
           </span>
 
