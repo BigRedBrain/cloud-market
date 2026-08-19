@@ -72,7 +72,7 @@ export default async function CheckoutReviewPage() {
       <SiteNav bagCount={0} />
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6">
-        <h1 className="mb-6 font-display text-3xl tracking-tight text-white uppercase">
+        <h1 className="mb-6 font-poster text-3xl tracking-tight text-white uppercase">
           Review your order
         </h1>
 
@@ -112,14 +112,14 @@ export default async function CheckoutReviewPage() {
                       {line.productName}{' '}
                       <span className="text-smoke">({line.variantLabel}) &times; {line.quantity}</span>
                     </span>
-                    <span className="font-mono text-white">
+                    <span className="font-data text-white">
                       {formatCents(line.lineSubtotalCents)}
                     </span>
                   </li>
                 ))}
               </ul>
 
-              <dl className="mt-5 flex flex-col gap-2 border-t-2 border-ink pt-4 font-mono text-sm">
+              <dl className="mt-5 flex flex-col gap-2 border-t-2 border-ink pt-4 font-data text-sm">
                 <div className="flex justify-between gap-4">
                   <dt className="text-smoke">Subtotal</dt>
                   <dd className="text-white">{formatCents(order.subtotalCents)}</dd>
