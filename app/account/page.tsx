@@ -46,7 +46,7 @@ export default async function AccountPage({
     <AccountShell>
       <div className="flex flex-col gap-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="font-display text-3xl tracking-tight text-white uppercase">
+          <h1 className="font-poster text-3xl tracking-tight text-white uppercase">
             Profile
           </h1>
           <div className="flex items-center gap-2">
@@ -106,7 +106,7 @@ export default async function AccountPage({
               <span className="text-smoke">Date of birth</span>
               <span className="text-white">{details?.dateOfBirth ?? '—'}</span>
             </div>
-            <p className="mt-1 font-sans text-xs text-smoke">
+            <p className="mt-1 font-ui text-xs text-smoke">
               Date of birth is the legal basis for serving you and cannot be
               changed here. Contact support if it is wrong.
             </p>

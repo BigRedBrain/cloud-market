@@ -35,7 +35,7 @@ export default async function VerifyEmailPage() {
     <AccountShell>
       <div className="flex flex-col gap-6">
         <div className="flex flex-col gap-2">
-          <h1 className="font-display text-3xl tracking-tight text-white uppercase">
+          <h1 className="font-poster text-3xl tracking-tight text-white uppercase">
             Confirm your email
           </h1>
           <p className="text-sm text-smoke">

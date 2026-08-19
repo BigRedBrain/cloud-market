@@ -112,7 +112,7 @@ export function SessionList({
                   </span>
                   {isCurrent && <Badge variant="signal">This device</Badge>}
                 </div>
-                <p className="font-mono text-xs text-smoke">
+                <p className="font-data text-xs text-smoke">
                   {session.ipAddress ?? 'Unknown IP'} · last active{' '}
                   {new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Detroit" }).format(new Date(session.lastUsedAt))}
                 </p>
