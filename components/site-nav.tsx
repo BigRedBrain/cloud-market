@@ -4,6 +4,7 @@ import { Menu, ShoppingBag, X } from 'lucide-react'
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 
+import { HeaderCloudFireStrip } from '@/components/brand/header-cloud-fire-strip'
 import { Logo } from '@/components/brand/logo'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -58,6 +59,43 @@ export function SiteNav({ bagCount = 0 }: SiteNavProps) {
 
   return (
     <header className="distressed sticky top-0 z-50 border-b-2 border-ink bg-ink-900/95 backdrop-blur-sm">
+      {/*
+       * Approved cloud/fire artwork, decorative only.
+       *
+       * Mounted on the <header> rather than the inner bar so it runs full-bleed
+       * — the bar is `max-w-7xl`, which would have left the artwork as a
+       * centred band with bare header either side on a wide screen.
+       *
+       * `h-16` pins it to the bar's own height. The strip is `absolute inset-0`,
+       * and the header also contains the mobile disclosure panel, so without an
+       * explicit height the artwork would stretch downward every time the menu
+       * opened. When top, bottom and height are all set, `bottom` is ignored —
+       * so this anchors to the top and stays exactly the height of the bar.
+       *
+       * Opacity is set by MEASUREMENT, not by eye. Cream nav labels over the
+       * strip's lightest cloud pixels were measured at each step:
+       *
+       *   0.40 -> 3.95:1  FAILS AA
+       *   0.32 -> 5.10:1
+       *   0.30 -> ~5.5:1  (used at lg)
+       *   0.20 -> 7.85:1  (used on mobile)
+       *
+       * So the component's own `ambient` (0.40) is too strong once real text
+       * sits on top of it, and desktop is capped at 0.30 for headroom. Mobile
+       * goes lower again because the artwork masses its smoke and fire at the
+       * left and right edges — exactly where a phone puts the logo and the
+       * bag/menu controls, with no room for the artwork's empty centre.
+       *
+       * The header is `sticky z-50`, so it forms a stacking context: the strip's
+       * negative z-index paints it above the header's own background but below
+       * every in-flow control. It is `aria-hidden` and `pointer-events-none`
+       * inside the component, so it can neither be reached nor clicked.
+       */}
+      <HeaderCloudFireStrip
+        intensity="ambient"
+        className="h-16 opacity-20 sm:opacity-25 lg:opacity-30"
+      />
+
       <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
         {/*
          * Only `/` exists today. `typedRoutes` type-checks Link hrefs, so the
