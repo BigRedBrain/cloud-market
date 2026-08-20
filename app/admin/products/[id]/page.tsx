@@ -35,7 +35,7 @@ export default async function AdminProductPage({
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
       <nav aria-label="Breadcrumb" className="mb-4">
-        <ol className="flex items-center gap-2 font-mono text-xs text-smoke">
+        <ol className="flex items-center gap-2 font-data text-xs text-smoke">
           <li>
             <Link href="/admin/products" className="underline underline-offset-4 hover:text-white">
               Products
@@ -47,13 +47,13 @@ export default async function AdminProductPage({
       </nav>
 
       <div className="mb-6 flex flex-wrap items-baseline justify-between gap-3">
-        <h1 className="font-display text-2xl tracking-tight text-white uppercase">
+        <h1 className="font-poster text-2xl tracking-tight text-white uppercase">
           {product.name}
         </h1>
         {product.status === 'active' && (
           <Link
             href={`/product/${product.slug}` as Route}
-            className="font-mono text-xs text-ember underline underline-offset-4"
+            className="font-data text-xs text-ember underline underline-offset-4"
           >
             View on shop →
           </Link>
@@ -79,7 +79,7 @@ export default async function AdminProductPage({
         </CardContent>
       </Card>
 
-      <h2 className="mb-4 font-display text-xl tracking-tight text-white uppercase">
+      <h2 className="mb-4 font-poster text-xl tracking-tight text-white uppercase">
         Variants ({variants.length})
       </h2>
 
@@ -98,7 +98,7 @@ export default async function AdminProductPage({
             <CardHeader>
               <CardTitle>
                 {variant.label}{' '}
-                <span className="font-mono text-sm font-normal text-smoke">
+                <span className="font-data text-sm font-normal text-smoke">
                   {variant.sku} · {formatCents(variant.priceCents)} ·{' '}
                   {variant.inventoryQuantity} in stock
                   {!variant.active && ' · inactive'}

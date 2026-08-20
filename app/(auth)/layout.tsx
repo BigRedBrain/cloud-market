@@ -20,7 +20,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
     <>
       <header className="border-b-2 border-ink bg-ink-900">
         <div className="mx-auto flex h-16 w-full max-w-lg items-center px-4 sm:px-6">
-          <Link href="/" className="-ml-2 rounded-md" aria-label="Cloud Market home">
+          <Link href="/" className="-ml-2 rounded-md" aria-label="CloudMarket home">
             <Logo variant="full" tone="cream" showLabel={false} />
           </Link>
         </div>

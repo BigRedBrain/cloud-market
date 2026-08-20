@@ -39,7 +39,7 @@ export default async function AdminHomepagePage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
-      <h1 className="mb-2 font-display text-2xl tracking-tight text-white uppercase">
+      <h1 className="mb-2 font-poster text-2xl tracking-tight text-white uppercase">
         Homepage
       </h1>
       <p className="mb-6 max-w-2xl text-sm text-smoke">
@@ -68,10 +68,10 @@ export default async function AdminHomepagePage() {
           <Card key={section.id}>
             <CardHeader>
               <CardTitle className="flex flex-wrap items-center gap-3">
-                <span className="font-mono text-sm text-smoke">#{section.sortOrder}</span>
+                <span className="font-data text-sm text-smoke">#{section.sortOrder}</span>
                 <span>{section.name}</span>
                 <StatusPill status={section.status} liveNow={section.liveNow} />
-                <span className="font-mono text-sm font-normal text-smoke">
+                <span className="font-data text-sm font-normal text-smoke">
                   {section.type}
                 </span>
               </CardTitle>

@@ -49,7 +49,7 @@ export default async function AdminBadgesPage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
-      <h1 className="mb-2 font-display text-2xl tracking-tight text-white uppercase">
+      <h1 className="mb-2 font-poster text-2xl tracking-tight text-white uppercase">
         Badges
       </h1>
       <p className="mb-6 max-w-2xl text-sm text-smoke">
@@ -80,7 +80,7 @@ export default async function AdminBadgesPage() {
                 >
                   {badge.icon ? `${badge.icon} ${badge.label}` : badge.label}
                 </Badge>
-                <span className="font-mono text-sm font-normal text-smoke">
+                <span className="font-data text-sm font-normal text-smoke">
                   /{badge.slug} · {badge.productCount} product
                   {badge.productCount === 1 ? '' : 's'}
                   {!badge.active && ' · inactive'}
@@ -104,7 +104,7 @@ export default async function AdminBadgesPage() {
               assignments.find((row) => row.id === product.id)?.badgeIds ?? []
             return (
               <div key={product.id} className="flex flex-col gap-2">
-                <h3 className="font-mono text-xs tracking-widest text-smoke uppercase">
+                <h3 className="font-data text-xs tracking-widest text-smoke uppercase">
                   {product.name}
                   {product.status !== 'active' && ` (${product.status})`}
                 </h3>

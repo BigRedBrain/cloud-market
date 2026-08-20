@@ -159,11 +159,11 @@ export function CatalogComplianceWorkbench({
 
       {/* ---------------------------------------------------------- matrix */}
       <details className="rounded-md border-solid border-ink bg-ink-800 p-4 [border-width:var(--outline-ink)]">
-        <summary className="cursor-pointer font-mono text-xs tracking-widest text-smoke uppercase">
+        <summary className="cursor-pointer font-data text-xs tracking-widest text-smoke uppercase">
           The classification matrix
         </summary>
         <div className="mt-3 overflow-x-auto">
-          <table className="w-full min-w-[40rem] border-collapse font-mono text-xs">
+          <table className="w-full min-w-[40rem] border-collapse font-data text-xs">
             <thead>
               <tr className="border-b-2 border-ink text-left text-smoke">
                 <th className="py-2 pr-4 font-normal">Class</th>
@@ -203,7 +203,7 @@ export function CatalogComplianceWorkbench({
               type="button"
               onClick={() => setFilter(f.key)}
               aria-pressed={filter === f.key}
-              className={`rounded-md border-solid border-ink px-3 py-1.5 font-sans text-sm font-semibold [border-width:var(--outline-ink)] ${
+              className={`rounded-md border-solid border-ink px-3 py-1.5 font-ui text-sm font-semibold [border-width:var(--outline-ink)] ${
                 filter === f.key ? 'bg-ember text-ink' : 'text-cream'
               }`}
             >
@@ -213,7 +213,7 @@ export function CatalogComplianceWorkbench({
         </div>
 
         <div className="flex flex-wrap items-center gap-4">
-          <label className="flex items-center gap-2 font-sans text-sm text-cream">
+          <label className="flex items-center gap-2 font-ui text-sm text-cream">
             <input
               type="checkbox"
               checked={showInactive}
@@ -223,12 +223,12 @@ export function CatalogComplianceWorkbench({
             Include inactive
           </label>
 
-          <label className="flex items-center gap-2 font-sans text-sm text-cream">
+          <label className="flex items-center gap-2 font-ui text-sm text-cream">
             Class
             <select
               value={classFilter}
               onChange={(e) => setClassFilter(e.target.value)}
-              className="h-9 rounded-md border-solid border-ink bg-ink-700 px-2 font-mono text-xs text-cream [border-width:var(--outline-ink)]"
+              className="h-9 rounded-md border-solid border-ink bg-ink-700 px-2 font-data text-xs text-cream [border-width:var(--outline-ink)]"
             >
               <option value="any">any</option>
               <option value="null">unclassified</option>
@@ -240,7 +240,7 @@ export function CatalogComplianceWorkbench({
             </select>
           </label>
 
-          <span className="font-mono text-xs text-smoke">
+          <span className="font-data text-xs text-smoke">
             {visible.length} shown · {selected.size} selected
           </span>
         </div>
@@ -249,10 +249,10 @@ export function CatalogComplianceWorkbench({
       {/* ------------------------------------------------------------ bulk */}
       {selected.size > 0 && (
         <div className="rounded-md border-solid border-ember bg-ink-800 p-4 [border-width:var(--outline-ink)]">
-          <h3 className="mb-3 font-mono text-xs tracking-widest text-ember uppercase">
+          <h3 className="mb-3 font-data text-xs tracking-widest text-ember uppercase">
             Classify {selected.size} selected variant{selected.size === 1 ? '' : 's'}
           </h3>
-          <p className="mb-4 font-sans text-sm text-smoke">
+          <p className="mb-4 font-ui text-sm text-smoke">
             One class, one measurement, applied to every selected SKU. Only use
             this where the same value genuinely applies to all of them — a
             two-gram and a three-and-a-half-gram jar are not the same
@@ -272,7 +272,7 @@ export function CatalogComplianceWorkbench({
                 ))}
 
                 <div className="max-h-48 overflow-y-auto rounded-md border-solid border-ink bg-ink-900 p-3 [border-width:var(--outline-ink)]">
-                  <table className="w-full border-collapse font-mono text-xs">
+                  <table className="w-full border-collapse font-data text-xs">
                     <tbody>
                       {rows
                         .filter((r) => selected.has(r.variantId))
@@ -309,7 +309,7 @@ export function CatalogComplianceWorkbench({
                       name="cannabisClass"
                       value={bulkClass}
                       onChange={(e) => setBulkClass(e.target.value)}
-                      className="h-11 w-full rounded-md border-solid border-ink bg-ink-700 px-3 font-sans text-base text-cream [border-width:var(--outline-ink)]"
+                      className="h-11 w-full rounded-md border-solid border-ink bg-ink-700 px-3 font-ui text-base text-cream [border-width:var(--outline-ink)]"
                     >
                       {classes.map((c) => (
                         <option key={c} value={c}>
@@ -380,9 +380,9 @@ function Stat({
 }) {
   return (
     <div className="rounded-md border-solid border-ink bg-ink-800 p-4 [border-width:var(--outline-ink)]">
-      <div className="font-mono text-xs tracking-widest text-smoke uppercase">{label}</div>
+      <div className="font-data text-xs tracking-widest text-smoke uppercase">{label}</div>
       <div
-        className={`mt-1 font-mono text-xl ${
+        className={`mt-1 font-data text-xl ${
           tone === 'flare' ? 'text-flare' : tone === 'volt' ? 'text-volt' : 'text-white'
         }`}
       >
@@ -430,11 +430,11 @@ function VariantCard({
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-sans text-sm font-semibold text-white">
+            <span className="font-ui text-sm font-semibold text-white">
               {row.productName}
             </span>
-            <span className="font-mono text-xs text-smoke">{row.label}</span>
-            <span className="font-mono text-xs text-smoke">{row.sku}</span>
+            <span className="font-data text-xs text-smoke">{row.label}</span>
+            <span className="font-data text-xs text-smoke">{row.sku}</span>
             <Badge variant={row.ready ? 'volt' : 'flare'}>
               {row.ready ? 'Ready' : 'Not ready'}
             </Badge>
@@ -443,7 +443,7 @@ function VariantCard({
             </Badge>
           </div>
 
-          <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs sm:grid-cols-3">
+          <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 font-data text-xs sm:grid-cols-3">
             <Pair label="class" value={row.cannabisClass ?? '—'} />
             <Pair label="basis" value={row.measurementBasis?.replace(/_/g, ' ') ?? '—'} />
             <Pair
@@ -463,7 +463,7 @@ function VariantCard({
           </dl>
 
           {row.reason && (
-            <p role="status" className="mt-2 font-sans text-sm text-flare">
+            <p role="status" className="mt-2 font-ui text-sm text-flare">
               {row.reason}
             </p>
           )}
@@ -499,7 +499,7 @@ function VariantCard({
                       name="cannabisClass"
                       value={chosen}
                       onChange={(e) => setChosen(e.target.value)}
-                      className="h-11 w-full rounded-md border-solid border-ink bg-ink-700 px-3 font-sans text-base text-cream [border-width:var(--outline-ink)]"
+                      className="h-11 w-full rounded-md border-solid border-ink bg-ink-700 px-3 font-ui text-base text-cream [border-width:var(--outline-ink)]"
                     >
                       {classes.map((c) => (
                         <option key={c} value={c}>

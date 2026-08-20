@@ -82,7 +82,7 @@ export function CloudButton({
       type={type}
       className={cn(
         'group relative isolate inline-flex items-center justify-center',
-        'font-display tracking-wide text-ink uppercase',
+        'font-poster tracking-wide text-ink uppercase',
         'transition-transform duration-150 ease-out',
         'hover:-translate-y-0.5 active:translate-y-px',
         'disabled:pointer-events-none disabled:opacity-50',

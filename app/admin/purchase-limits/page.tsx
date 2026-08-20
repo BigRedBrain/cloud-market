@@ -50,7 +50,7 @@ export const metadata: Metadata = {
  */
 
 const STATE_TONE = {
-  effective: 'volt',
+  effective: 'signal',
   scheduled: 'ember',
   cancelled: 'smoke',
   superseded: 'outline',
@@ -89,19 +89,19 @@ function HistoryRow({ rule }: { rule: RuleHistoryRow }) {
   return (
     <div className="border-t border-ink-600 py-4 first:border-t-0">
       <div className="mb-2 flex flex-wrap items-center gap-3">
-        <span className="font-mono text-sm text-white">
+        <span className="font-data text-sm text-white">
           {rule.cannabisClass} · v{rule.version}
         </span>
         <Badge variant={STATE_TONE[rule.state]}>{STATE_LABEL[rule.state]}</Badge>
         {rule.citedByLines > 0 && (
-          <span className="font-mono text-xs text-smoke">
+          <span className="font-data text-xs text-smoke">
             cited by {rule.citedByLines} order line
             {rule.citedByLines === 1 ? '' : 's'}
           </span>
         )}
       </div>
 
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-xs text-smoke sm:grid-cols-4">
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-1 font-data text-xs text-smoke sm:grid-cols-4">
         <div>
           <dt className="inline">conversion </dt>
           <dd className="inline text-white">{ratioOf(rule)}</dd>
@@ -201,7 +201,7 @@ export default async function AdminPurchaseLimitsPage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
-      <h1 className="mb-2 font-display text-2xl tracking-tight text-white uppercase">
+      <h1 className="mb-2 font-poster text-2xl tracking-tight text-white uppercase">
         Purchase limits
       </h1>
       <p className="mb-6 max-w-2xl text-sm text-smoke">
@@ -232,7 +232,7 @@ export default async function AdminPurchaseLimitsPage() {
             </p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[48rem] border-collapse font-mono text-sm">
+              <table className="w-full min-w-[48rem] border-collapse font-data text-sm">
                 <thead>
                   <tr className="border-b-2 border-ink text-left text-xs tracking-widest text-smoke uppercase">
                     <th className="py-2 pr-4 font-normal">Class</th>

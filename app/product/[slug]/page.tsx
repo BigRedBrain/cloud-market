@@ -33,7 +33,7 @@ function Spec({ label, value }: { label: string; value: string | null }) {
   return (
     <div className="flex justify-between gap-4 border-b border-ink-600 py-2 last:border-b-0">
       <dt className="text-smoke">{label}</dt>
-      <dd className="font-mono font-bold text-white">{value}</dd>
+      <dd className="font-data font-bold text-white">{value}</dd>
     </div>
   )
 }
@@ -74,7 +74,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-10 sm:px-6">
         <nav aria-label="Breadcrumb" className="mb-6">
-          <ol className="flex flex-wrap items-center gap-2 font-mono text-xs text-smoke">
+          <ol className="flex flex-wrap items-center gap-2 font-data text-xs text-smoke">
             <li>
               <Link href="/shop" className="underline underline-offset-4 hover:text-white">
                 Shop
@@ -139,12 +139,12 @@ export default async function ProductPage({ params }: ProductPageProps) {
             <div className="flex flex-col gap-2">
               <Link
                 href={`/shop?brand=${brand.slug}` as Route}
-                className="font-mono text-xs tracking-widest text-ember uppercase underline underline-offset-4"
+                className="font-data text-xs tracking-widest text-ember uppercase underline underline-offset-4"
               >
                 {brand.name}
               </Link>
 
-              <h1 className="font-display text-4xl leading-tight tracking-tight text-white uppercase">
+              <h1 className="font-poster text-4xl leading-tight tracking-tight text-white uppercase">
                 {product.name}
               </h1>
 
@@ -175,7 +175,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
                 <CardTitle>Sizes and prices</CardTitle>
               </CardHeader>
               <CardContent className="p-0">
-                <table className="w-full font-mono text-sm">
+                <table className="w-full font-data text-sm">
                   <caption className="sr-only">
                     Available sizes, prices and stock for {product.name}
                   </caption>
@@ -209,7 +209,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
                           ) : variant.inventoryQuantity <= 3 ? (
                             <span className="text-ember">Only {variant.inventoryQuantity} left</span>
                           ) : (
-                            <span className="text-volt">In stock</span>
+                            <span className="text-status-instock">In stock</span>
                           )}
                         </td>
                         <td className="px-4 py-3">
@@ -235,7 +235,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
               <CardTitle>Details</CardTitle>
             </CardHeader>
             <CardContent>
-              <dl className="font-mono text-sm">
+              <dl className="font-data text-sm">
                 <Spec
                   label="Strain type"
                   value={
@@ -269,7 +269,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
               <CardContent className="flex flex-col gap-4">
                 {product.effects && product.effects.length > 0 && (
                   <div className="flex flex-col gap-2">
-                    <h3 className="font-mono text-xs tracking-widest text-smoke uppercase">
+                    <h3 className="font-data text-xs tracking-widest text-smoke uppercase">
                       Effects
                     </h3>
                     <ul className="flex flex-wrap gap-2">
@@ -284,7 +284,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
 
                 {product.flavors && product.flavors.length > 0 && (
                   <div className="flex flex-col gap-2">
-                    <h3 className="font-mono text-xs tracking-widest text-smoke uppercase">
+                    <h3 className="font-data text-xs tracking-widest text-smoke uppercase">
                       Flavours
                     </h3>
                     <ul className="flex flex-wrap gap-2">
@@ -299,10 +299,10 @@ export default async function ProductPage({ params }: ProductPageProps) {
 
                 {terpenes.length > 0 && (
                   <div className="flex flex-col gap-2">
-                    <h3 className="font-mono text-xs tracking-widest text-smoke uppercase">
+                    <h3 className="font-data text-xs tracking-widest text-smoke uppercase">
                       Terpenes
                     </h3>
-                    <dl className="font-mono text-sm">
+                    <dl className="font-data text-sm">
                       {terpenes.map(([name, value]) => (
                         <div
                           key={name}
@@ -322,7 +322,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
 
         {alsoLike.length > 0 && (
           <section className="mt-14">
-            <h2 className="mb-5 font-display text-2xl tracking-tight text-white uppercase">
+            <h2 className="mb-5 font-poster text-2xl tracking-tight text-white uppercase">
               More {category.name.toLowerCase()}
             </h2>
             <ul className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">

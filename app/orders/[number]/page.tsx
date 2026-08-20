@@ -93,10 +93,10 @@ export default async function OrderPage({
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6">
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <h1 className="font-display text-3xl tracking-tight text-white uppercase">
+          <h1 className="font-poster text-3xl tracking-tight text-white uppercase">
             Order {order.orderNumber}
           </h1>
-          <Badge variant={order.currentStatus === 'cancelled' ? 'smoke' : 'volt'}>
+          <Badge variant={order.currentStatus === 'cancelled' ? 'smoke' : 'signal'}>
             {order.currentStatus}
           </Badge>
         </div>
@@ -136,14 +136,14 @@ export default async function OrderPage({
                         ({line.variantLabel}) &times; {line.quantity}
                       </span>
                     </span>
-                    <span className="font-mono text-white">
+                    <span className="font-data text-white">
                       {formatCents(line.lineTotalCents)}
                     </span>
                   </li>
                 ))}
               </ul>
 
-              <dl className="mt-5 flex flex-col gap-2 border-t-2 border-ink pt-4 font-mono text-sm">
+              <dl className="mt-5 flex flex-col gap-2 border-t-2 border-ink pt-4 font-data text-sm">
                 <div className="flex justify-between gap-4">
                   <dt className="text-smoke">Subtotal</dt>
                   <dd className="text-white">{formatCents(order.subtotalCents)}</dd>
@@ -171,7 +171,7 @@ export default async function OrderPage({
               <CardTitle>History</CardTitle>
             </CardHeader>
             <CardContent>
-              <ol className="flex flex-col gap-2 font-mono text-xs text-smoke">
+              <ol className="flex flex-col gap-2 font-data text-xs text-smoke">
                 {events.map((event) => (
                   <li key={event.id} className="flex justify-between gap-4">
                     <span className="text-white">{event.eventType}</span>

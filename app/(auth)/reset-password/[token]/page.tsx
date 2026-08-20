@@ -52,7 +52,7 @@ export default async function ResetPasswordPage({
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
-        <h1 className="font-display text-3xl tracking-tight text-white uppercase">
+        <h1 className="font-poster text-3xl tracking-tight text-white uppercase">
           Set a new password
         </h1>
         <p className="text-sm text-smoke">

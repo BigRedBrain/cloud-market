@@ -34,7 +34,7 @@ export default async function AdminProductsPage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
-      <h1 className="mb-6 font-display text-2xl tracking-tight text-white uppercase">
+      <h1 className="mb-6 font-poster text-2xl tracking-tight text-white uppercase">
         Products
       </h1>
 
@@ -53,7 +53,7 @@ export default async function AdminProductsPage() {
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <table className="w-full font-mono text-sm">
+            <table className="w-full font-data text-sm">
               <caption className="sr-only">
                 Every product, including drafts and archived items
               </caption>

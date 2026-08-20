@@ -25,7 +25,7 @@ export default async function AdminPage() {
 
   return (
     <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-10 sm:px-6">
-      <h1 className="mb-6 font-display text-2xl tracking-tight text-white uppercase">
+      <h1 className="mb-6 font-poster text-2xl tracking-tight text-white uppercase">
         Admin
       </h1>
 
@@ -42,7 +42,7 @@ export default async function AdminPage() {
             <span className="text-smoke">Role</span>
             <span className="text-white">{admin.role}</span>
           </div>
-          <p className="mt-3 font-sans text-xs text-smoke">
+          <p className="mt-3 font-ui text-xs text-smoke">
             Product, inventory and category management arrive in Phase 2.
           </p>
         </CardContent>

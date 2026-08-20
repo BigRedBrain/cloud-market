@@ -49,7 +49,7 @@ function CardHeader({ className, ...props }: React.ComponentProps<'div'>) {
 function CardTitle({ className, ...props }: React.ComponentProps<'h3'>) {
   return (
     <h3
-      className={cn('font-display text-xl leading-tight tracking-tight', className)}
+      className={cn('font-poster text-xl leading-tight tracking-tight', className)}
       {...props}
     />
   )
@@ -58,7 +58,7 @@ function CardTitle({ className, ...props }: React.ComponentProps<'h3'>) {
 function CardDescription({ className, ...props }: React.ComponentProps<'p'>) {
   return (
     <p
-      className={cn('font-sans text-sm text-muted-foreground', className)}
+      className={cn('font-ui text-sm text-muted-foreground', className)}
       {...props}
     />
   )

@@ -50,7 +50,7 @@ export default async function BagPage({
       <SiteNav bagCount={bag.itemCount} />
 
       <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-10 sm:px-6">
-        <h1 className="mb-6 font-display text-3xl tracking-tight text-white uppercase">
+        <h1 className="mb-6 font-poster text-3xl tracking-tight text-white uppercase">
           Your bag
         </h1>
 
@@ -110,10 +110,10 @@ export default async function BagPage({
                         </div>
 
                         <div className="flex flex-1 flex-col gap-1">
-                          <p className="font-mono text-[0.6875rem] tracking-widest text-smoke uppercase">
+                          <p className="font-data text-[0.6875rem] tracking-widest text-smoke uppercase">
                             {line.categoryName}
                           </p>
-                          <h2 className="font-display text-lg leading-tight tracking-tight text-white">
+                          <h2 className="font-poster text-lg leading-tight tracking-tight text-white">
                             <Link
                               href={`/product/${line.productSlug}` as never}
                               className="underline-offset-4 hover:underline"
@@ -121,7 +121,7 @@ export default async function BagPage({
                               {line.productName}
                             </Link>
                           </h2>
-                          <p className="font-mono text-xs text-smoke">
+                          <p className="font-data text-xs text-smoke">
                             {line.label} · {line.sku}
                           </p>
 
@@ -149,14 +149,14 @@ export default async function BagPage({
                         </div>
 
                         <div className="text-right">
-                          <p className="font-mono text-lg font-bold text-white">
+                          <p className="font-data text-lg font-bold text-white">
                             {formatCents(line.lineTotalCents)}
                           </p>
-                          <p className="font-mono text-xs text-smoke">
+                          <p className="font-data text-xs text-smoke">
                             {formatCents(line.unitPriceCents)} each
                           </p>
                           {line.compareAtPriceCents && (
-                            <p className="font-mono text-xs text-smoke line-through">
+                            <p className="font-data text-xs text-smoke line-through">
                               {formatCents(line.compareAtPriceCents * line.quantity)}
                             </p>
                           )}
@@ -179,7 +179,7 @@ export default async function BagPage({
                   </span>
                   <span className="font-bold">{formatCents(bag.subtotalCents)}</span>
                 </div>
-                <p className="mt-1 font-sans text-xs text-muted-foreground">
+                <p className="mt-1 font-ui text-xs text-muted-foreground">
                   Delivery, taxes and any discounts are calculated at checkout.
                   Prices shown are current and may change until you order.
                 </p>
@@ -188,7 +188,7 @@ export default async function BagPage({
                   <StartCheckoutForm disabled={bag.hasIssues} />
                 </div>
 
-                <p className="text-center font-sans text-xs text-muted-foreground">
+                <p className="text-center font-ui text-xs text-muted-foreground">
                   Adding to your bag doesn&apos;t reserve stock. Items are held
                   for 15 minutes once you start checkout.
                 </p>

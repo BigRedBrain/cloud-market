@@ -1,66 +1,55 @@
+import Image from 'next/image'
+
+import submarkArt from '@/brand/production/logo/cloudmarket-submark.png'
+import wordmarkArt from '@/brand/production/logo/cloudmarket-wordmark.png'
 import { cn } from '@/lib/utils'
 
 /**
- * Cloud Market logo.
+ * CloudMarket logo.
  *
- * The mark is the same cloud silhouette as the signature button, stroked in
- * ink — the brand's one shape, used at every scale. The wordmark is Anton,
- * tightened and uppercase.
+ * This renders the APPROVED production artwork. It previously drew a stroked
+ * cloud silhouette in SVG with an Anton "Cloud Market" wordmark beside it —
+ * legacy art from the pre-CloudMarket product, and the wrong company name.
+ * Nothing is drawn here any more: both variants are the approved files from
+ * `brand/production/logo/`, resized for chrome and never redrawn or recoloured.
  *
- * PLACEMENT RULES (enforced here where code can, documented in DESIGN.md where
- * it cannot):
+ * WHY next/image DIRECTLY, RATHER THAN <CloudMarketWordmark>
  *
- * - Clear space: a margin equal to the mark's cap-height on all four sides.
- *   Built into `variant="full"` and `variant="stacked"` as padding, so a
- *   correctly-placed logo is the default rather than a thing to remember.
- * - Minimum size: 24px for the mark, 96px wide for the lockup. Below that the
- *   ink outline closes up and the lobes read as a blob.
- * - The mark never rotates, never gets a gradient fill, and never sits on a
- *   mid-tone. It goes on ink, on cream, or on a bright brand fill — nothing in
- *   between, because the 2px outline needs a decisive value contrast.
- * - `tone="cream"` on dark surfaces, `tone="ink"` on cream paper panels and on
- *   volt/ember fills. There is no third option on purpose.
+ * That wrapper sizes by max-width and hard-codes `sizes="(min-width: 1024px)
+ * 576px, 90vw"`, which is correct for a hero and badly wrong for a 96px header
+ * slot — it would make Next serve a ~576px derivative for a mark a sixth that
+ * size, on every page that has a header. This component needs height-driven
+ * sizing and its own `sizes`, so it consumes the same approved assets directly.
+ *
+ * PLACEMENT RULES
+ *
+ * - Minimum size: the lockup is 96px wide at `full`, which is the documented
+ *   floor. The brush strokes and the fire outline close up below that.
+ * - Both files are white-and-fire artwork on transparency, so they REQUIRE a
+ *   dark backing. `tone="cream"` assumes the surrounding surface is already
+ *   dark. `tone="ink"` — used on Pearl paper panels — supplies its own Dark
+ *   Smoke plate, because the artwork would otherwise disappear into the panel.
+ *   That is why tone is still binary rather than a free colour.
+ * - The artwork is never rotated, recoloured, or stretched; `w-auto` with a
+ *   fixed height preserves the intrinsic ratio (wordmark 3:1, submark 1:1).
+ *
+ * No layout shift: both are static imports, so next/image knows the intrinsic
+ * dimensions at build time and reserves the box before any bytes arrive.
  */
-
-const CLOUD_PATH =
-  'M30 88 C12 88 4 74 12 61 C4 46 18 30 36 34 C42 14 70 8 84 22 ' +
-  'C96 6 128 6 140 24 C160 16 182 30 178 50 C196 54 200 78 184 88 Z'
 
 type LogoProps = {
   variant?: 'full' | 'mark' | 'stacked'
   tone?: 'cream' | 'ink'
   className?: string
-  /** Renders as plain text for screen readers; set false inside a labelled link. */
+  /**
+   * Whether the logo carries the accessible name. Set false inside a link that
+   * already has its own `aria-label`, so the name is not announced twice.
+   */
   showLabel?: boolean
 }
 
-function CloudMark({ tone, className }: { tone: 'cream' | 'ink'; className?: string }) {
-  const stroke = tone === 'cream' ? 'var(--cream)' : 'var(--ink-950)'
-
-  return (
-    <svg
-      viewBox="0 0 200 96"
-      aria-hidden="true"
-      className={cn('h-7 w-auto shrink-0', className)}
-    >
-      <path
-        d={CLOUD_PATH}
-        fill="none"
-        stroke={stroke}
-        strokeWidth="9"
-        strokeLinejoin="round"
-      />
-      {/* Two vents: the mark reads as smoke leaving, not just weather. */}
-      <path
-        d="M74 44 C70 36 82 32 78 24 M118 40 C114 32 126 28 122 20"
-        fill="none"
-        stroke={stroke}
-        strokeWidth="7"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
+/** Dark plate for paper panels — see the tone note above. */
+const PLATE = 'rounded-md bg-dark-smoke'
 
 export function Logo({
   variant = 'full',
@@ -68,44 +57,75 @@ export function Logo({
   className,
   showLabel = true,
 }: LogoProps) {
-  const text = tone === 'cream' ? 'text-cream' : 'text-ink'
+  const alt = showLabel ? 'CloudMarket' : ''
+  const hidden = showLabel ? undefined : true
+  const onPaper = tone === 'ink'
 
   if (variant === 'mark') {
     return (
-      <span className={cn('inline-flex', className)}>
-        <CloudMark tone={tone} />
-        {showLabel && <span className="sr-only">Cloud Market</span>}
+      <span
+        className={cn(
+          'inline-flex shrink-0 items-center',
+          onPaper && `${PLATE} p-1`,
+          className,
+        )}
+      >
+        <Image
+          src={submarkArt}
+          alt={alt}
+          aria-hidden={hidden}
+          sizes="48px"
+          className="h-7 w-auto"
+        />
       </span>
     )
   }
 
   if (variant === 'stacked') {
     return (
-      <span className={cn('inline-flex flex-col items-center gap-2 p-3', className)}>
-        <CloudMark tone={tone} className="h-12" />
-        <span
-          className={cn(
-            'font-display text-2xl leading-none tracking-tight uppercase',
-            text,
-          )}
-        >
-          Cloud Market
-        </span>
+      <span
+        className={cn(
+          'inline-flex flex-col items-center gap-2 p-3',
+          onPaper && PLATE,
+          className,
+        )}
+      >
+        <Image
+          src={submarkArt}
+          alt=""
+          aria-hidden
+          sizes="96px"
+          className="h-12 w-auto"
+        />
+        <Image
+          src={wordmarkArt}
+          alt={alt}
+          aria-hidden={hidden}
+          sizes="192px"
+          className="h-8 w-auto"
+        />
       </span>
     )
   }
 
+  // full — the horizontal lockup. The wordmark artwork already carries the
+  // cloud, smoke and fire treatment, so it stands alone: pairing it with the
+  // submark here would state the brand twice and double the header footprint.
   return (
-    <span className={cn('inline-flex items-center gap-2.5 p-2', className)}>
-      <CloudMark tone={tone} />
-      <span
-        className={cn(
-          'font-display text-xl leading-none tracking-tight uppercase',
-          text,
-        )}
-      >
-        Cloud Market
-      </span>
+    <span
+      className={cn(
+        'inline-flex shrink-0 items-center p-2',
+        onPaper && PLATE,
+        className,
+      )}
+    >
+      <Image
+        src={wordmarkArt}
+        alt={alt}
+        aria-hidden={hidden}
+        sizes="128px"
+        className="h-8 w-auto"
+      />
     </span>
   )
 }

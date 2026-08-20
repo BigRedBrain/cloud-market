@@ -35,7 +35,7 @@ import { cn } from '@/lib/utils'
  */
 
 const selectClass = cn(
-  'h-11 w-full rounded-md bg-ink-700 px-3 font-sans text-base text-white',
+  'h-11 w-full rounded-md bg-ink-700 px-3 font-ui text-base text-white',
   'border-solid border-ink [border-width:var(--outline-ink)]',
 )
 
@@ -72,7 +72,7 @@ function PublishFields({
 }) {
   return (
     <fieldset className="flex flex-col gap-4 border-t border-ink-600 pt-4">
-      <legend className="font-mono text-xs tracking-widest text-smoke uppercase">
+      <legend className="font-data text-xs tracking-widest text-smoke uppercase">
         Scheduling
       </legend>
 
@@ -122,7 +122,7 @@ function PublishFields({
 
 /** Live / scheduled / draft, using the frozen Badge variants. */
 export function StatusPill({ status, liveNow }: { status: string; liveNow?: boolean }) {
-  if (liveNow) return <Badge variant="volt">Live now</Badge>
+  if (liveNow) return <Badge variant="signal">Live now</Badge>
   if (status === 'scheduled') return <Badge variant="ember">Scheduled</Badge>
   if (status === 'archived') return <Badge variant="outline">Archived</Badge>
   if (status === 'published') return <Badge variant="smoke">Published — outside window</Badge>
@@ -355,7 +355,7 @@ export function MembershipToggles({
                 <Button
                   type="submit"
                   size="sm"
-                  variant={isSelected ? 'volt' : 'outline'}
+                  variant={isSelected ? 'confirm' : 'outline'}
                   aria-pressed={isSelected}
                 >
                   {isSelected ? '✓ ' : '+ '}

@@ -14,13 +14,15 @@ import { cn } from '@/lib/utils'
  *    cause a mis-tap.
  *  - The ember glow stacks *on top of* the ink shadow rather than replacing it,
  *    so the control keeps its printed edge and gains heat.
- *  - Focus gets the same glow at lower intensity, plus the global volt focus
- *    ring. Keyboard users get the ember treatment too, not a lesser version.
+ *  - Focus gets the same glow at lower intensity, plus the global two-layer
+ *    focus ring. Keyboard users get the ember treatment too, not a lesser
+ *    version.
  *
  * Colour roles follow the brand hierarchy: ember (fiery orange) is the primary
- * action, flare (ember red) is destructive, and volt (electric green) is
- * rationed to confirmation and success. Green is a signal here, not a palette
- * entry — using it for ordinary actions would spend its meaning.
+ * action, flare (ember red) is destructive, and Signal Yellow is rationed to
+ * confirmation and success. Green is no longer a brand colour at all: it is
+ * reserved for in-stock and availability, reachable only through
+ * `--status-instock`.
  *
  * Every filled variant pairs a bright fill with INK text, per the contrast
  * contract in globals.css.
@@ -28,7 +30,7 @@ import { cn } from '@/lib/utils'
 const buttonVariants = cva(
   [
     'relative inline-flex items-center justify-center gap-2 whitespace-nowrap',
-    'font-sans font-semibold tracking-tight',
+    'font-ui font-semibold tracking-tight',
     'border-solid border-ink rounded-md [border-width:var(--outline-ink)]',
     'transition-[transform,box-shadow,background-color] duration-150 ease-out',
     'select-none',
@@ -43,8 +45,13 @@ const buttonVariants = cva(
         primary: 'bg-ember text-ink hover:bg-ember-deep',
         /** Ember red. Destructive and urgent actions. */
         destructive: 'bg-flare text-ink hover:bg-flare-deep',
-        /** Electric green. Confirmation and success ONLY — see note above. */
-        volt: 'bg-volt text-ink hover:bg-volt-deep',
+        /**
+         * Signal Yellow. Confirmation and success ONLY — see note above.
+         *
+         * Renamed from `volt`: green is no longer a CloudMarket brand colour,
+         * and the old name would have kept pointing new work at it.
+         */
+        confirm: 'bg-signal-yellow text-ink hover:brightness-95',
         /** Cream. Secondary action on dark, and the default on paper panels. */
         paper: 'bg-cream text-ink hover:bg-cream-dim',
         outline: 'bg-transparent text-white border-white/70 hover:bg-white/10',

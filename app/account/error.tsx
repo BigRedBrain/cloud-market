@@ -29,7 +29,7 @@ export default function AccountError({
 }) {
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="font-display text-3xl tracking-tight text-white uppercase">
+      <h1 className="font-poster text-3xl tracking-tight text-white uppercase">
         Account
       </h1>
 
@@ -49,7 +49,7 @@ export default function AccountError({
       </div>
 
       {error.digest && (
-        <p className="font-mono text-xs text-smoke">
+        <p className="font-data text-xs text-smoke">
           Reference: {error.digest}
         </p>
       )}

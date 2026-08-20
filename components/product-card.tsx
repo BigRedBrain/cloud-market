@@ -10,10 +10,10 @@ import { Button } from '@/components/ui/button'
  * availability → price → action. Everything the brief calls "clearly visible"
  * is text at 12px or larger, never an icon alone and never colour alone.
  *
- * Availability is the one place electric green earns its keep. Green means "you
- * can buy this right now" and nothing else in the entire system — which is why
- * it is rationed everywhere else. Paired with the word "In stock" so it still
- * reads in greyscale.
+ * Availability is the one place green appears at all. Green is not a
+ * CloudMarket brand colour; it survives solely as an availability signal and is
+ * reachable only through `--status-instock`. Paired with the word "In stock" so
+ * it still reads in greyscale.
  *
  * Motion is hover-only and 1px: the panel lifts off its ink shadow. No scale,
  * no image zoom. A catalogue grid where every card breathes on hover is the
@@ -55,7 +55,7 @@ type ProductCardProps = {
 function Availability({ product }: { product: Product }) {
   if (!product.inStock) {
     return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-xs text-smoke">
+      <span className="inline-flex items-center gap-1.5 font-data text-xs text-smoke">
         <span aria-hidden="true" className="size-2 rounded-full bg-smoke" />
         Sold out
       </span>
@@ -67,13 +67,13 @@ function Availability({ product }: { product: Product }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 font-mono text-xs',
-        low ? 'text-ember' : 'text-volt',
+        'inline-flex items-center gap-1.5 font-data text-xs',
+        low ? 'text-ember' : 'text-status-instock',
       )}
     >
       <span
         aria-hidden="true"
-        className={cn('size-2 rounded-full', low ? 'bg-ember' : 'bg-volt')}
+        className={cn('size-2 rounded-full', low ? 'bg-ember' : 'bg-status-instock')}
       />
       {low ? `Only ${product.stockCount} left` : 'In stock'}
     </span>
@@ -86,14 +86,47 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
   return (
     <article
       className={cn(
-        'panel group relative flex flex-col overflow-hidden rounded-lg bg-card',
-        'transition-transform duration-150 ease-out',
+        'group relative flex flex-col overflow-hidden rounded-lg bg-card',
+        /*
+         * Chunkier ink than the shared `panel` utility's 2px. At 3px the edge
+         * reads as a drawn outline rather than a UI border — the single change
+         * that does most of the work here — and it stays crisp in a dense grid
+         * because it is a real border, not a shadow spread.
+         */
+        'border-[3px] border-dark-smoke-deep',
+        /*
+         * Hard offset shadow, zero blur. On hover the card travels 2px up-left
+         * while the shadow grows to 7px, so it reads as lifting OFF the printed
+         * ink rather than sliding with it. The existing 1px lift is unchanged;
+         * only the shadow now responds to it.
+         */
+        'shadow-[5px_5px_0_0_var(--dark-smoke-deep)]',
+        'hover:shadow-[7px_7px_0_0_var(--dark-smoke-deep)]',
+        'focus-within:shadow-[7px_7px_0_0_var(--dark-smoke-deep)]',
+        // `distressed` is an existing utility: faint diagonal ink-drag streaks,
+        // a pure CSS gradient. Applied to the card itself, so it costs no DOM.
+        'distressed',
+        'transition-[transform,box-shadow] duration-150 ease-out',
         'hover:-translate-x-0.5 hover:-translate-y-0.5',
         'focus-within:-translate-x-0.5 focus-within:-translate-y-0.5',
         className,
       )}
     >
-      <div className="relative aspect-4/3 overflow-hidden border-b-2 border-ink bg-ink-700">
+      {/*
+       * Halftone print texture. Decorative and inert — `aria-hidden` plus
+       * `pointer-events-none` so it can never intercept the stretched link or
+       * the Add to bag button. It is the FIRST child so every later sibling
+       * paints above it, which keeps it behind the imagery and the type.
+       *
+       * Deliberately very faint. At full strength the dot grid fights product
+       * photography and small text; at 6% it reads as printed stock.
+       */}
+      <div
+        aria-hidden="true"
+        className="halftone pointer-events-none absolute inset-0 text-smoke-gray opacity-[0.09]"
+      />
+
+      <div className="relative aspect-4/3 overflow-hidden border-b-[3px] border-dark-smoke-deep bg-ink-700">
         {product.imageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element -- next/image lands in Phase 3 with real Blob URLs.
           <img
@@ -135,7 +168,7 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
 
         {soldOut && (
           <div className="absolute inset-0 flex items-center justify-center">
-            <span className="panel-sm -rotate-6 rounded-sm bg-ink px-3 py-1.5 font-display text-lg tracking-wide text-white uppercase">
+            <span className="panel-sm -rotate-6 rounded-sm bg-ink px-3 py-1.5 font-poster text-lg tracking-wide text-white uppercase">
               Sold out
             </span>
           </div>
@@ -143,11 +176,11 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
       </div>
 
       <div className="flex flex-1 flex-col gap-1 p-4">
-        <p className="font-mono text-[0.6875rem] tracking-widest text-smoke uppercase">
+        <p className="font-data text-[0.6875rem] tracking-widest text-smoke uppercase">
           {product.category}
         </p>
 
-        <h3 className="font-display text-lg leading-tight tracking-tight text-white">
+        <h3 className="font-poster text-lg leading-tight tracking-tight text-white">
           <a
             href={`/product/${product.slug}`}
             className="after:absolute after:inset-0 after:content-['']"
@@ -156,7 +189,7 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
           </a>
         </h3>
 
-        <p className="font-mono text-xs text-smoke">
+        <p className="font-data text-xs text-smoke">
           {product.size} · THC {product.thcPercent.toFixed(1)}%
         </p>
 
@@ -165,7 +198,7 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
         </div>
 
         <div className="mt-3 flex items-center justify-between gap-3">
-          <span className="font-mono text-xl font-bold text-white">
+          <span className="font-data text-xl font-bold text-white">
             {formatCents(product.priceCents)}
           </span>
 

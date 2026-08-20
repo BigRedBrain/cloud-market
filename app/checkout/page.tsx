@@ -40,10 +40,10 @@ export default function CheckoutPage() {
     <>
       <header className="border-b-2 border-ink bg-ink-900">
         <div className="mx-auto flex h-16 w-full max-w-5xl items-center justify-between px-4 sm:px-6">
-          <Link href="/" className="-ml-2 rounded-md" aria-label="Cloud Market home">
+          <Link href="/" className="-ml-2 rounded-md" aria-label="CloudMarket home">
             <Logo variant="full" tone="cream" showLabel={false} />
           </Link>
-          <p className="inline-flex items-center gap-2 font-mono text-xs text-smoke">
+          <p className="inline-flex items-center gap-2 font-data text-xs text-smoke">
             <Lock aria-hidden="true" className="size-3.5" />
             Secure checkout
           </p>
@@ -51,7 +51,7 @@ export default function CheckoutPage() {
       </header>
 
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-10 sm:px-6">
-        <h1 className="mb-8 font-display text-3xl tracking-tight text-white uppercase">
+        <h1 className="mb-8 font-poster text-3xl tracking-tight text-white uppercase">
           Checkout
         </h1>
 
@@ -63,7 +63,7 @@ export default function CheckoutPage() {
             </Alert>
 
             <section className="flex flex-col gap-5">
-              <h2 className="font-display text-xl tracking-tight text-white uppercase">
+              <h2 className="font-poster text-xl tracking-tight text-white uppercase">
                 Delivery details
               </h2>
 
@@ -114,7 +114,7 @@ export default function CheckoutPage() {
             </section>
 
             <section className="flex flex-col gap-5">
-              <h2 className="font-display text-xl tracking-tight text-white uppercase">
+              <h2 className="font-poster text-xl tracking-tight text-white uppercase">
                 Payment
               </h2>
 
@@ -130,7 +130,7 @@ export default function CheckoutPage() {
             <CardHeader>
               <CardTitle>Order summary</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-col gap-2 font-mono text-sm">
+            <CardContent className="flex flex-col gap-2 font-data text-sm">
               <div className="flex justify-between gap-4">
                 <span>Midnight Runtz · 3.5g</span>
                 <span>$45.00</span>

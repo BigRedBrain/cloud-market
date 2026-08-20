@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils'
 const badgeVariants = cva(
   [
     'inline-flex items-center gap-1.5 whitespace-nowrap',
-    'font-mono text-[0.6875rem] leading-none font-bold tracking-wider uppercase',
+    'font-data text-[0.6875rem] leading-none font-bold tracking-wider uppercase',
     'border-solid border-ink [border-width:var(--outline-ink-thin)]',
     'px-2 py-1 rounded-sm',
     '[&_svg]:size-3 [&_svg]:shrink-0',
@@ -28,7 +28,10 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
+        /** Stock green. Availability only — see --status-instock. */
         volt: 'bg-volt text-ink',
+        /** Signal Yellow. Confirmation, emphasis, "this one" states. */
+        signal: 'bg-signal-yellow text-ink',
         ember: 'bg-ember text-ink',
         flare: 'bg-flare text-ink',
         cream: 'bg-cream text-ink',

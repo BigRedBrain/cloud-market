@@ -88,10 +88,10 @@ export default async function ShopPage({
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-10 sm:px-6">
         <header className="mb-8 flex flex-col gap-3">
-          <p className="font-mono text-xs tracking-[0.2em] text-ember uppercase">
+          <p className="font-data text-xs tracking-[0.2em] text-ember uppercase">
             Menu
           </p>
-          <h1 className="font-display text-4xl tracking-tight text-white uppercase sm:text-5xl">
+          <h1 className="font-poster text-4xl tracking-tight text-white uppercase sm:text-5xl">
             Shop
           </h1>
           <p className="max-w-2xl text-sm leading-relaxed text-smoke">
@@ -117,14 +117,14 @@ export default async function ShopPage({
           className="mb-5 flex items-baseline justify-between gap-4"
           aria-live="polite"
         >
-          <p className="font-mono text-sm text-smoke">
+          <p className="font-data text-sm text-smoke">
             {listing.total === 0
               ? 'No products'
               : `${listing.total} product${listing.total === 1 ? '' : 's'}`}
             {filters.q && ` for “${filters.q}”`}
           </p>
           {listing.pageCount > 1 && (
-            <p className="font-mono text-xs text-smoke">
+            <p className="font-data text-xs text-smoke">
               Page {listing.page} of {listing.pageCount}
             </p>
           )}
@@ -204,7 +204,7 @@ export function Pagination({
       ) : (
         <span />
       )}
-      <p className="font-mono text-sm text-smoke">
+      <p className="font-data text-sm text-smoke">
         {page} / {pageCount}
       </p>
       {page < pageCount ? (

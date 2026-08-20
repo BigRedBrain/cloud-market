@@ -1177,6 +1177,83 @@ Deliver:
 - backgrounds;
 - motion storyboard.
 
+#### Phase A Creative Direction — APPROVED
+
+**Status:** APPROVED by the CloudMarket owner, 2026-08-16.
+**Standing:** These are non-negotiable brand constants, not proposals.
+
+##### Approved brand constants
+
+The following are locked:
+
+- gritty hip-hop comic style;
+- cannabis bud mascot;
+- shopping cart concept;
+- cloud + smoke + fire framing;
+- black / white / pearl / red / yellow main color system;
+- Permanent Marker / bold brush-style direction;
+- "floating through Cloud 9" motion feel;
+- product-cart marketplace energy.
+
+##### Creative governance rule
+
+These items are approved product direction. They are not a starting point for
+reinterpretation, and a later preference does not reopen them.
+
+Do not:
+
+- reinterpret the approved constants;
+- replace them with another design trend;
+- simplify CloudMarket into generic SaaS styling;
+- substitute a generic cannabis-leaf logo;
+- change the mascot into another character;
+- remove the shopping-cart marketplace concept;
+- replace the Cloud 9 / cloud / smoke / fire world with a different visual
+  metaphor;
+- make green the dominant brand color;
+- replace the approved gritty hip-hop comic identity with minimal, corporate,
+  pastel, cute, luxury-minimal, cyberpunk, or other unrelated aesthetics.
+
+##### What may be adapted
+
+Designers and developers may adapt:
+
+- scale;
+- layout;
+- responsive composition;
+- animation depth;
+- asset complexity;
+- information density.
+
+Every such adaptation must preserve the approved creative constants above. A
+change that improves density, performance, or accessibility is welcome; a
+change that quietly replaces the identity is not, however it is justified.
+
+##### Master logo artwork as visual reference
+
+The approved master logo artwork is the visual reference for:
+
+- mascot appearance;
+- mascot attitude;
+- shopping-cart concept;
+- cloud/smoke/fire treatment;
+- overall illustration energy;
+- primary brand color relationship;
+- brush/graffiti-style CloudMarket wordmark direction.
+
+Production derivatives may simplify detail for small sizes, accessibility,
+performance, animation, app icons, favicons, or responsive layouts. They must
+remain recognizably derived from the approved master artwork.
+
+##### Precedence
+
+This subsection governs CloudMarket creative direction. `DESIGN.md` describes
+the superseded Cloud Market design system and is retained as a historical
+engineering reference; its accessibility, performance, contrast, reduced-motion,
+component-architecture, and interaction guidance continues to apply wherever it
+does not conflict with this specification. Where the two conflict, this
+specification wins.
+
 ### Phase B — Access architecture
 Deliver:
 - public gate;

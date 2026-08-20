@@ -18,7 +18,7 @@ export default async function AdminBrandsPage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
-      <h1 className="mb-6 font-display text-2xl tracking-tight text-white uppercase">
+      <h1 className="mb-6 font-poster text-2xl tracking-tight text-white uppercase">
         Brands
       </h1>
 
@@ -37,7 +37,7 @@ export default async function AdminBrandsPage() {
             <CardHeader>
               <CardTitle>
                 {brand.name}{' '}
-                <span className="font-mono text-sm font-normal text-smoke">
+                <span className="font-data text-sm font-normal text-smoke">
                   /{brand.slug} · {brand.productCount} product
                   {brand.productCount === 1 ? '' : 's'}
                   {!brand.active && ' · inactive'}
