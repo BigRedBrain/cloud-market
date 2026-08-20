@@ -70,12 +70,12 @@ export const metadata: Metadata = {
    */
   metadataBase: new URL(clientEnv.NEXT_PUBLIC_APP_URL),
   title: {
-    default: 'Cloud Market — Michigan Cannabis Delivery',
-    template: '%s · Cloud Market',
+    default: 'CloudMarket — Michigan Cannabis Delivery',
+    template: '%s · CloudMarket',
   },
   description:
     'Browse and order cannabis from our licensed Michigan dispensary, with pickup and delivery where legally available.',
-  applicationName: 'Cloud Market',
+  applicationName: 'CloudMarket',
   robots: {
     // Age-restricted commerce: allow indexing, but keep image previews out of
     // search result pages.

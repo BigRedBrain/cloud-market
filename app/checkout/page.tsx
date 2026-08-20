@@ -40,7 +40,7 @@ export default function CheckoutPage() {
     <>
       <header className="border-b-2 border-ink bg-ink-900">
         <div className="mx-auto flex h-16 w-full max-w-5xl items-center justify-between px-4 sm:px-6">
-          <Link href="/" className="-ml-2 rounded-md" aria-label="Cloud Market home">
+          <Link href="/" className="-ml-2 rounded-md" aria-label="CloudMarket home">
             <Logo variant="full" tone="cream" showLabel={false} />
           </Link>
           <p className="inline-flex items-center gap-2 font-data text-xs text-smoke">

@@ -53,7 +53,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       <header className="border-b-2 border-ink bg-ink-900">
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
           <div className="flex items-center gap-4">
-            <Link href="/" className="-ml-2 rounded-md" aria-label="Cloud Market home">
+            <Link href="/" className="-ml-2 rounded-md" aria-label="CloudMarket home">
               <Logo variant="mark" tone="cream" />
             </Link>
             <span className="font-data text-xs tracking-widest text-smoke uppercase">

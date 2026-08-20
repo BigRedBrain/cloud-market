@@ -102,7 +102,7 @@ export function SiteNav({ bagCount = 0 }: SiteNavProps) {
          * catalogue links below stay plain anchors until those routes ship in
          * later phases — at which point they become `Link` and gain prefetch.
          */}
-        <Link href="/" className="-ml-2 rounded-md" aria-label="Cloud Market home">
+        <Link href="/" className="-ml-2 rounded-md" aria-label="CloudMarket home">
           <Logo variant="full" tone="cream" showLabel={false} />
         </Link>
 

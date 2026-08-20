@@ -35,7 +35,7 @@ export default function GlobalError({
       >
         <main style={{ maxWidth: '28rem', padding: '0 1.5rem', textAlign: 'center' }}>
           <h1 style={{ fontSize: '1.5rem', fontWeight: 600, margin: 0 }}>
-            Cloud Market is temporarily unavailable
+            CloudMarket is temporarily unavailable
           </h1>
           <p style={{ marginTop: '0.75rem', lineHeight: 1.6, color: '#5c6b63' }}>
             Please refresh the page. If the problem continues, try again shortly.
