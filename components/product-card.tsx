@@ -86,14 +86,47 @@ export function ProductCard({ product, badge, className }: ProductCardProps) {
   return (
     <article
       className={cn(
-        'panel group relative flex flex-col overflow-hidden rounded-lg bg-card',
-        'transition-transform duration-150 ease-out',
+        'group relative flex flex-col overflow-hidden rounded-lg bg-card',
+        /*
+         * Chunkier ink than the shared `panel` utility's 2px. At 3px the edge
+         * reads as a drawn outline rather than a UI border — the single change
+         * that does most of the work here — and it stays crisp in a dense grid
+         * because it is a real border, not a shadow spread.
+         */
+        'border-[3px] border-dark-smoke-deep',
+        /*
+         * Hard offset shadow, zero blur. On hover the card travels 2px up-left
+         * while the shadow grows to 7px, so it reads as lifting OFF the printed
+         * ink rather than sliding with it. The existing 1px lift is unchanged;
+         * only the shadow now responds to it.
+         */
+        'shadow-[5px_5px_0_0_var(--dark-smoke-deep)]',
+        'hover:shadow-[7px_7px_0_0_var(--dark-smoke-deep)]',
+        'focus-within:shadow-[7px_7px_0_0_var(--dark-smoke-deep)]',
+        // `distressed` is an existing utility: faint diagonal ink-drag streaks,
+        // a pure CSS gradient. Applied to the card itself, so it costs no DOM.
+        'distressed',
+        'transition-[transform,box-shadow] duration-150 ease-out',
         'hover:-translate-x-0.5 hover:-translate-y-0.5',
         'focus-within:-translate-x-0.5 focus-within:-translate-y-0.5',
         className,
       )}
     >
-      <div className="relative aspect-4/3 overflow-hidden border-b-2 border-ink bg-ink-700">
+      {/*
+       * Halftone print texture. Decorative and inert — `aria-hidden` plus
+       * `pointer-events-none` so it can never intercept the stretched link or
+       * the Add to bag button. It is the FIRST child so every later sibling
+       * paints above it, which keeps it behind the imagery and the type.
+       *
+       * Deliberately very faint. At full strength the dot grid fights product
+       * photography and small text; at 6% it reads as printed stock.
+       */}
+      <div
+        aria-hidden="true"
+        className="halftone pointer-events-none absolute inset-0 text-smoke-gray opacity-[0.09]"
+      />
+
+      <div className="relative aspect-4/3 overflow-hidden border-b-[3px] border-dark-smoke-deep bg-ink-700">
         {product.imageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element -- next/image lands in Phase 3 with real Blob URLs.
           <img
