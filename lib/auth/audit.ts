@@ -30,7 +30,15 @@ import type { DbExecutor } from './tokens'
  * AUTHENTICATION.md.
  */
 
-function keyedDigest(value: string | null): string | null {
+/**
+ * Exported so `lib/security/rate-limit.ts` can hash an address the same way
+ * this module does. Rate limiting counts rows by `audit_log.ip_hash`, so it has
+ * to produce a byte-identical digest — and a second implementation of a keyed
+ * security primitive is exactly the kind of duplication that drifts.
+ *
+ * Behaviour is unchanged; this is the same function with an `export` in front.
+ */
+export function keyedDigest(value: string | null): string | null {
   if (!value) return null
   return createHmac('sha256', serverEnv().AUTH_SECRET).update(value).digest('hex')
 }
