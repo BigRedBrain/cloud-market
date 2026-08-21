@@ -73,6 +73,22 @@ const serverSchema = z.object({
    */
   CHECKOUT_ENABLED: z.string().optional(),
 
+  /**
+   * Server-only key for hashing invite codes (Phase B).
+   *
+   * Optional here and required at the point of use, exactly like `CRON_SECRET`
+   * above: a missing value makes `hashInviteCode()` throw rather than silently
+   * fall back to an unkeyed digest, and it does not stop the storefront from
+   * booting over a subsystem nothing customer-facing depends on yet.
+   *
+   * Rotating this invalidates every outstanding invite, because the stored
+   * digests were keyed with the old value. That is a deliberate property, not
+   * a hazard: it makes a leaked pepper recoverable.
+   *
+   * 32 characters minimum — the digest is only as unguessable as the key.
+   */
+  INVITE_CODE_PEPPER: z.string().min(32).optional(),
+
   EMAIL_PROVIDER: z.enum(['resend', 'console', 'capture']).default('console'),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
