@@ -53,6 +53,30 @@ export function normalizeInviteCode(raw: string): string {
 }
 
 /**
+ * Strip the leading `INVITE_PREFIX` from a normalised code, if it is there.
+ *
+ * Normalisation removes the dash that separated `CM` from the first group, so a
+ * normalised full code reads `CM4F2X9TQP…`. Slicing the first group off that
+ * directly yields `CM4F`, and re-prefixing produces `CM-CM4F` — the prefix
+ * doubled, and four characters of real entropy silently dropped.
+ *
+ * Checking `startsWith` rather than a fixed length is deliberate: it makes the
+ * function idempotent, so feeding an already-computed prefix (`CM-4F2X`) back
+ * in returns the same value instead of mangling it. A body whose own first
+ * group begins with the prefix letters (`CM-CMAB-…`) also survives, because the
+ * leading `CM` is consumed and `CMAB` remains.
+ *
+ * The one input this cannot disambiguate is a bare body — no `CM-` — that
+ * itself starts with `CM`. That is not a shape `generateInviteCode()` produces,
+ * so it is accepted as the cost of handling every real case correctly.
+ */
+function stripInvitePrefix(normalized: string): string {
+  return normalized.startsWith(INVITE_PREFIX)
+    ? normalized.slice(INVITE_PREFIX.length)
+    : normalized
+}
+
+/**
  * The clear-text fragment stored alongside the digest, e.g. `CM-4F2X`.
  *
  * Deliberately just the first group. It lets an operator tell two invites apart
@@ -63,9 +87,9 @@ export function normalizeInviteCode(raw: string): string {
  * malformed submission cannot produce a misleading prefix.
  */
 export function inviteCodePrefix(raw: string): string {
-  const normalized = normalizeInviteCode(raw)
-  if (normalized.length < INVITE_GROUP_SIZE) return ''
-  return `${INVITE_PREFIX}-${normalized.slice(0, INVITE_GROUP_SIZE)}`
+  const body = stripInvitePrefix(normalizeInviteCode(raw))
+  if (body.length < INVITE_GROUP_SIZE) return ''
+  return `${INVITE_PREFIX}-${body.slice(0, INVITE_GROUP_SIZE)}`
 }
 
 /**
