@@ -89,6 +89,28 @@ const serverSchema = z.object({
    */
   INVITE_CODE_PEPPER: z.string().min(32).optional(),
 
+  /**
+   * The CloudMarket owner's `users.id` (Phase B).
+   *
+   * The platform's root of administrative trust. Migration 0017 defined
+   * administrators as this value plus the single live `admin_backup` row, and
+   * anchoring the owner OUTSIDE the database is the whole point: no database
+   * write — no compromised admin screen, no stray seed — can promote anyone to
+   * owner. Changing it requires deploying an environment change.
+   *
+   * NOT `z.uuid()`, and this is deliberate. A malformed value here must not
+   * take the entire storefront down at boot; it must fail closed at the one
+   * boundary that cares. `readConfiguredOwnerId()` in `lib/auth/admin-identity.ts`
+   * validates the shape and turns a bad value into a denial plus an
+   * `OWNER_IDENTITY_MISCONFIGURED` audit row — a legible incident rather than
+   * an owner silently matching nobody, or a crash loop on an unrelated page.
+   *
+   * UNSET IN PRODUCTION AS OF THIS BATCH. Nothing reads it from a live request
+   * yet; `requireAdmin()` still guards /admin. Provisioning it is part of the
+   * cutover, and must be rehearsed against the real owner account first.
+   */
+  CLOUDMARKET_OWNER_USER_ID: z.string().optional(),
+
   EMAIL_PROVIDER: z.enum(['resend', 'console', 'capture']).default('console'),
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
