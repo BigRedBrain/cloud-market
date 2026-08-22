@@ -951,23 +951,6 @@ console.log(
 );
  
 
-  console.log(
-    'No Claude workers were launched.',
-  );
-
-  console.log(
-    'No files were edited.',
-  );
-
-  console.log(
-    'No database actions occurred.',
-  );
-
-  console.log(
-    'No commits, pushes, merges, or deployments occurred.',
-  );
-}
-
 try {
   main();
 } catch (error) {
