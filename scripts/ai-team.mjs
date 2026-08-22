@@ -23,8 +23,12 @@ import { join } from 'node:path';
 import { Agent, run } from '@openai/agents';
 
 const GPT_MODEL = 'gpt-5.6-sol';
-const CLAUDE_MAX_TURNS = '12';
-const CLAUDE_TIMEOUT_MS = 300_000;
+const CLAUDE_MAX_TURNS =
+  process.env
+    .AI_TEAM_CLAUDE_MAX_TURNS
+    ?.trim() ||
+  '30';
+const CLAUDE_TIMEOUT_MS = 600_000;
 
 const REVIEW_REPO =
   process.env
