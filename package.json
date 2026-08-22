@@ -45,7 +45,8 @@
     "rehearse:migration": "node scripts/rehearse-migration.mjs",
     "db:seed:limits:dev": "node scripts/seed-purchase-limits-dev.mjs",
     "test:seed-guard": "node scripts/verify-seed-guard.mjs",
-    "test:migration-target": "node scripts/verify-migration-target-modes.mjs"
+    "test:migration-target": "node scripts/verify-migration-target-modes.mjs",
+    "ai:team": "node scripts/ai-team.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
@@ -65,6 +66,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@openai/agents": "^0.17.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
