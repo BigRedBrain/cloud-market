@@ -23,8 +23,14 @@ import { join } from 'node:path';
 import { Agent, run } from '@openai/agents';
 
 const GPT_MODEL = 'gpt-5.6-sol';
-const CLAUDE_MAX_TURNS = '6';
+const CLAUDE_MAX_TURNS = '12';
 const CLAUDE_TIMEOUT_MS = 300_000;
+
+const REVIEW_REPO =
+  process.env
+    .AI_TEAM_REPO
+    ?.trim() ||
+  process.cwd();
 
 /** The only tools the Claude reviewer may use — all read-only. */
 const CLAUDE_TOOLS = 'Read,Glob,Grep';
@@ -225,7 +231,7 @@ function runClaudeLane(task, claudeEnv) {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: claudeEnv,
-      cwd: process.cwd(),
+      cwd: REVIEW_REPO,
     });
 
     let stdout = '';
@@ -264,10 +270,35 @@ function runClaudeLane(task, claudeEnv) {
         finish(resolve, output || '(Claude returned no text output.)');
         return;
       }
-      const detail = stderr.trim().split('\n').slice(-20).join('\n');
+        const stderrDetail =
+        stderr
+          .trim()
+          .split(/\r?\n/)
+          .slice(-30)
+          .join('\n');
+
+      const stdoutDetail =
+        stdout
+          .trim()
+          .split(/\r?\n/)
+          .slice(-30)
+          .join('\n');
+
       finish(
         reject,
-        new Error(`Claude exited with code ${code}.\n${detail || '(no stderr output)'}`),
+        new Error(
+          [
+            `Claude exited with code ${code}.`,
+            '',
+            'STDERR:',
+            stderrDetail ||
+              '(no stderr output)',
+            '',
+            'STDOUT:',
+            stdoutDetail ||
+              '(no stdout output)',
+          ].join('\n'),
+        ),
       );
     });
   });
@@ -307,6 +338,9 @@ async function main() {
 
   console.log('CloudMarket AI team — review only. No writes, migrations, or deploys.');
   console.log(`Task: ${task}`);
+  console.log(
+    `Review target: ${REVIEW_REPO}`,
+  );
   console.log(`Lane 1: @openai/agents (${GPT_MODEL})`);
   console.log(
     `Lane 2: claude -p --max-turns ${CLAUDE_MAX_TURNS} — plan/read-only mode, ` +
