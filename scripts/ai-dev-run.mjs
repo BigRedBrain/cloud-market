@@ -872,6 +872,37 @@ for (
   console.log(
     '=================================',
   );
+if (
+  plan.riskLevel === 'high' &&
+  !approveHighRisk
+) {
+  console.log('');
+  console.log(
+    'Execution stopped at human approval gate.',
+  );
+
+  console.log(
+    'No worktrees were created.',
+  );
+
+  console.log(
+    'No Claude workers were launched.',
+  );
+
+  console.log(
+    'No files were edited by AI.',
+  );
+
+  console.log(
+    'No database actions occurred.',
+  );
+
+  console.log(
+    'No commits, pushes, merges, or deployments occurred.',
+  );
+
+  return;
+}
 createWorkerWorktrees({
   repoRoot,
   worktreeRoot,
