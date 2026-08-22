@@ -240,7 +240,249 @@ function getPackageMetadata(repoRoot) {
   }
 }
 
+function normalizePlanPath(value, label) {
+  if (typeof value !== 'string') {
+    throw new Error(
+      `${label} must be a string.`,
+    );
+  }
+
+  const normalized = value
+    .trim()
+    .replaceAll('\\', '/')
+    .replace(/^\.\/+/, '')
+    .replace(/\/+/g, '/')
+    .replace(/\/+$/, '');
+
+  if (!normalized) {
+    throw new Error(
+      `${label} contains an empty path.`,
+    );
+  }
+
+  if (
+    normalized.startsWith('/') ||
+    /^[a-zA-Z]:\//.test(normalized)
+  ) {
+    throw new Error(
+      `${label} must use a repository-relative path: "${value}"`,
+    );
+  }
+
+  const segments =
+    normalized.split('/');
+
+  if (segments.includes('..')) {
+    throw new Error(
+      `${label} may not escape the repository: "${value}"`,
+    );
+  }
+
+  if (
+    normalized.includes('*') ||
+    normalized.includes('?') ||
+    normalized.includes('[')
+  ) {
+    throw new Error(
+      `${label} may not contain glob patterns: "${value}"`,
+    );
+  }
+
+  const lower =
+    normalized.toLowerCase();
+
+  const forbiddenRoots = [
+    '.git',
+    '.next',
+    '.vercel',
+    'node_modules',
+  ];
+
+  for (const root of forbiddenRoots) {
+    if (
+      lower === root ||
+      lower.startsWith(`${root}/`)
+    ) {
+      throw new Error(
+        `${label} targets forbidden path "${value}".`,
+      );
+    }
+  }
+
+  const basename =
+    lower.split('/').at(-1);
+
+  if (
+    basename === '.env' ||
+    basename.startsWith('.env.')
+  ) {
+    throw new Error(
+      `${label} may not own environment files: "${value}"`,
+    );
+  }
+
+  return normalized;
+}
+
+function pathsOverlap(left, right) {
+  const a =
+    left.toLowerCase();
+
+  const b =
+    right.toLowerCase();
+
+  return (
+    a === b ||
+    a.startsWith(`${b}/`) ||
+    b.startsWith(`${a}/`)
+  );
+}
+
 function validatePlan(plan) {
+  if (
+    plan.parallelizable &&
+    plan.blockedReason.trim()
+  ) {
+    throw new Error(
+      'Planner returned parallelizable=true ' +
+      'with a non-empty blockedReason.',
+    );
+  }
+
+  if (
+    !plan.parallelizable &&
+    !plan.blockedReason.trim()
+  ) {
+    throw new Error(
+      'Planner returned parallelizable=false ' +
+      'without explaining why.',
+    );
+  }
+
+  const workerEntries = [
+    ['frontend', plan.frontend],
+    ['backend', plan.backend],
+    ['database', plan.database],
+  ];
+
+  const ownership = [];
+
+  for (
+    const [workerName, worker]
+    of workerEntries
+  ) {
+    if (
+      worker.dependencies.includes(
+        workerName,
+      )
+    ) {
+      throw new Error(
+        `${workerName} may not depend on itself.`,
+      );
+    }
+
+    for (
+      const rawPath
+      of worker.ownedPaths
+    ) {
+      const path =
+        normalizePlanPath(
+          rawPath,
+          `${workerName}.ownedPaths`,
+        );
+
+      for (
+        const existing
+        of ownership
+      ) {
+        if (
+          existing.worker !==
+            workerName &&
+          pathsOverlap(
+            existing.path,
+            path,
+          )
+        ) {
+          throw new Error(
+            'Worker ownership conflict: ' +
+            `"${existing.path}" (${existing.worker}) ` +
+            `overlaps "${path}" (${workerName}).`,
+          );
+        }
+      }
+
+      ownership.push({
+        worker: workerName,
+        path,
+      });
+    }
+
+    for (
+      const rawPath
+      of worker.readOnlyContextPaths
+    ) {
+      normalizePlanPath(
+        rawPath,
+        `${workerName}.readOnlyContextPaths`,
+      );
+    }
+  }
+
+  for (
+    const rawSharedPath
+    of plan.sharedFiles
+  ) {
+    const sharedPath =
+      normalizePlanPath(
+        rawSharedPath,
+        'sharedFiles',
+      );
+
+    for (
+      const owned
+      of ownership
+    ) {
+      if (
+        pathsOverlap(
+          sharedPath,
+          owned.path,
+        )
+      ) {
+        throw new Error(
+          'Shared-file ownership conflict: ' +
+          `"${sharedPath}" overlaps ` +
+          `"${owned.path}" owned by ${owned.worker}.`,
+        );
+      }
+    }
+  }
+
+  const expectedWorkers = [
+    'frontend',
+    'backend',
+    'database',
+  ];
+
+  if (
+    plan.integrationOrder.length !== 3 ||
+    new Set(
+      plan.integrationOrder,
+    ).size !== 3 ||
+    !expectedWorkers.every(
+      (worker) =>
+        plan.integrationOrder.includes(
+          worker,
+        ),
+    )
+  ) {
+    throw new Error(
+      'integrationOrder must contain frontend, backend, ' +
+      'and database exactly once.',
+    );
+  }
+
+  return plan;
+}
   if (
     plan.parallelizable &&
     plan.blockedReason.trim()
