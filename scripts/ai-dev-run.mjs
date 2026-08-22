@@ -21,10 +21,19 @@
  * - deploy
  * - access a database
  */
+import {
+  existsSync,
+  mkdirSync,
+} from 'node:fs';
 
+import {
+  dirname,
+  join,
+  resolve,
+} from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+
 
 const BASE_REF =
   process.env.AI_DEV_BASE_REF?.trim() ||
@@ -483,7 +492,155 @@ function printWorker(
     }
   }
 }
+function makeSessionId() {
+  return new Date()
+    .toISOString()
+    .replace(/\.\d{3}Z$/, '')
+    .replace(/[-:T]/g, '')
+    .slice(0, 14);
+}
 
+function slugify(value) {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 36);
+
+  return slug || 'cloudmarket-task';
+}
+
+function branchExists(
+  repoRoot,
+  branch,
+) {
+  return Boolean(
+    git(
+      [
+        'branch',
+        '--list',
+        branch,
+      ],
+      repoRoot,
+    ),
+  );
+}
+
+function buildWorkerDefinitions({
+  repoRoot,
+  task,
+}) {
+  const sessionId =
+    makeSessionId();
+
+  const taskSlug =
+    slugify(task);
+
+  const worktreeRoot =
+    join(
+      dirname(repoRoot),
+      'cloudmarket-ai-worktrees',
+      `${taskSlug}-${sessionId}`,
+    );
+
+  const workers =
+    ROLES.map(
+      (role) => ({
+        role,
+
+        branch:
+          `ai/${taskSlug}-${sessionId}-${role}`,
+
+        path:
+          join(
+            worktreeRoot,
+            role,
+          ),
+      }),
+    );
+
+  return {
+    sessionId,
+    taskSlug,
+    worktreeRoot,
+    workers,
+  };
+}
+
+function preflightWorktrees(
+  repoRoot,
+  workers,
+) {
+  for (const worker of workers) {
+    if (
+      branchExists(
+        repoRoot,
+        worker.branch,
+      )
+    ) {
+      throw new Error(
+        `Worker branch already exists: ${worker.branch}`,
+      );
+    }
+
+    if (
+      existsSync(
+        worker.path,
+      )
+    ) {
+      throw new Error(
+        `Worker path already exists: ${worker.path}`,
+      );
+    }
+  }
+}
+
+function createWorkerWorktrees({
+  repoRoot,
+  worktreeRoot,
+  workers,
+}) {
+  mkdirSync(
+    worktreeRoot,
+    {
+      recursive: true,
+    },
+  );
+
+  for (
+    const worker
+    of workers
+  ) {
+    console.log('');
+    console.log(
+      `Creating ${worker.role} worktree...`,
+    );
+
+    console.log(
+      `  Branch: ${worker.branch}`,
+    );
+
+    console.log(
+      `  Path:   ${worker.path}`,
+    );
+
+    execFileSync(
+      'git',
+      [
+        'worktree',
+        'add',
+        '-b',
+        worker.branch,
+        worker.path,
+        BASE_REF,
+      ],
+      {
+        cwd: repoRoot,
+        stdio: 'inherit',
+      },
+    );
+  }
+}
 function main() {
   const {
     task,
@@ -538,7 +695,42 @@ function main() {
     validatePlan(
       getPlan(task),
     );
+const {
+  sessionId,
+  worktreeRoot,
+  workers,
+} =
+  buildWorkerDefinitions({
+    repoRoot,
+    task,
+  });
 
+preflightWorktrees(
+  repoRoot,
+  workers,
+);
+
+console.log('');
+console.log(
+  'WORKTREE PLAN',
+);
+
+console.log(
+  `  Session: ${sessionId}`,
+);
+
+console.log(
+  `  Root: ${worktreeRoot}`,
+);
+
+for (
+  const worker
+  of workers
+) {
+  console.log(
+    `  ${worker.role}: ${worker.branch}`,
+  );
+}
   console.log('');
   console.log(
     'PLAN VALIDATION: PASS',
@@ -680,11 +872,53 @@ function main() {
   console.log(
     '=================================',
   );
+createWorkerWorktrees({
+  repoRoot,
+  worktreeRoot,
+  workers,
+});
 
-  console.log('');
+console.log('');
+console.log(
+  'WORKTREES CREATED',
+);
+
+console.log('');
+
+for (
+  const worker
+  of workers
+) {
   console.log(
-    'No worktrees were created.',
+    `${worker.role}:`,
   );
+
+  console.log(
+    `  ${worker.path}`,
+  );
+
+  console.log(
+    `  ${worker.branch}`,
+  );
+}
+
+console.log('');
+console.log(
+  'No Claude workers were launched.',
+);
+
+console.log(
+  'No files were edited by AI.',
+);
+
+console.log(
+  'No database actions occurred.',
+);
+
+console.log(
+  'No commits, pushes, merges, or deployments occurred.',
+);
+ 
 
   console.log(
     'No Claude workers were launched.',
