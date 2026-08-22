@@ -31,7 +31,11 @@ import {
   join,
   resolve,
 } from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  execFileSync,
+  spawn,
+  spawnSync,
+} from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 
@@ -65,36 +69,49 @@ function git(args, cwd) {
 }
 
 function parseArgs() {
-  const raw =
+  const args =
     process.argv.slice(2);
 
   let approveHighRisk = false;
+  let runWorkers = false;
+
   const taskParts = [];
 
-  for (const arg of raw) {
-    if (arg === '--approve-high-risk') {
+  for (
+    let index = 0;
+    index < args.length;
+    index += 1
+  ) {
+    const arg =
+      args[index];
+
+    if (
+      arg ===
+      '--approve-high-risk'
+    ) {
       approveHighRisk = true;
       continue;
     }
 
-    if (arg.startsWith('--')) {
-      throw new Error(
-        `Unknown option: ${arg}`,
-      );
+    if (
+      arg ===
+      '--run-workers'
+    ) {
+      runWorkers = true;
+      continue;
     }
 
     taskParts.push(arg);
   }
 
   const task =
-    taskParts.join(' ').trim();
+    taskParts
+      .join(' ')
+      .trim();
 
   if (!task) {
     throw new Error(
-      'A development task is required.\n\n' +
-      'Example:\n' +
-      '  node scripts/ai-dev-run.mjs ' +
-      '"build seller profiles"',
+      'A development task is required.',
     );
   }
 
@@ -641,10 +658,423 @@ function createWorkerWorktrees({
     );
   }
 }
-function main() {
+function formatPromptList(value) {
+  const items =
+    Array.isArray(value)
+      ? value.filter(
+          (item) =>
+            typeof item === 'string' &&
+            item.trim(),
+        )
+      : [];
+
+  if (items.length === 0) {
+    return '- (none)';
+  }
+
+  return items
+    .map(
+      (item) =>
+        `- ${item}`,
+    )
+    .join('\n');
+}
+
+function normalizeNotes(value) {
+  if (
+    Array.isArray(value)
+  ) {
+    return value;
+  }
+
+  if (
+    typeof value === 'string' &&
+    value.trim()
+  ) {
+    return [
+      value.trim(),
+    ];
+  }
+
+  return [];
+}
+
+function buildWorkerExecutionPrompt({
+  task,
+  plan,
+  role,
+}) {
+  const worker =
+    plan[role];
+
+  if (!worker) {
+    throw new Error(
+      `Missing worker plan for ${role}.`,
+    );
+  }
+
+  return `
+CLOUDMARKET DEVELOPMENT TASK
+============================
+
+TASK:
+${task}
+
+ROLE:
+${role}
+
+OBJECTIVE:
+${worker.objective}
+
+ACCEPTANCE CRITERIA:
+${formatPromptList(
+  worker.acceptanceCriteria,
+)}
+
+READ-ONLY CONTEXT PATHS:
+${formatPromptList(
+  worker.readOnlyContextPaths,
+)}
+
+DEPENDENCIES / CONTRACTS:
+${formatPromptList(
+  worker.dependencies,
+)}
+
+SHARED / INTEGRATION-ONLY FILES:
+${formatPromptList(
+  plan.sharedFiles,
+)}
+
+WORKER NOTES:
+${formatPromptList(
+  normalizeNotes(
+    worker.notes,
+  ),
+)}
+
+PLANNED INTEGRATION ORDER:
+${formatPromptList(
+  plan.integrationOrder,
+)}
+
+IMPORTANT:
+
+You are working in an isolated Git worktree.
+
+Other CloudMarket workers may be implementing dependency lanes simultaneously.
+Do not attempt to inspect or modify their worktrees.
+
+Implement only your assigned objective using your WRITE OWNERSHIP.
+
+If another lane or a shared file must change, do not edit it.
+Describe the required integration change in your final response.
+
+Do not weaken authentication, authorization, validation, tenant isolation,
+or existing security controls in order to make the implementation easier.
+`.trim();
+}
+
+function launchClaudeWorker({
+  repoRoot,
+  task,
+  plan,
+  worker,
+}) {
+  return new Promise(
+    (
+      resolvePromise,
+      rejectPromise,
+    ) => {
+      const role =
+        worker.role;
+
+      const workerPlan =
+        plan[role];
+
+      const ownedPaths =
+        Array.isArray(
+          workerPlan?.ownedPaths,
+        )
+          ? workerPlan.ownedPaths
+          : [];
+
+      if (
+        ownedPaths.length === 0
+      ) {
+        resolvePromise({
+          role,
+          skipped: true,
+          code: 0,
+          stdout: '',
+          stderr: '',
+        });
+
+        return;
+      }
+
+      const helperScript =
+        resolve(
+          repoRoot,
+          'scripts',
+          'ai-dev-claude-worker.mjs',
+        );
+
+      if (
+        !existsSync(
+          helperScript,
+        )
+      ) {
+        rejectPromise(
+          new Error(
+            `Claude worker helper missing: ${helperScript}`,
+          ),
+        );
+
+        return;
+      }
+
+      const args = [
+        helperScript,
+        '--worktree',
+        worker.path,
+        '--role',
+        role,
+      ];
+
+      for (
+        const ownedPath
+        of ownedPaths
+      ) {
+        args.push(
+          '--allow',
+          ownedPath,
+        );
+      }
+
+      const prompt =
+        buildWorkerExecutionPrompt({
+          task,
+          plan,
+          role,
+        });
+
+      const child =
+        spawn(
+          process.execPath,
+          args,
+          {
+            cwd:
+              repoRoot,
+
+            env:
+              process.env,
+
+            stdio: [
+              'pipe',
+              'pipe',
+              'pipe',
+            ],
+
+            windowsHide:
+              true,
+          },
+        );
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on(
+        'data',
+        (chunk) => {
+          stdout +=
+            chunk.toString();
+        },
+      );
+
+      child.stderr.on(
+        'data',
+        (chunk) => {
+          stderr +=
+            chunk.toString();
+        },
+      );
+
+      child.on(
+        'error',
+        (error) => {
+          rejectPromise(
+            error,
+          );
+        },
+      );
+
+      child.on(
+        'close',
+        (code) => {
+          resolvePromise({
+            role,
+            skipped: false,
+            code:
+              code ?? 1,
+            stdout,
+            stderr,
+          });
+        },
+      );
+
+      child.stdin.end(
+        prompt,
+      );
+    },
+  );
+}
+
+async function runParallelWorkers({
+  repoRoot,
+  task,
+  plan,
+  workers,
+}) {
+  console.log('');
+  console.log(
+    'PARALLEL CLAUDE EXECUTION',
+  );
+
+  console.log(
+    'Launching isolated workers simultaneously...',
+  );
+
+  const executions =
+    workers.map(
+      (worker) =>
+        launchClaudeWorker({
+          repoRoot,
+          task,
+          plan,
+          worker,
+        }).catch(
+          (error) => ({
+            role:
+              worker.role,
+
+            skipped:
+              false,
+
+            code: 1,
+
+            stdout: '',
+
+            stderr:
+              error.message,
+          }),
+        ),
+    );
+
+  const results =
+    await Promise.all(
+      executions,
+    );
+
+  console.log('');
+  console.log(
+    'WORKER RESULTS',
+  );
+
+  for (
+    const result
+    of results
+  ) {
+    console.log('');
+    console.log(
+      '=================================',
+    );
+
+    console.log(
+      `${result.role.toUpperCase()} RESULT`,
+    );
+
+    console.log(
+      '=================================',
+    );
+
+    if (
+      result.skipped
+    ) {
+      console.log(
+        'SKIPPED - no writable paths were assigned.',
+      );
+
+      continue;
+    }
+
+    if (
+      result.stdout
+    ) {
+      process.stdout.write(
+        result.stdout,
+      );
+    }
+
+    if (
+      result.stderr
+    ) {
+      process.stderr.write(
+        result.stderr,
+      );
+    }
+
+    console.log('');
+    console.log(
+      `Exit code: ${result.code}`,
+    );
+  }
+
+  const failed =
+    results.filter(
+      (result) =>
+        !result.skipped &&
+        result.code !== 0,
+    );
+
+  if (
+    failed.length > 0
+  ) {
+    console.error('');
+    console.error(
+      'WORKER EXECUTION FAILED',
+    );
+
+    console.error(
+      `Failed lanes: ${
+        failed
+          .map(
+            (result) =>
+              result.role,
+          )
+          .join(', ')
+      }`,
+    );
+
+    console.error(
+      'Worktrees have been preserved for inspection.',
+    );
+
+    return false;
+  }
+
+  console.log('');
+  console.log(
+    'ALL WORKER DIFF AUDITS PASSED',
+  );
+
+  return true;
+}
+async function main() {
   const {
     task,
     approveHighRisk,
+    runWorkers,
   } =
     parseArgs();
 
@@ -913,56 +1343,111 @@ console.log('');
 console.log(
   'WORKTREES CREATED',
 );
+if (!runWorkers) {
+  console.log('');
+  console.log(
+    'Claude execution requires the explicit --run-workers flag.',
+  );
 
-console.log('');
+  console.log(
+    'No Claude workers were launched.',
+  );
 
-for (
-  const worker
-  of workers
+  console.log(
+    'No files were edited by AI.',
+  );
+
+  console.log(
+    'No database actions occurred.',
+  );
+
+  console.log(
+    'No commits, pushes, merges, or deployments occurred.',
+  );
+
+  return;
+}
+const workerExecutionPassed =
+  await runParallelWorkers({
+    repoRoot,
+    task,
+    plan,
+    workers,
+  });
+
+if (
+  !workerExecutionPassed
 ) {
+  console.log('');
   console.log(
-    `${worker.role}:`,
+    'EXECUTION STOPPED FOR INSPECTION',
   );
 
   console.log(
-    `  ${worker.path}`,
+    'No commits, pushes, merges, database actions, or deployments occurred.',
   );
 
-  console.log(
-    `  ${worker.branch}`,
-  );
+  process.exitCode = 2;
+  return;
 }
 
 console.log('');
 console.log(
-  'No Claude workers were launched.',
+  '=================================',
 );
 
 console.log(
-  'No files were edited by AI.',
+  'AI DEVELOPMENT WORKERS COMPLETE',
 );
 
 console.log(
-  'No database actions occurred.',
+  '=================================',
+);
+
+console.log('');
+console.log(
+  'All assigned worker diffs passed their ownership audits.',
 );
 
 console.log(
-  'No commits, pushes, merges, or deployments occurred.',
+  'Worker worktrees have been preserved for human inspection.',
 );
- 
 
-try {
-  main();
-} catch (error) {
-  console.error('');
-  console.error(
-    'AI development runner preflight failed:',
-  );
+console.log('');
+console.log(
+  'No commits were created.',
+);
 
-  console.error(
-    error?.message ??
-    String(error),
-  );
+console.log(
+  'No pushes or merges occurred.',
+);
 
-  process.exitCode = 1;
-}
+console.log(
+  'No database actions or migration execution occurred.',
+);
+
+console.log(
+  'No deployments occurred.',
+);
+
+console.log('');
+console.log(
+  'STOP: human inspection is required before integration.',
+);
+ }
+
+main().catch(
+  (error) => {
+    console.error('');
+    console.error(
+      'AI development runner failed:',
+    );
+
+    console.error(
+      error?.message ??
+      String(error),
+    );
+
+    process.exitCode = 1;
+  },
+);
