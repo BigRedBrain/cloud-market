@@ -53,7 +53,7 @@ function readTask() {
   return task;
 }
 
-function normalizePath(value, label) {
+function normalizePath(value, label, options = {}) {
   if (typeof value !== 'string') {
     throw new Error(
       `${label} must contain strings only.`,
@@ -93,14 +93,20 @@ function normalizePath(value, label) {
 
   // "*" and "?" are treated as glob ownership and are not allowed.
   // Square brackets ARE allowed because Next.js uses paths such as [slug].
-  if (
+  const allowGlob =
+  options.allowGlob === true;
+
+if (
+  !allowGlob &&
+  (
     path.includes('*') ||
     path.includes('?')
-  ) {
-    throw new Error(
-      `${label} may not contain glob ownership: ${value}`,
-    );
-  }
+  )
+) {
+  throw new Error(
+    `${label} may not contain glob ownership: ${value}`,
+  );
+}
 
   const lower =
     path.toLowerCase();
@@ -250,11 +256,14 @@ function validatePlan(plan) {
     const rawPath
     of plan.sharedFiles ?? []
   ) {
-    const sharedPath =
-      normalizePath(
-        rawPath,
-        'sharedFiles',
-      );
+   const sharedPath =
+  normalizePath(
+    rawPath,
+    'sharedFiles',
+    {
+      allowGlob: true,
+    },
+  );
 
     for (
       const owned
