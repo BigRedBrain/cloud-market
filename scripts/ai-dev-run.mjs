@@ -115,10 +115,11 @@ function parseArgs() {
     );
   }
 
-  return {
-    task,
-    approveHighRisk,
-  };
+ return {
+  task,
+  approveHighRisk,
+  runWorkers,
+};
 }
 
 function getRepoRoot() {
