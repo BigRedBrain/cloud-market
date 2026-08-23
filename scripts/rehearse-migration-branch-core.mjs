@@ -1,0 +1,1089 @@
+/**
+ * The decision core of the production-shaped migration rehearsal.
+ *
+ * PURE, AND THAT IS THE ENTIRE POINT. Nothing in this file reads the
+ * environment, opens a socket, touches the filesystem, or talks to Neon or
+ * Postgres. Every export is a function of its arguments. The runner
+ * (`rehearse-migration-branch.mjs`) gathers facts; this module decides what they
+ * mean; the verifier (`verify-rehearse-migration-branch.mjs`) proves the
+ * decisions are right without a network, a database, or a credential.
+ *
+ * WHY THE SPLIT EXISTS. The rehearsal's whole value is its refusals — that it
+ * will not clone the wrong parent, will not run a migration onto a database
+ * whose ledger it cannot reconcile, will not read a pre-existing enum value as
+ * evidence that a migration was applied, and will not report PASS on a probe
+ * that never ran. A refusal that is only exercised when someone points the
+ * script at production is a refusal nobody has ever seen work. Extracted here,
+ * every one of them is testable in milliseconds against literals.
+ *
+ * THE INVARIANTS THIS FILE ENCODES
+ *
+ *   1. Evidence that is missing, ambiguous, or unrecognised is a FAILURE, never
+ *      a pass and never a shrug. There is no code path that treats absence as
+ *      permission.
+ *   2. An object existing on the clone while the migration that declares it is
+ *      unrecorded is DRIFT — always blocking, never evidence of application.
+ *      `hybrid_i`/`hybrid_s` are the named case of this rule because
+ *      `ADD VALUE IF NOT EXISTS` is exactly the statement that would otherwise
+ *      succeed silently and leave a ledger that disagrees with the schema.
+ *   3. The migration command is the repository's own `drizzle-kit migrate`, run
+ *      once, with the journal and migration files exactly as committed. There is
+ *      no per-file executor here, no statement splitter, and no ledger writer —
+ *      by construction, not by convention.
+ */
+import { createHash } from 'node:crypto'
+
+import { isProductionHostFingerprint } from './environment-fingerprints.mjs'
+
+/* ============================================================ expectations = */
+
+/** Every rehearsal branch this tooling may create or delete is named this way. */
+export const REHEARSAL_BRANCH_PREFIX = 'rehearsal-'
+
+/**
+ * The migrations production is expected to have already recorded.
+ *
+ * Spelled out rather than derived from "everything before the pending stack",
+ * so that a journal which quietly gained or lost an entry fails reconciliation
+ * instead of silently redefining what production is supposed to look like.
+ */
+export const RECORDED_TAGS = Object.freeze([
+  '0000_keen_raider',
+  '0001_friendly_morlocks',
+  '0002_quick_beyonder',
+  '0003_lean_starbolt',
+  '0004_true_amazoness',
+  '0005_flimsy_shinko_yamashiro',
+  '0006_normal_darwin',
+  '0007_cloudy_kulan_gath',
+  '0008_organic_proemial_gods',
+  '0009_lucky_cloak',
+  '0010_limit_boundary_guard',
+  '0011_unknown_absorbing_man',
+  '0012_scheduler_run_guard',
+  '0013_cra_measurement_model',
+  '0014_exact_cap_scale',
+  '0015_catalog_compliance',
+])
+
+/** The stack this rehearsal exists to apply, in order. */
+export const PENDING_TAGS = Object.freeze([
+  '0016_yummy_tattoo',
+  '0017_phase_5_private_storefront',
+  '0018_strain_leaning_types',
+  '0019_demonic_rockslide',
+])
+
+export const ALL_TAGS = Object.freeze([...RECORDED_TAGS, ...PENDING_TAGS])
+
+/**
+ * The two enum values whose mere existence has previously been mistaken for
+ * proof that 0018 had been applied. Named here so the rule is testable by name.
+ */
+export const STRAIN_LEANING_VALUES = Object.freeze(['hybrid_i', 'hybrid_s'])
+
+/**
+ * The behavioural probes that MUST report PASS.
+ *
+ * Declared up front, so that a probe which never ran is detectable as a missing
+ * result rather than invisible. Every probe is self-sufficient: it builds the
+ * rows it needs inside a transaction that is rolled back, so none of them can
+ * report SKIP because the clone happened not to carry a convenient row.
+ */
+export const REQUIRED_PROBES = Object.freeze([
+  '0016.media_defaults',
+  '0016.media_explicit_kind',
+  '0016.media_kind_rejects_unknown',
+  '0017.invite_code_hash_unique',
+  '0017.invite_code_budget_check',
+  '0017.admin_ceiling_trigger',
+  '0018.strain_leaning_accepted',
+  '0018.strain_leaning_ordering',
+  '0019.invite_target_role_default',
+  '0019.redemption_same_invite_rejected',
+  '0019.redemption_other_invite_allowed',
+  '0019.marketplace_access_user_unique',
+  '0019.marketplace_access_user_cascade',
+  'probe.isolation',
+])
+
+/** The only status that may contribute to a PASS. */
+export const PROBE_PASS = 'PASS'
+
+/* ============================================== repository migration facts = */
+
+/**
+ * The hash drizzle records for a migration: SHA-256 over the file's text.
+ *
+ * This must stay byte-for-byte what `drizzle-orm`'s `readMigrationFiles` does —
+ * `sha256(readFileSync(file).toString())` — because the value it produces is
+ * compared against rows that drizzle itself wrote. Normalising line endings or
+ * trimming whitespace here would not "fix" a mismatch; it would hide one.
+ */
+export function migrationHash(sql) {
+  if (typeof sql !== 'string') {
+    throw new TypeError('migrationHash requires the migration file text as a string')
+  }
+  return createHash('sha256').update(sql).digest('hex')
+}
+
+const shortHash = (h) => (typeof h === 'string' ? `${h.slice(0, 12)}…` : String(h))
+
+const normalizeHash = (value) => {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim().toLowerCase()
+  return /^[0-9a-f]{64}$/.test(trimmed) ? trimmed : null
+}
+
+/**
+ * `created_at` is a bigint column, so the driver may hand back a number, a
+ * string or a BigInt depending on version and settings. All three are accepted;
+ * anything else is unrecognised evidence and therefore a failure.
+ */
+const normalizeMillis = (value) => {
+  if (typeof value === 'bigint') return value.toString()
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? String(value) : null
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) return value.trim()
+  return null
+}
+
+/**
+ * The repository's migrations, as the ledger should describe them.
+ *
+ * @param {object} input
+ * @param {object} input.journal  parsed drizzle/meta/_journal.json
+ * @param {Record<string,string>} input.sources  tag -> exact file text
+ */
+export function buildRepositoryMigrations({ journal, sources }) {
+  const problems = []
+  const migrations = []
+
+  if (!journal || typeof journal !== 'object' || !Array.isArray(journal.entries)) {
+    return {
+      problems: ['drizzle/meta/_journal.json is missing or has no entries array — no repository evidence.'],
+      migrations,
+    }
+  }
+
+  const entries = journal.entries
+  if (entries.length !== ALL_TAGS.length) {
+    problems.push(
+      `The journal has ${entries.length} entries; this rehearsal is defined against exactly ` +
+        `${ALL_TAGS.length} (${ALL_TAGS[0]} … ${ALL_TAGS[ALL_TAGS.length - 1]}). Regenerate the ` +
+        'rehearsal expectations deliberately rather than letting them drift.',
+    )
+  }
+
+  entries.forEach((entry, position) => {
+    const expected = ALL_TAGS[position]
+    if (expected === undefined) {
+      problems.push(`Journal position ${position} ("${entry?.tag}") is beyond the expected stack.`)
+      return
+    }
+    if (entry?.tag !== expected) {
+      problems.push(`Journal position ${position} is "${entry?.tag}", expected "${expected}".`)
+    }
+    if (entry?.idx !== position) {
+      problems.push(`Journal entry "${entry?.tag}" reports idx ${entry?.idx} at position ${position}.`)
+    }
+    if (!Number.isInteger(entry?.when) || entry.when <= 0) {
+      problems.push(`Journal entry "${entry?.tag}" has no usable "when" timestamp (${entry?.when}).`)
+      return
+    }
+    if (position > 0 && Number.isInteger(entries[position - 1]?.when) && entry.when <= entries[position - 1].when) {
+      problems.push(
+        `Journal entry "${entry.tag}" is not newer than its predecessor ` +
+          `(${entry.when} <= ${entries[position - 1].when}).`,
+      )
+    }
+
+    const sql = sources?.[entry.tag]
+    if (typeof sql !== 'string' || sql.length === 0) {
+      /*
+       * MISSING EVIDENCE FAILS CLOSED. A migration file that cannot be read
+       * cannot be hashed, so its ledger row cannot be reconciled — and an
+       * unreconciled row is precisely the thing this rehearsal refuses to
+       * proceed past.
+       */
+      problems.push(
+        `drizzle/${entry.tag}.sql could not be read. Its hash cannot be computed, so the ` +
+          'clone ledger cannot be reconciled against it.',
+      )
+      return
+    }
+
+    migrations.push({ idx: position, tag: entry.tag, when: entry.when, hash: migrationHash(sql), sql })
+  })
+
+  return { problems, migrations }
+}
+
+/* ============================================================ the ledger === */
+
+/**
+ * Exact reconciliation of the clone's `drizzle.__drizzle_migrations` against a
+ * span of repository migrations: same rows, same order, same hashes, same
+ * timestamps, nothing extra and nothing unexplained.
+ *
+ * A COUNT IS NOT A RECONCILIATION. The rehearsal this replaces asserted the
+ * number of ledger rows and nothing else, which cannot distinguish "production
+ * is at 0015" from "production is at sixteen migrations that are not these".
+ *
+ * @param {object} input
+ * @param {Array} input.migrations   from buildRepositoryMigrations
+ * @param {Array|null} input.rows    ledger rows: { id, hash, created_at }, ordered by id
+ * @param {readonly string[]} input.expectedTags
+ */
+export function reconcileLedger({ migrations, rows, expectedTags }) {
+  const problems = []
+
+  if (!Array.isArray(rows)) {
+    return {
+      problems: [
+        'The clone produced no ledger evidence at all (drizzle.__drizzle_migrations could not be ' +
+          'read). Absence of evidence is a stop, not a baseline.',
+      ],
+      recordedTags: [],
+    }
+  }
+
+  const byTag = new Map(migrations.map((m) => [m.tag, m]))
+  const byHash = new Map(migrations.map((m) => [m.hash, m]))
+
+  const expected = []
+  for (const tag of expectedTags) {
+    const migration = byTag.get(tag)
+    if (!migration) {
+      problems.push(`No repository evidence for "${tag}", so the ledger cannot be reconciled against it.`)
+      continue
+    }
+    expected.push(migration)
+  }
+
+  if (rows.length !== expectedTags.length) {
+    problems.push(
+      `The clone ledger holds ${rows.length} row(s); exact reconciliation requires ` +
+        `${expectedTags.length} (${expectedTags[0]} … ${expectedTags[expectedTags.length - 1]}).`,
+    )
+  }
+
+  const span = Math.max(rows.length, expected.length)
+  let previousId = null
+
+  for (let position = 0; position < span; position += 1) {
+    const row = rows[position]
+    const want = expected[position]
+
+    if (!row) {
+      problems.push(`Ledger position ${position}: "${want.tag}" is not recorded on the clone.`)
+      continue
+    }
+    if (!want) {
+      const stray = byHash.get(normalizeHash(row.hash))
+      problems.push(
+        `Ledger position ${position}: the clone records an extra row ` +
+          `(${stray ? stray.tag : `unknown hash ${shortHash(row.hash)}`}) beyond the expected span.`,
+      )
+      continue
+    }
+
+    const hash = normalizeHash(row.hash)
+    if (hash === null) {
+      problems.push(`Ledger position ${position} ("${want.tag}") has an unreadable hash (${row.hash}).`)
+    } else if (hash !== want.hash) {
+      const actual = byHash.get(hash)
+      problems.push(
+        `Ledger position ${position}: expected "${want.tag}" (${shortHash(want.hash)}) but the clone ` +
+          `records ${actual ? `"${actual.tag}"` : `an unknown migration (${shortHash(hash)})`}.` +
+          (actual ? '' : ' The file in this repository may differ from the one that was applied.'),
+      )
+    }
+
+    const created = normalizeMillis(row.created_at)
+    if (created === null) {
+      problems.push(
+        `Ledger position ${position} ("${want.tag}") has an unusable created_at (${row.created_at}).`,
+      )
+    } else if (created !== String(want.when)) {
+      problems.push(
+        `Ledger position ${position} ("${want.tag}"): recorded timestamp ${created} does not match the ` +
+          `journal timestamp ${want.when}.`,
+      )
+    }
+
+    const id = typeof row.id === 'string' && /^\d+$/.test(row.id) ? Number(row.id) : row.id
+    if (!Number.isInteger(id)) {
+      problems.push(`Ledger position ${position} ("${want.tag}") has no usable id (${row.id}).`)
+    } else if (previousId !== null && id <= previousId) {
+      problems.push(
+        `Ledger ids are not strictly ascending at position ${position} (${previousId} -> ${id}), so ` +
+          'the recorded order cannot be trusted.',
+      )
+    } else {
+      previousId = id
+    }
+  }
+
+  /*
+   * Called out separately because it means something specific and alarming: a
+   * migration this run is about to apply is ALREADY in the ledger, out of the
+   * span being reconciled.
+   */
+  for (const row of rows.slice(expected.length)) {
+    const stray = byHash.get(normalizeHash(row.hash))
+    if (stray && PENDING_TAGS.includes(stray.tag)) {
+      problems.push(
+        `The clone already records "${stray.tag}", which this rehearsal is defined to apply. The ` +
+          'clone is not the production shape this run assumes.',
+      )
+    }
+  }
+
+  return {
+    problems,
+    recordedTags: rows
+      .map((row) => byHash.get(normalizeHash(row.hash))?.tag)
+      .filter((tag) => typeof tag === 'string'),
+  }
+}
+
+/**
+ * What is left to apply, derived from the ledger rather than assumed.
+ *
+ * The derived stack is then required to be EXACTLY the four pending tags, in
+ * order, as a contiguous tail. A pending set that is anything else means the
+ * clone is not the database this rehearsal was designed against.
+ */
+export function derivePendingStack({ migrations, rows }) {
+  const problems = []
+
+  if (!Array.isArray(rows)) {
+    return { problems: ['No ledger evidence, so the pending stack cannot be derived.'], pendingTags: [] }
+  }
+
+  const recordedHashes = new Set(rows.map((row) => normalizeHash(row.hash)).filter(Boolean))
+  const pending = migrations.filter((m) => !recordedHashes.has(m.hash))
+  const pendingTags = pending.map((m) => m.tag)
+
+  const tail = migrations.slice(migrations.length - pending.length).map((m) => m.tag)
+  if (pendingTags.join(',') !== tail.join(',')) {
+    problems.push(
+      `The unapplied migrations (${pendingTags.join(', ') || 'none'}) are not a contiguous tail of the ` +
+        'journal. A gap in the middle means the ledger and the repository disagree about history.',
+    )
+  }
+
+  if (pendingTags.join(',') !== PENDING_TAGS.join(',')) {
+    problems.push(
+      `Derived pending stack [${pendingTags.join(', ') || 'none'}] is not the expected ` +
+        `[${PENDING_TAGS.join(', ')}].`,
+    )
+  }
+
+  return { problems, pendingTags }
+}
+
+/* ================================================= declared-object inventory */
+
+export const objectKey = Object.freeze({
+  type: (name) => `type:${name}`,
+  enumValue: (type, value) => `enumValue:${type}:${value}`,
+  table: (name) => `table:${name}`,
+  column: (table, column) => `column:${table}.${column}`,
+  index: (name) => `index:${name}`,
+  constraint: (name) => `constraint:${name}`,
+  function: (name) => `function:${name}`,
+  trigger: (name) => `trigger:${name}`,
+})
+
+/**
+ * Line comments are stripped before matching.
+ *
+ * 0017 carries a long hand-written commentary and a plpgsql body, and matching
+ * DDL keywords inside prose would invent objects that do not exist. Nothing in
+ * this stack puts a `--` inside a string literal, which is the only case this
+ * would get wrong.
+ */
+const stripComments = (sql) => sql.replace(/--[^\n]*/g, '')
+
+const collect = (sql, pattern, build) => {
+  const found = []
+  for (const match of sql.matchAll(pattern)) found.push(build(match))
+  return found
+}
+
+/**
+ * Every object a migration file DECLARES — the things that must not already
+ * exist on a clone where that migration is unrecorded.
+ *
+ * `conflictKind` records how the statement would behave if the object were
+ * already there:
+ *
+ *   'hard'   — the statement raises, so the migration would fail loudly.
+ *   'silent' — IF NOT EXISTS / OR REPLACE / a preceding DROP IF EXISTS means the
+ *              statement would succeed and leave the ledger claiming a migration
+ *              that only half-happened.
+ *
+ * BOTH ARE BLOCKING. The distinction exists to tell an operator what they are
+ * looking at, never to decide whether to proceed.
+ */
+export function extractDeclaredObjects(tag, rawSql) {
+  if (typeof rawSql !== 'string') {
+    throw new TypeError(`extractDeclaredObjects(${tag}) requires the migration file text`)
+  }
+  const sql = stripComments(rawSql)
+  const declared = []
+
+  const droppedTriggers = new Set(
+    collect(sql, /DROP\s+TRIGGER\s+IF\s+EXISTS\s+"?([a-z0-9_]+)"?/gi, (m) => m[1].toLowerCase()),
+  )
+
+  declared.push(
+    ...collect(sql, /CREATE\s+TYPE\s+"public"\."([a-z0-9_]+)"\s+AS\s+ENUM/gi, (m) => ({
+      kind: 'type',
+      key: objectKey.type(m[1]),
+      label: `type "${m[1]}"`,
+      conflictKind: 'hard',
+    })),
+  )
+
+  declared.push(
+    ...collect(
+      sql,
+      /ALTER\s+TYPE\s+"public"\."([a-z0-9_]+)"\s+ADD\s+VALUE\s+(IF\s+NOT\s+EXISTS\s+)?'([^']+)'/gi,
+      (m) => ({
+        kind: 'enumValue',
+        key: objectKey.enumValue(m[1], m[3]),
+        label: `enum value "${m[1]}.${m[3]}"`,
+        conflictKind: m[2] ? 'silent' : 'hard',
+        note: m[2]
+          ? 'ADD VALUE IF NOT EXISTS would succeed against it, so its presence is drift and never ' +
+            'evidence that the migration was applied.'
+          : undefined,
+      }),
+    ),
+  )
+
+  declared.push(
+    ...collect(sql, /CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?"([a-z0-9_]+)"/gi, (m) => ({
+      kind: 'table',
+      key: objectKey.table(m[2]),
+      label: `table "${m[2]}"`,
+      conflictKind: m[1] ? 'silent' : 'hard',
+    })),
+  )
+
+  declared.push(
+    ...collect(sql, /ALTER\s+TABLE\s+"([a-z0-9_]+)"\s+ADD\s+COLUMN\s+"([a-z0-9_]+)"/gi, (m) => ({
+      kind: 'column',
+      key: objectKey.column(m[1], m[2]),
+      label: `column "${m[1]}.${m[2]}"`,
+      conflictKind: 'hard',
+    })),
+  )
+
+  declared.push(
+    ...collect(sql, /ALTER\s+TABLE\s+"([a-z0-9_]+)"\s+ADD\s+CONSTRAINT\s+"([a-z0-9_]+)"/gi, (m) => ({
+      kind: 'constraint',
+      key: objectKey.constraint(m[2]),
+      label: `constraint "${m[2]}" on "${m[1]}"`,
+      conflictKind: 'hard',
+    })),
+  )
+
+  declared.push(
+    ...collect(sql, /CONSTRAINT\s+"([a-z0-9_]+)"\s+CHECK/gi, (m) => ({
+      kind: 'constraint',
+      key: objectKey.constraint(m[1]),
+      label: `check constraint "${m[1]}"`,
+      conflictKind: 'hard',
+    })),
+  )
+
+  declared.push(
+    ...collect(
+      sql,
+      /CREATE\s+(UNIQUE\s+)?INDEX\s+(IF\s+NOT\s+EXISTS\s+)?"([a-z0-9_]+)"\s+ON\s+"([a-z0-9_]+)"/gi,
+      (m) => ({
+        kind: 'index',
+        key: objectKey.index(m[3]),
+        label: `${m[1] ? 'unique ' : ''}index "${m[3]}" on "${m[4]}"`,
+        conflictKind: m[2] ? 'silent' : 'hard',
+      }),
+    ),
+  )
+
+  declared.push(
+    ...collect(sql, /CREATE\s+(OR\s+REPLACE\s+)?FUNCTION\s+"?([a-z0-9_]+)"?\s*\(/gi, (m) => ({
+      kind: 'function',
+      key: objectKey.function(m[2]),
+      label: `function "${m[2]}"`,
+      conflictKind: m[1] ? 'silent' : 'hard',
+    })),
+  )
+
+  declared.push(
+    ...collect(sql, /CREATE\s+TRIGGER\s+"?([a-z0-9_]+)"?/gi, (m) => ({
+      kind: 'trigger',
+      key: objectKey.trigger(m[1]),
+      label: `trigger "${m[1]}"`,
+      conflictKind: droppedTriggers.has(m[1].toLowerCase()) ? 'silent' : 'hard',
+    })),
+  )
+
+  /* De-duplicated: a name declared twice in one file is still one object. */
+  const seen = new Set()
+  const unique = []
+  for (const object of declared) {
+    if (seen.has(object.key)) continue
+    seen.add(object.key)
+    unique.push({ tag, ...object })
+  }
+  return unique
+}
+
+/** Objects a migration REMOVES — expected present before it, absent after. */
+export function extractDroppedObjects(tag, rawSql) {
+  const sql = stripComments(rawSql)
+  return collect(sql, /DROP\s+INDEX\s+(IF\s+EXISTS\s+)?"([a-z0-9_]+)"/gi, (m) => ({
+    tag,
+    kind: 'index',
+    key: objectKey.index(m[2]),
+    label: `index "${m[2]}"`,
+  }))
+}
+
+/** The full declared inventory across a set of migrations, in journal order. */
+export function buildPendingInventory({ migrations, tags = PENDING_TAGS }) {
+  const inventory = []
+  const dropped = []
+  const problems = []
+
+  for (const tag of tags) {
+    const migration = migrations.find((m) => m.tag === tag)
+    if (!migration) {
+      problems.push(`No repository evidence for pending migration "${tag}" — its objects cannot be inventoried.`)
+      continue
+    }
+    inventory.push(...extractDeclaredObjects(tag, migration.sql))
+    dropped.push(...extractDroppedObjects(tag, migration.sql))
+  }
+
+  if (problems.length === 0 && inventory.length === 0) {
+    problems.push('The pending stack declared no objects at all, which cannot be right.')
+  }
+
+  return { inventory, dropped, problems }
+}
+
+/* ================================================================== drift == */
+
+const OBSERVATION_KINDS = Object.freeze([
+  'types',
+  'enumValues',
+  'tables',
+  'columns',
+  'indexes',
+  'constraints',
+  'functions',
+  'triggers',
+])
+
+/**
+ * Turn what was read out of the clone's catalogs into a key set.
+ *
+ * A kind that was not collected at all is missing evidence, and missing
+ * evidence is a failure: "we did not look" must never read the same as "it is
+ * not there".
+ */
+export function buildObservedKeys(observation) {
+  const problems = []
+  const keys = new Set()
+
+  for (const kind of OBSERVATION_KINDS) {
+    const rows = observation?.[kind]
+    if (!Array.isArray(rows)) {
+      problems.push(`The clone's ${kind} were not collected, so drift in them cannot be ruled out.`)
+      continue
+    }
+    for (const row of rows) {
+      switch (kind) {
+        case 'types':
+          keys.add(objectKey.type(row))
+          break
+        case 'enumValues':
+          keys.add(objectKey.enumValue(row.type, row.value))
+          break
+        case 'tables':
+          keys.add(objectKey.table(row))
+          break
+        case 'columns':
+          keys.add(objectKey.column(row.table, row.column))
+          break
+        case 'indexes':
+          keys.add(objectKey.index(row))
+          break
+        case 'constraints':
+          keys.add(objectKey.constraint(row))
+          break
+        case 'functions':
+          keys.add(objectKey.function(row))
+          break
+        case 'triggers':
+          keys.add(objectKey.trigger(row))
+          break
+        default:
+          break
+      }
+    }
+  }
+
+  return { problems, keys }
+}
+
+/**
+ * Blocking drift: anything the pending stack declares that already exists while
+ * its migration is unrecorded.
+ *
+ * THERE IS NO "ALREADY APPLIED" BRANCH HERE, DELIBERATELY. The ledger is the
+ * only thing that says a migration ran. A schema object is not a substitute for
+ * a ledger row, because the two disagreeing is the exact condition that makes a
+ * migration run dangerous — and `ADD VALUE IF NOT EXISTS` makes that
+ * disagreement survivable enough to go unnoticed.
+ */
+export function evaluateDrift({ inventory, recordedTags, observedKeys }) {
+  const problems = []
+  const present = []
+
+  if (!(observedKeys instanceof Set)) {
+    return {
+      problems: ['No catalog observation was supplied, so pre-existing objects cannot be ruled out.'],
+      present,
+      checked: 0,
+    }
+  }
+
+  const recorded = new Set(recordedTags ?? [])
+  let checked = 0
+
+  for (const object of inventory) {
+    if (recorded.has(object.tag)) continue
+    checked += 1
+    if (!observedKeys.has(object.key)) continue
+
+    present.push(object)
+    problems.push(
+      `DRIFT: ${object.label} already exists on the clone although "${object.tag}" is NOT recorded in ` +
+        `the ledger (${object.conflictKind === 'silent' ? 'the statement would succeed silently' : 'the migration would fail on it'}). ` +
+        (object.note ?? 'It is blocking drift, never evidence that the migration was applied.'),
+    )
+  }
+
+  return { problems, present, checked }
+}
+
+/** Post-migration: everything the stack declared must now exist, and its drops must be gone. */
+export function evaluateApplied({ inventory, dropped, observedKeys }) {
+  const problems = []
+
+  if (!(observedKeys instanceof Set)) {
+    return { problems: ['No catalog observation was supplied after the migration.'] }
+  }
+
+  /*
+   * An object created by one migration in the stack and removed by a later one
+   * is not expected to survive the stack. 0017 creates
+   * `invite_code_redemptions_user_unique` and 0019 drops it; requiring both
+   * would fail a correct run.
+   */
+  const removed = new Set((dropped ?? []).map((object) => object.key))
+
+  for (const object of inventory) {
+    if (removed.has(object.key)) continue
+    if (!observedKeys.has(object.key)) {
+      problems.push(`After migrating, ${object.label} declared by "${object.tag}" does not exist.`)
+    }
+  }
+  for (const object of dropped) {
+    if (observedKeys.has(object.key)) {
+      problems.push(`After migrating, ${object.label} was supposed to be dropped by "${object.tag}" and is still present.`)
+    }
+  }
+
+  return { problems }
+}
+
+/* =============================================================== identity == */
+
+/**
+ * The deployed application must say, in its own words, that it is production
+ * and that it is talking to the database this repository expects.
+ *
+ * Both halves are required. "Production" alone would accept a production
+ * deployment pointed at a database nobody wrote down; the fingerprint alone
+ * would accept a preview deployment that happens to share production's
+ * connection string.
+ */
+export function evaluateHealthIdentity({ reachable, httpStatus, body, expectedFingerprint }) {
+  const problems = []
+
+  if (!reachable) {
+    problems.push('The deployed health endpoint could not be reached, so production identity is unverifiable.')
+    return { problems, fingerprint: null }
+  }
+  if (httpStatus !== 200) {
+    problems.push(`The health endpoint returned HTTP ${httpStatus}; production identity is unverifiable.`)
+  }
+  if (!body || typeof body !== 'object') {
+    problems.push('The health endpoint did not return a JSON object.')
+    return { problems, fingerprint: null }
+  }
+  if (body.environment !== 'production') {
+    problems.push(
+      `The deployment reports environment "${body.environment ?? '(none)'}", not "production". Only the ` +
+        'production deployment may anchor the parent this rehearsal clones.',
+    )
+  }
+  if (body.status !== 'ok') {
+    problems.push(`The deployment reports status "${body.status ?? '(none)'}", not "ok".`)
+  }
+  if (body.database?.configured !== true || body.database?.reachable !== true) {
+    problems.push('The deployment does not report a configured, reachable database.')
+  }
+
+  const fingerprint =
+    typeof body.database?.fingerprint === 'string' && body.database.fingerprint.trim().length > 0
+      ? body.database.fingerprint.trim()
+      : null
+
+  if (fingerprint === null) {
+    problems.push('The health endpoint published no database fingerprint.')
+  } else if (typeof expectedFingerprint !== 'string' || expectedFingerprint.length === 0) {
+    problems.push('No expected production fingerprint was supplied to compare against.')
+  } else if (fingerprint !== expectedFingerprint) {
+    problems.push(
+      `The live database fingerprint is ${fingerprint}, but this repository expects ` +
+        `${expectedFingerprint}. Either production moved or the recorded constant is stale — a person ` +
+        'must decide which, and nothing may be cloned until they have.',
+    )
+  }
+
+  return { problems, fingerprint }
+}
+
+/**
+ * Which branch is production, and is the control plane unambiguous about it?
+ *
+ * `findDefaultBranch` in `neon-api.mjs` falls back from `default` to `primary`,
+ * which is right for a helper that only needs a branch to read. It is wrong
+ * here: a project where those two flags disagree is a project where nobody can
+ * say what production is, and that is a stop.
+ */
+export function evaluateBranchTopology(branches) {
+  const problems = []
+
+  if (!Array.isArray(branches) || branches.length === 0) {
+    return { problems: ['Neon returned no branches for this project.'], parent: null, flagEvidence: null }
+  }
+
+  for (const branch of branches) {
+    if (typeof branch?.id !== 'string' || branch.id.length === 0) {
+      problems.push('A branch in this project has no id, so its metadata cannot be trusted.')
+    }
+    if (typeof branch?.name !== 'string' || branch.name.length === 0) {
+      problems.push(`Branch ${branch?.id ?? '(no id)'} has no name.`)
+    }
+    for (const flag of ['default', 'primary']) {
+      const value = branch?.[flag]
+      if (value !== undefined && value !== null && typeof value !== 'boolean') {
+        problems.push(`Branch "${branch?.name}" reports a non-boolean "${flag}" (${String(value)}).`)
+      }
+    }
+  }
+
+  const defaults = branches.filter((b) => b.default === true)
+  const primaries = branches.filter((b) => b.primary === true)
+
+  if (defaults.length === 0 && primaries.length === 0) {
+    problems.push(
+      'No branch in this project is marked default or primary, so production cannot be identified.',
+    )
+  }
+  if (defaults.length > 1) {
+    problems.push(`${defaults.length} branches are marked default; production is ambiguous.`)
+  }
+  if (primaries.length > 1) {
+    problems.push(`${primaries.length} branches are marked primary; production is ambiguous.`)
+  }
+  if (defaults.length === 1 && primaries.length === 1 && defaults[0].id !== primaries[0].id) {
+    problems.push(
+      `The default branch ("${defaults[0].name}") and the primary branch ("${primaries[0].name}") are ` +
+        'different branches. Nothing may be cloned while the control plane disagrees with itself.',
+    )
+  }
+
+  return {
+    problems,
+    /*
+     * Either flag may identify production, but they may never identify
+     * different branches and neither may identify two. A control plane that
+     * reports only one of the pair is answerable; one that contradicts itself
+     * is not.
+     */
+    parent: problems.length === 0 ? (defaults[0] ?? primaries[0]) : null,
+    /*
+     * Whether the API populates each flag AT ALL in this project. Used to decide
+     * whether an absent flag on the clone means "false" or means "unknown".
+     */
+    flagEvidence: {
+      default: defaults.length === 1,
+      primary: primaries.length === 1,
+    },
+  }
+}
+
+/**
+ * A safety-critical clone flag is accepted only when the control plane
+ * explicitly reports `false`. Omission, null, or any non-boolean value is
+ * ambiguous and therefore blocks the rehearsal.
+ */
+export function interpretBranchFlag(value) {
+  if (value === true) return 'set'
+  if (value === false) return 'clear'
+  return 'ambiguous'
+}
+
+/** The clone must be demonstrably a child, and demonstrably not production. */
+export function evaluateCloneMetadata({ clone, parent }) {
+  const problems = []
+
+  if (!clone || typeof clone.id !== 'string' || clone.id.length === 0) {
+    return { problems: ['Branch creation returned no usable branch metadata.'] }
+  }
+  if (clone.id === parent?.id) {
+    problems.push('The created branch reports the same id as the production parent.')
+  }
+  if (typeof clone.name !== 'string' || !clone.name.startsWith(REHEARSAL_BRANCH_PREFIX)) {
+    problems.push(`The created branch is named "${clone.name}", which is not a ${REHEARSAL_BRANCH_PREFIX}* name.`)
+  }
+  if (clone.parent_id !== parent?.id) {
+    problems.push(
+      `The created branch reports parent_id ${clone.parent_id ?? '(none)'}, not the verified production ` +
+        `parent ${parent?.id}.`,
+    )
+  }
+
+  for (const flag of ['default', 'primary']) {
+    const state = interpretBranchFlag(clone[flag])
+    if (state === 'set') {
+      problems.push(`The created branch is marked ${flag}. Nothing further may run against it.`)
+    } else if (state === 'ambiguous') {
+      problems.push(
+        `The created branch must explicitly report "${flag}: false"; received ${String(clone[flag])}. ` +
+          'This rehearsal will not proceed on an inferred or unproven negative.',
+      )
+    }
+  }
+
+  return { problems }
+}
+
+/**
+ * The connection targets must be the clone's own, and must not be production —
+ * current or retired — under either the live fingerprint or the recorded ones.
+ */
+export function evaluateCloneTargets({
+  pooledHost,
+  directHost,
+  pooledEndpoint,
+  directEndpoint,
+  parentPooledHost,
+  parentEndpoint,
+  liveFingerprint,
+}) {
+  const problems = []
+
+  for (const [label, fp] of [
+    ['pooled', pooledHost],
+    ['direct', directHost],
+  ]) {
+    if (typeof fp !== 'string' || fp.length === 0) {
+      problems.push(`The clone's ${label} target produced no fingerprint.`)
+      continue
+    }
+    if (isProductionHostFingerprint(fp)) {
+      problems.push(`The clone's ${label} target matches a current or retired production fingerprint (${fp}).`)
+    }
+    if (typeof liveFingerprint === 'string' && fp === liveFingerprint) {
+      problems.push(`The clone's ${label} target IS the database the live application is using.`)
+    }
+    if (typeof parentPooledHost === 'string' && fp === parentPooledHost) {
+      problems.push(`The clone's ${label} target is the production parent's own host.`)
+    }
+  }
+
+  if (typeof parentEndpoint === 'string' && parentEndpoint.length > 0) {
+    for (const [label, fp] of [
+      ['pooled', pooledEndpoint],
+      ['direct', directEndpoint],
+    ]) {
+      if (fp === parentEndpoint) {
+        problems.push(`The clone's ${label} target is on production's compute endpoint (${fp}).`)
+      }
+    }
+  }
+
+  if (
+    typeof pooledEndpoint === 'string' &&
+    typeof directEndpoint === 'string' &&
+    pooledEndpoint !== directEndpoint
+  ) {
+    problems.push('The clone\'s pooled and direct strings are on different endpoints, so they are not one branch.')
+  }
+
+  return { problems }
+}
+
+/* ========================================================= the one command = */
+
+/** The only command this tooling is permitted to run against the clone. */
+export const MIGRATION_ARGV = Object.freeze(['drizzle-kit', 'migrate'])
+
+/**
+ * The repository's real migrate path, and nothing adjacent to it.
+ *
+ * `--step`, `--to`, a bare `push`, or anything else that would apply a subset,
+ * regenerate, or repair is refused here rather than merely not used, so that a
+ * future edit to the runner cannot quietly acquire the ability.
+ */
+export function assertMigrationCommand(file, args) {
+  const problems = []
+  const normalizedFile = String(file ?? '').toLowerCase()
+  if (normalizedFile !== 'npx' && normalizedFile !== 'npx.cmd') {
+    problems.push(`Refusing to run "${file}": the rehearsal may only invoke npx drizzle-kit migrate.`)
+  }
+  if (!Array.isArray(args) || args.length !== MIGRATION_ARGV.length) {
+    problems.push(`Refusing an argument list of ${Array.isArray(args) ? args.length : 'unknown'} item(s).`)
+  } else {
+    args.forEach((arg, i) => {
+      if (arg !== MIGRATION_ARGV[i]) {
+        problems.push(`Refusing argument ${i} "${arg}": expected "${MIGRATION_ARGV[i]}".`)
+      }
+    })
+  }
+  if (problems.length > 0) throw new Error(problems.join(' '))
+  return true
+}
+
+/**
+ * One invocation, and only after the preflight has explicitly cleared it.
+ *
+ * The gate is a value rather than a flag on the runner because "did the
+ * preflight pass?" and "has this already run?" are the two questions whose wrong
+ * answer would put a second, unreviewed migration onto a database.
+ */
+export function createMigrationGate(invoke) {
+  let cleared = false
+  let invocations = 0
+
+  return {
+    clear() {
+      cleared = true
+    },
+    get invocations() {
+      return invocations
+    },
+    run(file, args, options) {
+      if (!cleared) {
+        throw new Error('REFUSING: the migration command was reached without a drift-free preflight.')
+      }
+      if (invocations > 0) {
+        throw new Error('REFUSING: the migration command has already run once. Exactly one invocation is permitted.')
+      }
+      assertMigrationCommand(file, args)
+      invocations += 1
+      return invoke(file, args, options)
+    },
+  }
+}
+
+/* ==================================================== probes and cleanup === */
+
+/**
+ * Probe results, judged strictly.
+ *
+ * A probe that was skipped, never reached, or never reported is indistinguishable
+ * from a probe that would have failed, so all three are treated as failure. The
+ * previous rehearsal printed "SKIPPED — needs at least one redemption" and went
+ * on to report PASS, which is the specific behaviour this replaces.
+ */
+export function evaluateProbeOutcomes(results, required = REQUIRED_PROBES) {
+  const problems = []
+  const byId = new Map()
+
+  for (const result of results ?? []) {
+    if (!result || typeof result.id !== 'string') {
+      problems.push('A probe reported no id, so it cannot be accounted for.')
+      continue
+    }
+    if (byId.has(result.id)) {
+      problems.push(`Probe "${result.id}" reported more than once.`)
+    }
+    byId.set(result.id, result)
+  }
+
+  for (const id of required) {
+    const result = byId.get(id)
+    if (!result) {
+      problems.push(`Probe "${id}" is MISSING — it produced no result at all.`)
+      continue
+    }
+    if (result.status !== PROBE_PASS) {
+      problems.push(`Probe "${id}" reported ${result.status}${result.detail ? ` — ${result.detail}` : ''}.`)
+    }
+  }
+
+  for (const id of byId.keys()) {
+    if (!required.includes(id)) problems.push(`Probe "${id}" is not a declared probe of this rehearsal.`)
+  }
+
+  return { problems, passed: [...byId.values()].filter((r) => r.status === PROBE_PASS).length }
+}
+
+/**
+ * Deletion guard.
+ *
+ * Repeated in full at the moment of deletion rather than inherited from the
+ * create path, because this is also the manual recovery entry point and a
+ * mistyped id there is not recoverable.
+ */
+export function evaluateDeletionGuard({ target, parentId, expectedName }) {
+  const problems = []
+
+  if (!target || typeof target.id !== 'string') {
+    return { problems: ['Refusing to delete: no branch metadata was found for the id given.'] }
+  }
+  if (typeof parentId === 'string' && target.id === parentId) {
+    problems.push('REFUSING to delete the production parent branch.')
+  }
+  if (target.default === true || target.primary === true) {
+    problems.push(`REFUSING: branch ${target.id} is marked default/primary.`)
+  }
+  if (typeof target.name !== 'string' || !target.name.startsWith(REHEARSAL_BRANCH_PREFIX)) {
+    problems.push(
+      `REFUSING: branch "${target.name}" is not a ${REHEARSAL_BRANCH_PREFIX}* branch created by this tooling.`,
+    )
+  }
+  if (typeof expectedName === 'string' && target.name !== expectedName) {
+    problems.push(`REFUSING: branch ${target.id} is named "${target.name}", not the expected "${expectedName}".`)
+  }
+
+  return { problems }
+}
+
+/** A rehearsal branch name that cannot collide and cannot be mistaken for anything else. */
+export function rehearsalBranchName(nowMs, suffix) {
+  return `${REHEARSAL_BRANCH_PREFIX}${PENDING_TAGS[0].slice(0, 4)}-${PENDING_TAGS[PENDING_TAGS.length - 1].slice(0, 4)}-${nowMs}${
+    suffix ? `-${suffix}` : ''
+  }`
+}
