@@ -3,6 +3,7 @@ import {
   check,
   index,
   integer,
+  pgEnum,
   pgTable,
   timestamp,
   uniqueIndex,
@@ -14,15 +15,42 @@ import { primaryKeyColumn, timestampColumns } from './_shared'
 import { users } from './auth'
 
 /**
- * Invite codes — the only way to create a CloudMarket account.
+ * Invite codes — an alternate approval path into the private marketplace.
  *
- * The storefront is private and invite-only, so this table is the registration
- * gate. An invite grants exactly one thing: permission to create a CUSTOMER
- * account. It does not, and cannot, carry a role, a permission, or any other
- * privilege — see `lib/invites/redeem.ts`, where the `role` written at sign-up
- * is the hard-coded literal `'customer'` and is never read from the invite or
- * from anything the browser sent.
+ * REDEMPTION IS NOT IMPLEMENTED. There is no `lib/invites/redeem.ts`;
+ * `lib/invites/` contains only `generate.ts` and `hash.ts`, and nothing in the
+ * application reads either invite table. An earlier version of this comment
+ * cited that file as the place where a hard-coded `'customer'` role was
+ * written at sign-up, which read as a guarantee that no code was providing.
+ *
+ * WHAT AN INVITE GRANTS, once redemption exists: private-marketplace
+ * membership at the scope named by `target_role`, expressed as a
+ * `marketplace_access` row. That is the whole of it.
+ *
+ * WHAT IT CANNOT GRANT, ever:
+ *
+ *   - `users.role`. Marketplace membership is a separate fact in a separate
+ *     table precisely so that an invite cannot promote an account.
+ *   - selling rights. A `vendor` invite admits someone to the marketplace with
+ *     vendor scope; vendor profile, compliance and `vendor_memberships` are
+ *     separate, later, and must not be inferred from an invite.
+ *   - platform admin. Administrator identity comes from
+ *     `CLOUDMARKET_OWNER_USER_ID` plus the single live `admin_backup` row, and
+ *     no invite can reach either.
  */
+
+/**
+ * What a redeemed invite admits the account to.
+ *
+ * Real semantics, not a label: `target_role` determines the
+ * `marketplace_access.scope` a successful redemption produces. `vendor` scope
+ * includes shopper marketplace access and authorizes nothing beyond entry.
+ *
+ * Separate from `marketplace_scope` even though the values match today.
+ * Postgres cannot remove an enum value, so a shared type would mean anything
+ * added for one purpose becomes permanently legal for the other.
+ */
+export const inviteTargetRole = pgEnum('invite_target_role', ['shopper', 'vendor'])
 
 export const inviteCodes = pgTable(
   'invite_codes',
@@ -59,6 +87,22 @@ export const inviteCodes = pgTable(
 
     /** Operator's note — "Nov flyer", "Jess's referral". Never the code. */
     label: varchar('label', { length: 120 }),
+
+    /**
+     * DEFAULTS TO `shopper`, PERMANENTLY AND ON PURPOSE.
+     *
+     * It backfills every pre-existing Phase-5 invite to exactly the semantics
+     * it was issued with — those codes were customer/shopper-only by design —
+     * without assuming the production table is empty, because a constant
+     * default is applied to existing rows as a catalog change rather than a
+     * table rewrite.
+     *
+     * The default is kept rather than dropped afterwards because it fails
+     * toward the lower privilege: a form, script or migration that omits this
+     * column creates a SHOPPER invite. It can never accidentally create a
+     * vendor one.
+     */
+    targetRole: inviteTargetRole('target_role').notNull().default('shopper'),
 
     /**
      * Usage budget. `max_uses` of 1 is a personal invite; higher is a shared
@@ -161,11 +205,32 @@ export const inviteCodeRedemptions = pgTable(
   },
   (table) => [
     /**
-     * One account is created by one invite, once. Also the last line of defence
-     * against a redemption being double-recorded.
+     * One user may redeem one invite ONCE, and may redeem OTHER invites later.
+     *
+     * This replaces a `unique(user_id)` rule that permitted exactly one
+     * redemption per account for all time. That rule made the intended
+     * progression impossible: redeem a shopper invite now, receive a vendor
+     * invite later, and the second redemption would have been rejected purely
+     * because the first existed.
+     *
+     *   same user + same invite      -> rejected here
+     *   same user + different invite -> allowed, and intended
+     *
+     * It also replaces the separate `invite_code_redemptions_invite_idx`: a
+     * btree on `(invite_code_id, user_id)` already serves leading-column
+     * lookups on `invite_code_id`, so a second index on that column alone would
+     * be redundant write cost.
+     *
+     * The migration creates this index BEFORE dropping either of the two it
+     * replaces, so there is never an instant with no uniqueness protection on
+     * this table. That ordering matters more than it looks: once a single user
+     * holds two redemptions, the old `unique(user_id)` index can never be
+     * recreated, so there is no way back.
      */
-    uniqueIndex('invite_code_redemptions_user_unique').on(table.userId),
-    index('invite_code_redemptions_invite_idx').on(table.inviteCodeId),
+    uniqueIndex('invite_code_redemptions_invite_user_unique').on(
+      table.inviteCodeId,
+      table.userId,
+    ),
   ],
 )
 
@@ -191,3 +256,4 @@ export const inviteCodeRedemptionsRelations = relations(
 export type InviteCode = typeof inviteCodes.$inferSelect
 export type NewInviteCode = typeof inviteCodes.$inferInsert
 export type InviteCodeRedemption = typeof inviteCodeRedemptions.$inferSelect
+export type InviteTargetRole = (typeof inviteTargetRole.enumValues)[number]

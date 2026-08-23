@@ -19,6 +19,7 @@
     "test:auth": "tsx --conditions=react-server scripts/verify-auth-primitives.ts",
     "test:invite": "tsx scripts/verify-invite-code.ts",
     "test:admin-identity": "tsx --conditions=react-server scripts/verify-admin-identity.ts",
+    "test:marketplace-schema": "tsx scripts/verify-marketplace-schema.ts",
     "test:e2e": "node scripts/verify-auth-e2e.mjs",
     "test:bag": "node scripts/verify-bag-e2e.mjs",
     "test:prod": "node scripts/verify-auth-production.mjs",
