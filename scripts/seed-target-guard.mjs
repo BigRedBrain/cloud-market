@@ -22,14 +22,22 @@
  * cannot be produced from a real connection string in a test.
  */
 import { createHash } from 'node:crypto'
+import { PRODUCTION_HOST_FINGERPRINTS } from './environment-fingerprints.mjs'
 
 /**
- * Known production fingerprints.
+ * Known production fingerprints, under the full-hostname scheme.
  *
- * ONE ENTRY, because one is all that is actually known. `2b968b3cbe06` is
- * cloudmarket.cc production under the full-hostname scheme — the value every
- * verification suite in this repository already refuses on, and the value
- * `/api/health` publishes.
+ * NO LONGER DECLARED HERE. The value used to be a literal in this file and in
+ * seventeen others; when production moved endpoints every one of them carried
+ * on refusing a database that no longer existed and stopped refusing the one
+ * that did. A guard that never fires is indistinguishable from a guard that
+ * works, so the value now has exactly one home:
+ * `scripts/environment-fingerprints.mjs`.
+ *
+ * The imported list holds CURRENT production plus every RETIRED one. Retired
+ * entries stay because a stale `.env.local` or a forgotten deployment variable
+ * can still point at an old endpoint, and a seed script must refuse it either
+ * way.
  *
  * The endpoint-id scheme (hostname's first label, `-pooler` stripped) produces
  * a different digest for the same database, and production's is **not known
@@ -42,7 +50,7 @@ import { createHash } from 'node:crypto'
  * identifies a database to someone who already knows it without handing a
  * target to someone who does not.
  */
-export const KNOWN_PRODUCTION_FINGERPRINTS = Object.freeze(['2b968b3cbe06'])
+export const KNOWN_PRODUCTION_FINGERPRINTS = PRODUCTION_HOST_FINGERPRINTS
 
 /**
  * The denylist for one run: the compiled-in value, plus both schemes of

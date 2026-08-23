@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto'
 import { config as loadEnv } from 'dotenv'
 import { chromium } from 'playwright'
 import { Pool, neonConfig } from '@neondatabase/serverless'
+import { isProductionHostFingerprint } from './environment-fingerprints.mjs'
 
 /**
  * Captured BEFORE dotenv runs, so we can tell an explicit variable from a
@@ -36,7 +37,6 @@ loadEnv({ path: '.env.local', quiet: true })
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:3412'
-const PRODUCTION_FP = '2b968b3cbe06'
 /**
  * Validate the SHAPE before fingerprinting it. `new URL()` on a placeholder
  * throws ERR_INVALID_URL from deep inside Node, which reads like a bug in this
@@ -83,7 +83,7 @@ if (ALLOW_PRODUCTION && !EXPLICIT_DATABASE_URL) {
   process.exit(1)
 }
 
-if (fp(process.env.DATABASE_URL) === PRODUCTION_FP && !ALLOW_PRODUCTION) {
+if (isProductionHostFingerprint(fp(process.env.DATABASE_URL)) && !ALLOW_PRODUCTION) {
   console.error('REFUSING: this is production. Pass --allow-production if that is intended.')
   process.exit(1)
 }

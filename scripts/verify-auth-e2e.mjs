@@ -18,17 +18,17 @@
 import { createHash } from 'node:crypto'
 import { config as loadEnv } from 'dotenv'
 import { Pool, neonConfig } from '@neondatabase/serverless'
+import { isProductionHostFingerprint } from './environment-fingerprints.mjs'
 
 loadEnv({ path: '.env.local', quiet: true })
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:3200'
-const PRODUCTION_POOLED_FP = '2b968b3cbe06'
 
 const fingerprint = (u) =>
   createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)
 
-if (fingerprint(process.env.DATABASE_URL) === PRODUCTION_POOLED_FP) {
+if (isProductionHostFingerprint(fingerprint(process.env.DATABASE_URL))) {
   console.error('REFUSING TO RUN: .env.local points at the production database.')
   process.exit(1)
 }
