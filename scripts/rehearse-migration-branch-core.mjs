@@ -3,7 +3,10 @@
  *
  * PURE, AND THAT IS THE ENTIRE POINT. Nothing in this file reads the
  * environment, opens a socket, touches the filesystem, or talks to Neon or
- * Postgres. Every export is a function of its arguments. The runner
+ * Postgres. Every export is a function of its arguments — including
+ * `confirmCleanupTarget`, whose branch listing and whose delay are both handed
+ * in, so that the one function which retries is still testable against literals.
+ * The runner
  * (`rehearse-migration-branch.mjs`) gathers facts; this module decides what they
  * mean; the verifier (`verify-rehearse-migration-branch.mjs`) proves the
  * decisions are right without a network, a database, or a credential.
@@ -750,21 +753,125 @@ export const CARRIED_EVIDENCE_DISCLAIMER =
 const SQL_IDENTIFIER = /^[a-z_][a-z0-9_]*$/
 
 /**
- * The NULL sentinel, as SQL.
+ * The NULL field, as SQL.
  *
  * A NULL ANYWHERE IN A CONCATENATION MAKES THE WHOLE ROW NULL, and `string_agg`
- * then drops that row silently. The previous digest was
+ * then drops that row silently. The first digest here was
  * `md5(string_agg(id||':'||email||':'||…))` over columns that are genuinely
  * nullable — `users.email` and `media.alt_text` — so every row with a NULL in
  * one of them fell out of the aggregate on BOTH sides and compared equal no
- * matter what the migration did to it. Coalescing to a byte that cannot occur in
- * the data (`chr(1)`) makes NULL an ordinary, distinguishable value.
+ * matter what the migration did to it.
+ *
+ * `N:` is a TAG, not a sentinel byte: a non-NULL field always encodes as
+ * `S<length>:<text>`, so nothing a column can contain ever produces it.
  */
-export const NULL_SENTINEL_SQL = "chr(1)||'NULL'"
+export const DIGEST_NULL_FIELD_SQL = "'N:'"
 
 /**
- * A deterministic, null-safe digest of one table, plus the number of rows it
- * covered.
+ * One field, framed by its own length.
+ *
+ * WHY NOT A DELIMITER. The encoding this replaces separated columns with
+ * `chr(2)` and rows with `chr(3)` and asserted, in a comment, that "no value can
+ * forge either". That is not true of PostgreSQL `text`: a column may hold any
+ * code point other than U+0000, control characters included, so a crafted value
+ * could shift a column or a row boundary and make two different tables digest
+ * identically. The same held for the NULL sentinel `chr(1)||'NULL'`, which a
+ * string could simply contain.
+ *
+ * Length framing removes the assumption instead of restating it. A reader of
+ * `S3:abcN:S0:` is driven by counts, never by scanning for a byte, so the
+ * encoding is injective over ANY field contents: `N:` (NULL) and `S0:` (the
+ * empty string) are different, and no field's text can end its own frame early
+ * or start the next one.
+ */
+export function digestFieldSql(column) {
+  if (typeof column !== 'string' || !SQL_IDENTIFIER.test(column)) {
+    throw new Error(`Refusing to digest the column name ${JSON.stringify(column)}.`)
+  }
+  return (
+    `case when "${column}" is null then ${DIGEST_NULL_FIELD_SQL} ` +
+    `else 'S' || length("${column}"::text) || ':' || "${column}"::text end`
+  )
+}
+
+/**
+ * The same encoding, in JavaScript, so the property that matters can be proved
+ * without a database.
+ *
+ * These model the SQL above structurally; they are what the hermetic verifier
+ * round-trips control characters, delimiter-like text, NULL, the empty string
+ * and ordinary values through. (JavaScript counts UTF-16 code units where
+ * PostgreSQL `length()` counts characters — each encoding is self-consistent and
+ * injective on its own side, which is all the comparison needs, since both
+ * digests of a table are produced by the same expression.)
+ */
+export function encodeDigestField(value) {
+  if (value === null || value === undefined) return 'N:'
+  const text = String(value)
+  return `S${text.length}:${text}`
+}
+
+export function encodeDigestRow(values) {
+  const body = (values ?? []).map(encodeDigestField).join('')
+  return `R${body.length}:${body}`
+}
+
+export function encodeDigestRows(rows) {
+  return (rows ?? []).map(encodeDigestRow).join('')
+}
+
+const decodeDigestFields = (body) => {
+  const values = []
+  let at = 0
+  while (at < body.length) {
+    const tag = body[at]
+    if (tag === 'N') {
+      if (body[at + 1] !== ':') throw new Error('Malformed digest field: a NULL tag without its colon.')
+      values.push(null)
+      at += 2
+      continue
+    }
+    if (tag !== 'S') throw new Error(`Malformed digest field: unknown tag ${JSON.stringify(tag)}.`)
+    const colon = body.indexOf(':', at + 1)
+    if (colon === -1) throw new Error('Malformed digest field: no length terminator.')
+    const digits = body.slice(at + 1, colon)
+    if (!/^\d+$/.test(digits)) throw new Error('Malformed digest field: length is not a count.')
+    const length = Number(digits)
+    const text = body.slice(colon + 1, colon + 1 + length)
+    if (text.length !== length) throw new Error('Malformed digest field: the frame is short.')
+    values.push(text)
+    at = colon + 1 + length
+  }
+  return values
+}
+
+/**
+ * The decoder exists so injectivity is demonstrated rather than asserted: an
+ * encoding that round-trips every hostile value is an encoding no value can
+ * forge a boundary in.
+ */
+export function decodeDigestRows(encoded) {
+  if (typeof encoded !== 'string') throw new Error('Refusing to decode a digest input that is not a string.')
+  const rows = []
+  let at = 0
+  while (at < encoded.length) {
+    if (encoded[at] !== 'R') throw new Error('Malformed digest row: no row tag.')
+    const colon = encoded.indexOf(':', at + 1)
+    if (colon === -1) throw new Error('Malformed digest row: no length terminator.')
+    const digits = encoded.slice(at + 1, colon)
+    if (!/^\d+$/.test(digits)) throw new Error('Malformed digest row: length is not a count.')
+    const length = Number(digits)
+    const body = encoded.slice(colon + 1, colon + 1 + length)
+    if (body.length !== length) throw new Error('Malformed digest row: the frame is short.')
+    rows.push(decodeDigestFields(body))
+    at = colon + 1 + length
+  }
+  return rows
+}
+
+/**
+ * A deterministic, null-distinguishing digest of one table, plus the number of
+ * rows it covered.
  *
  * The row count travels WITH the digest on purpose: a digest that silently
  * covered fewer rows than the table holds is the exact failure mode above, and
@@ -787,12 +894,16 @@ export function buildRowDigestQuery({ table, columns, orderBy = 'id' }) {
     throw new Error(`Refusing to order the digest of "${table}" by ${JSON.stringify(orderBy)}.`)
   }
 
-  /* chr(2) separates columns and chr(3) separates rows, so no value can forge either. */
-  const parts = columns.map((column) => `coalesce("${column}"::text, ${NULL_SENTINEL_SQL})`)
+  /*
+   * Every field is length-framed and every row is length-framed, so the
+   * aggregate needs no delimiter at all: the boundaries are counts, and a count
+   * is not something a value can contain.
+   */
+  const fields = columns.map((column) => digestFieldSql(column)).join(' || ')
   return (
     `select count(*)::int as n,\n` +
-    `       coalesce(md5(string_agg(concat_ws(chr(2), ${parts.join(', ')}), chr(3) order by "${orderBy}")), 'empty') as d\n` +
-    `  from "${table}"`
+    `       coalesce(md5(string_agg('R' || length("row_body") || ':' || "row_body", '' order by "${orderBy}")), 'empty') as d\n` +
+    `  from (select "${orderBy}", ${fields} as "row_body" from "${table}") as "digest_rows"`
   )
 }
 
@@ -858,13 +969,45 @@ export function evaluateCarriedData({ before, after }) {
   return { problems }
 }
 
+/* ========================================================= media backfill == */
+
+/** The only value `media.kind` may hold once 0016 has been applied and backfilled. */
+export const MEDIA_IMAGE_KIND = 'image'
+
+/**
+ * The exhaustive post-migration check, NULL-SAFE.
+ *
+ * `kind <> 'image'` is not this predicate. In PostgreSQL a comparison against
+ * NULL is NULL, never true, so `where kind <> 'image'` counts zero rows whether
+ * the backfill worked or left every row's `kind` NULL — the one outcome the
+ * check exists to catch. `IS DISTINCT FROM` is the null-safe form: it is true
+ * for NULL and for any non-'image' value alike.
+ */
+export const MEDIA_NON_IMAGE_PREDICATE_SQL = `"kind" is distinct from '${MEDIA_IMAGE_KIND}'`
+
+export const MEDIA_BACKFILL_QUERY =
+  `select count(*)::int as n from media where ${MEDIA_NON_IMAGE_PREDICATE_SQL}`
+
+/**
+ * The same predicate in JavaScript, so the contract is testable hermetically.
+ * A missing/NULL kind counts, exactly as `IS DISTINCT FROM` counts it.
+ */
+export function isNonImageKind(kind) {
+  return kind !== MEDIA_IMAGE_KIND
+}
+
 /** The `media.kind` backfill, which IS proved exhaustively and may be said so. */
 export function evaluateMediaBackfill(nonImageRows) {
   if (!Number.isInteger(nonImageRows)) {
     return { problems: ["The media backfill was not observed, so 'image' cannot be claimed for any row."] }
   }
   if (nonImageRows !== 0) {
-    return { problems: [`${nonImageRows} pre-existing media row(s) did not backfill to 'image'.`] }
+    return {
+      problems: [
+        `${nonImageRows} pre-existing media row(s) hold a kind that is NULL or some other value — they ` +
+          "did not backfill to 'image'.",
+      ],
+    }
   }
   return { problems: [] }
 }
@@ -886,7 +1029,9 @@ export function describeCarriedEvidence(signature) {
     .join(' and ')
   return (
     `row counts held across all ${CARRIED_TABLES.length} carried tables (${counts}); ` +
-    `a null-safe digest of ${digested} covering every row of those tables is unchanged; ` +
+    `a null-safe, length-framed digest of ${digested} covering every row of those tables is unchanged ` +
+    '(NULL and the empty string encode differently, and no field or row content can move a boundary, ' +
+    'because the boundaries are lengths rather than delimiter bytes); ' +
     CARRIED_EVIDENCE_DISCLAIMER
   )
 }
@@ -913,31 +1058,133 @@ export const PRODUCTION_HEALTH_ORIGIN = 'https://cloudmarket.cc'
 export const PRODUCTION_HEALTH_URL = `${PRODUCTION_HEALTH_ORIGIN}/api/health`
 
 /**
+ * The fetch redirect policy, as a value, so the runner cannot quietly stop
+ * refusing redirects without this constant changing.
+ *
+ * `'error'` makes a 3xx a transport failure instead of a hop. Following one
+ * would move the identity check to whatever the response's `Location` named —
+ * an attacker-influenced DNS answer, an HTTP downgrade, a look-alike host — and
+ * every refusal downstream is anchored to what THAT deployment published.
+ */
+export const HEALTH_REDIRECT_POLICY = 'error'
+
+/**
  * Anything shaped like an attempt to supply an origin: a scheme-qualified URL in
  * any scheme, or a flag whose name means "where to look".
+ *
+ * The flag name is captured so the refusal can say WHICH kind of argument it
+ * refused without repeating the argument.
  */
 const ORIGIN_ARGUMENT =
-  /^(?:[a-z][a-z0-9+.-]*:\/\/|--(?:base|base-url|url|origin|host|hostname|endpoint|health|target)(?:=|$))/i
+  /^(?:[a-z][a-z0-9+.-]*:\/\/|--(base|base-url|url|origin|host|hostname|endpoint|health|target)(?:=|$))/i
+
+/** The flag names above as a closed set: a refusal may echo one of these and nothing else. */
+const ORIGIN_FLAGS = Object.freeze([
+  'base',
+  'base-url',
+  'url',
+  'origin',
+  'host',
+  'hostname',
+  'endpoint',
+  'health',
+  'target',
+])
 
 /**
  * The production health origin, and a refusal for anyone who tried to change it.
+ *
+ * THE REFUSAL NEVER REPEATS THE ARGUMENT. It used to print `Refusing "${arg}"`,
+ * which meant the one input this tooling is guaranteed to reject was also the
+ * one input it echoed verbatim — into a terminal and into whatever CI log was
+ * watching. A rejected argument is a URL-shaped string a human just typed or
+ * pasted: `https://user:password@…`, `…?token=…`, a DSN. Worse, this refusal
+ * happens at startup, BEFORE the runner's redaction has any secrets registered,
+ * so there is nothing downstream that would catch it.
+ *
+ * What is reported is the argument's position and its shape, both of which come
+ * from this module rather than from the value: the position is an index, and the
+ * shape is either "a scheme-qualified URL" or one of the nine flag names above.
  *
  * @param {readonly unknown[]} argv  the user-supplied arguments only
  */
 export function resolveHealthOrigin(argv) {
   const problems = []
 
-  for (const arg of Array.isArray(argv) ? argv : []) {
-    if (typeof arg !== 'string') continue
-    if (!ORIGIN_ARGUMENT.test(arg.trim())) continue
+  const args = Array.isArray(argv) ? argv : []
+  args.forEach((arg, index) => {
+    if (typeof arg !== 'string') return
+    const match = ORIGIN_ARGUMENT.exec(arg.trim())
+    if (match === null) return
+    const flag =
+      typeof match[1] === 'string' && ORIGIN_FLAGS.includes(match[1].toLowerCase())
+        ? `--${match[1].toLowerCase()}`
+        : null
     problems.push(
-      `Refusing "${arg}": the health origin of this production rehearsal is fixed at ` +
-        `${PRODUCTION_HEALTH_ORIGIN}. It cannot be redirected to another scheme, host, port, or ` +
-        'credentialed URL, and this tooling reads it from no argument and no variable.',
+      `Refusing argument #${index + 1} (${flag ? `the ${flag} flag` : 'a scheme-qualified URL'}): the health ` +
+        `origin of this production rehearsal is fixed at ${PRODUCTION_HEALTH_ORIGIN}. It cannot be ` +
+        'redirected to another scheme, host, port, or credentialed URL, and this tooling reads it from no ' +
+        'argument and no variable. The supplied value is deliberately not repeated here: a rejected ' +
+        'argument may carry userinfo, a password, a token, or a query secret, and this refusal happens ' +
+        'before any redaction exists to catch it.',
+    )
+  })
+
+  return { problems, origin: PRODUCTION_HEALTH_ORIGIN, url: PRODUCTION_HEALTH_URL }
+}
+
+/**
+ * A URL described by its origin alone — scheme, host, port — and nothing else.
+ *
+ * Used where an unexpected URL must be reported to an operator: `origin` cannot
+ * carry userinfo, a path, a query, or a fragment, so it names the destination
+ * without reproducing whatever secret was travelling in it.
+ */
+export function describeOriginSafely(value) {
+  try {
+    return new URL(value).origin
+  } catch {
+    return '(an unparseable URL)'
+  }
+}
+
+/**
+ * THE RESPONSE MUST HAVE COME FROM THE EXACT URL, NOT FROM WHEREVER IT LED.
+ *
+ * `evaluateHealthIdentity` judges what the body says. This judges where the body
+ * came from, which is the question a redirect answers differently from the
+ * request: `fetch` is configured with `redirect: 'error'`, so a 3xx never
+ * becomes a hop, and the response's own URL is then required to be
+ * `PRODUCTION_HEALTH_URL` character for character. A trailing slash, an explicit
+ * `:443`, an added query, userinfo, a subdomain, or plain HTTP are all "not that
+ * URL" and therefore cannot establish production identity.
+ */
+export function evaluateHealthEndpointIdentity({ url, redirected }) {
+  const problems = []
+
+  if (redirected === true) {
+    problems.push(
+      `The health request was redirected. Production identity may only be established by ` +
+        `${PRODUCTION_HEALTH_URL} answering it directly, so a redirect is refused rather than followed.`,
+    )
+  }
+  if (typeof url !== 'string' || url.length === 0) {
+    problems.push(
+      `The health response reported no URL of its own, so it cannot be shown to have come from ` +
+        `${PRODUCTION_HEALTH_URL}.`,
+    )
+    return { problems }
+  }
+  if (url !== PRODUCTION_HEALTH_URL) {
+    problems.push(
+      `The health response did not come from ${PRODUCTION_HEALTH_URL} exactly (its origin is ` +
+        `${describeOriginSafely(url)}). A different scheme, host, port, path, query, or a followed ` +
+        'redirect cannot anchor this rehearsal. Only the origin is reported here: the rest of a URL may ' +
+        'carry userinfo, a token, or a query secret.',
     )
   }
 
-  return { problems, origin: PRODUCTION_HEALTH_ORIGIN, url: PRODUCTION_HEALTH_URL }
+  return { problems }
 }
 
 /**
@@ -1366,10 +1613,29 @@ export function createMigrationGate(invoke) {
  * error that caused the rollback, and it propagates even from the success path.
  * `release` still runs, because a leaked connection helps nobody.
  *
+ * NOR IS IT SWALLOWED BY THE RELEASE. The rollback used to run in a `try` whose
+ * `finally` awaited `release()`, so when BOTH failed the release's error
+ * replaced the rollback's on the way out — and "the connection could not be
+ * returned to the pool" would have been printed where "the probe rows may still
+ * be in this database" belonged. Both failures are collected now: the thrown
+ * error is an AggregateError whose `errors` are the cleanup failures in
+ * precedence order (rollback first, release second) and whose message names
+ * every one of them, so nothing disappears.
+ *
+ * A RELEASE FAILURE ALONE STILL FAILS THE REHEARSAL. A connection whose fate is
+ * unknown is not a detail to log past.
+ *
+ * THE ORIGINAL FAILURE IS KEPT WHERE IT DOES NOT COMPETE. When the body (or the
+ * begin) failed too, its error travels as `cause` rather than in the message, so
+ * an operator still has it without the rollback failure being pushed down the
+ * page. When cleanup succeeded, that error is simply rethrown as it was.
+ *
  * `rollback` is attempted only if `begin` reported success: rolling back a
  * transaction that was never opened would replace a real connection error with a
  * meaningless one.
  */
+const asError = (error) => (error instanceof Error ? error : new Error(String(error)))
+
 export async function withProbeTransaction({ begin, body, rollback, release }) {
   for (const [name, fn] of [
     ['begin', begin],
@@ -1383,17 +1649,45 @@ export async function withProbeTransaction({ begin, body, rollback, release }) {
   }
 
   let began = false
+  let result
+  let bodyError = null
+  let rollbackError = null
+  let releaseError = null
+
   try {
     await begin()
     began = true
-    return await body()
+    result = await body()
+  } catch (error) {
+    bodyError = asError(error)
   } finally {
     try {
       if (began) await rollback()
+    } catch (error) {
+      rollbackError = asError(error)
     } finally {
-      await release()
+      try {
+        await release()
+      } catch (error) {
+        releaseError = asError(error)
+      }
     }
   }
+
+  const cleanupFailures = []
+  if (rollbackError !== null) cleanupFailures.push(rollbackError)
+  if (releaseError !== null) cleanupFailures.push(releaseError)
+
+  if (cleanupFailures.length > 0) {
+    const failure = new AggregateError(
+      cleanupFailures,
+      cleanupFailures.map((error) => error.message).join('; additionally, '),
+    )
+    if (bodyError !== null) failure.cause = bodyError
+    throw failure
+  }
+  if (bodyError !== null) throw bodyError
+  return result
 }
 
 /**
@@ -1478,6 +1772,12 @@ export function evaluateDeletionGuard({ target, parentId, expectedName }) {
  * cannot prove it either way", and the second is "several things match, so
  * choosing one of them would be a guess". Both refuse to delete; only one of
  * them describes a possible orphan.
+ *
+ * `ABSENT` IS A PROPERTY OF ONE LISTING, NOT A CONCLUSION. It means only that
+ * the snapshot in hand did not contain the known id. `resolveCleanupTarget`
+ * reports it about a single response; `confirmCleanupTarget` is what a caller
+ * uses, and it never returns `ABSENT` — because a control plane that omitted a
+ * branch from one list has not said the branch is gone.
  */
 export const CLEANUP_RESOLUTION = Object.freeze({
   IDENTIFIED: 'identified',
@@ -1534,6 +1834,11 @@ export function resolveCleanupTarget({ cloneId, branchName, branches }) {
         problems: [`REFUSING: ${byId.length} branches report the id "${trustworthyId}".`],
       }
     }
+    /*
+     * NOT "IT IS GONE". This listing does not contain the id; that is all. The
+     * caller (`confirmCleanupTarget`) re-lists, and falls back to the exact
+     * generated name, before anyone is allowed to conclude anything from it.
+     */
     return { status: CLEANUP_RESOLUTION.ABSENT, target: null, matchedBy: null, problems: [] }
   }
 
@@ -1578,6 +1883,188 @@ export function resolveCleanupTarget({ cloneId, branchName, branches }) {
     problems: [
       `REFUSING: ${exact.length} branches are named exactly "${branchName}". Deleting one of them would ` +
         'be a guess, and a wrong guess here deletes a database. Resolve it by hand.',
+    ],
+  }
+}
+
+/** How many branch listings cleanup may ask for before it gives up and says so. */
+export const CLEANUP_LIST_ATTEMPTS = 3
+
+/** How long to wait before each re-listing. The first attempt never waits. */
+export const CLEANUP_RELIST_DELAY_MS = Object.freeze([0, 750, 2000])
+
+const defaultCleanupWait = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+
+/**
+ * WHAT CLEANUP MAY DELETE, AFTER LOOKING MORE THAN ONCE.
+ *
+ * THE FALSE NEGATIVE THIS CLOSES. A single branch listing that does not mention
+ * the id this run created was previously read as `ABSENT` and reported as
+ * "branch … no longer exists", with the run exiting zero. Neon's control plane
+ * is a distributed system: a listing taken moments after a create can lag, and a
+ * listing is in any case a statement about what the API returned, never a proof
+ * that a branch does not exist. That path could therefore announce a clean-up
+ * that never happened and leave a byte-for-byte copy of production behind, with
+ * nothing in the output suggesting anyone should look.
+ *
+ * So absence is now something this function tries hard to disprove and never
+ * asserts:
+ *
+ *   1. The known id is looked up in each listing.
+ *   2. When a listing does not carry it, the EXACT generated name is tried on
+ *      that same listing — exactly, never by prefix or similarity.
+ *   3. A name candidate is refused if its id contradicts the id this run was
+ *      given, because two different branches cannot both be this run's clone.
+ *   4. A name candidate must additionally pass `evaluateDeletionGuard` with the
+ *      production parent id and the expected name before it is even nominated.
+ *      The caller runs that guard again; this one exists so a recovered
+ *      candidate is never returned unguarded in the first place.
+ *   5. Listings are re-requested up to `attempts` times with a delay between,
+ *      for the eventual-consistency case.
+ *   6. If nothing is confirmed, the answer is `UNCONFIRMED` — never `ABSENT` —
+ *      and the caller is expected to fail the run and send a human to look.
+ *
+ * Ambiguity short-circuits: two branches with one id, two branches with one
+ * name, or a list that is not a list are refusals, and retrying a refusal is
+ * just asking a different listing for a more convenient answer.
+ *
+ * @param {object} input
+ * @param {string|null} input.cloneId       the id the create call returned, if any
+ * @param {string|null} input.branchName    the name this run generated before creating
+ * @param {string|null} input.parentId      the verified production parent
+ * @param {() => Promise<unknown[]>} input.listBranches  supplied, so this stays testable
+ */
+export async function confirmCleanupTarget({
+  cloneId,
+  branchName,
+  parentId,
+  listBranches,
+  attempts = CLEANUP_LIST_ATTEMPTS,
+  delaysMs = CLEANUP_RELIST_DELAY_MS,
+  wait = defaultCleanupWait,
+}) {
+  const refuse = (problems, attemptsMade) => ({
+    status: CLEANUP_RESOLUTION.AMBIGUOUS,
+    target: null,
+    matchedBy: null,
+    attemptsMade,
+    problems,
+  })
+
+  if (typeof listBranches !== 'function') {
+    return {
+      status: CLEANUP_RESOLUTION.UNCONFIRMED,
+      target: null,
+      matchedBy: null,
+      attemptsMade: 0,
+      problems: [
+        'Cleanup was given no way to list branches, so it cannot confirm anything — and it will not ' +
+          'assume there is nothing to clean up. Inspect the project by hand.',
+      ],
+    }
+  }
+
+  const bound = Number.isInteger(attempts) && attempts > 0 ? attempts : CLEANUP_LIST_ATTEMPTS
+  const delays = Array.isArray(delaysMs) && delaysMs.length > 0 ? delaysMs : CLEANUP_RELIST_DELAY_MS
+  const knownId = typeof cloneId === 'string' && cloneId.trim().length > 0 ? cloneId.trim() : null
+  /* Only a name THIS tooling generated may be used to find anything. */
+  const recoverableName =
+    typeof branchName === 'string' && branchName.startsWith(REHEARSAL_BRANCH_PREFIX) ? branchName : null
+  const namedFor = recoverableName === null ? '(no generated name)' : `"${recoverableName}"`
+  const problems = []
+  let attemptsMade = 0
+
+  /* Nothing is ever returned as deletable without the guard having seen it. */
+  const nominate = (candidate, matchedBy, attemptsSoFar) => {
+    const guard = evaluateDeletionGuard({ target: candidate, parentId, expectedName: branchName })
+    if (guard.problems.length > 0) return refuse([...problems, ...guard.problems], attemptsSoFar)
+    return { status: CLEANUP_RESOLUTION.IDENTIFIED, target: candidate, matchedBy, attemptsMade: attemptsSoFar, problems }
+  }
+
+  for (let attempt = 0; attempt < bound; attempt += 1) {
+    if (attempt > 0) await wait(delays[attempt] ?? delays[delays.length - 1])
+    attemptsMade += 1
+
+    let branches
+    try {
+      branches = await listBranches(attempt)
+    } catch (error) {
+      problems.push(
+        `Attempt ${attemptsMade} of ${bound}: the branch list could not be read (${error?.message ?? String(error)}).`,
+      )
+      continue
+    }
+
+    const snapshot = resolveCleanupTarget({ cloneId: knownId, branchName, branches })
+
+    if (snapshot.status === CLEANUP_RESOLUTION.IDENTIFIED) {
+      return nominate(snapshot.target, snapshot.matchedBy, attemptsMade)
+    }
+    if (snapshot.status === CLEANUP_RESOLUTION.AMBIGUOUS) {
+      return refuse([...problems, ...snapshot.problems], attemptsMade)
+    }
+    if (snapshot.status === CLEANUP_RESOLUTION.UNCONFIRMED) {
+      /* No trustworthy id at all, and this listing has no branch by the exact name. */
+      problems.push(`Attempt ${attemptsMade} of ${bound}: no branch in this listing is named exactly ${namedFor}.`)
+      continue
+    }
+
+    /* ABSENT: the id was not in this listing — which is not the same as gone. */
+    if (recoverableName === null) {
+      problems.push(
+        `Attempt ${attemptsMade} of ${bound}: this listing carries no branch with id "${knownId}", and ` +
+          'there is no generated name to recover by.',
+      )
+      continue
+    }
+
+    /* Try the exact generated name on the same listing. */
+    const recovered = resolveCleanupTarget({ cloneId: null, branchName: recoverableName, branches })
+
+    if (recovered.status === CLEANUP_RESOLUTION.IDENTIFIED) {
+      const candidate = recovered.target
+      if (candidate.id !== knownId) {
+        /*
+         * The name matched, but the branch wearing it is not the branch this run
+         * was told it created. One of the two facts is wrong, and deleting on
+         * either reading would be a guess about which.
+         */
+        return refuse(
+          [
+            ...problems,
+            `REFUSING: a branch named exactly ${namedFor} reports id "${candidate.id}", but this run was ` +
+              `given id "${knownId}" for its clone. Two branches cannot both be it, and deleting either ` +
+              'would be a guess. Resolve it by hand.',
+          ],
+          attemptsMade,
+        )
+      }
+      return nominate(candidate, 'name', attemptsMade)
+    }
+    if (recovered.status === CLEANUP_RESOLUTION.AMBIGUOUS) {
+      return refuse([...problems, ...recovered.problems], attemptsMade)
+    }
+
+    problems.push(
+      `Attempt ${attemptsMade} of ${bound}: this listing carries no branch with id "${knownId}", and none ` +
+        `named exactly ${namedFor} either.`,
+    )
+  }
+
+  return {
+    status: CLEANUP_RESOLUTION.UNCONFIRMED,
+    target: null,
+    matchedBy: null,
+    attemptsMade,
+    problems: [
+      ...problems,
+      `Cleanup could not confirm ${knownId ? `branch "${knownId}"` : 'the branch this run may have created'} ` +
+        `after ${attemptsMade} branch listing(s). A listing that omits a branch is NOT proof that the branch ` +
+        'is gone, so nothing here may be read as "there was nothing to clean up". Nothing was deleted. ' +
+        `Inspect the project by hand and remove any branch named exactly ${namedFor} if one exists.`,
     ],
   }
 }

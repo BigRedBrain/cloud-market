@@ -33,8 +33,12 @@ import {
   CARRIED_DIGEST_COLUMNS,
   CARRIED_EVIDENCE_DISCLAIMER,
   CARRIED_TABLES,
+  CLEANUP_LIST_ATTEMPTS,
   CLEANUP_RESOLUTION,
-  NULL_SENTINEL_SQL,
+  DIGEST_NULL_FIELD_SQL,
+  HEALTH_REDIRECT_POLICY,
+  MEDIA_BACKFILL_QUERY,
+  MEDIA_NON_IMAGE_PREDICATE_SQL,
   PENDING_TAGS,
   PRODUCTION_HEALTH_ORIGIN,
   PRODUCTION_HEALTH_URL,
@@ -49,9 +53,16 @@ import {
   buildRepositoryMigrations,
   buildRowDigestQuery,
   collectSecretLiterals,
+  confirmCleanupTarget,
   createMigrationGate,
+  decodeDigestRows,
   derivePendingStack,
   describeCarriedEvidence,
+  describeOriginSafely,
+  digestFieldSql,
+  encodeDigestField,
+  encodeDigestRow,
+  encodeDigestRows,
   evaluateApplied,
   evaluateBranchTopology,
   evaluateCarriedData,
@@ -59,10 +70,12 @@ import {
   evaluateCloneTargets,
   evaluateDeletionGuard,
   evaluateDrift,
+  evaluateHealthEndpointIdentity,
   evaluateHealthIdentity,
   evaluateMediaBackfill,
   evaluateProbeOutcomes,
   extractDeclaredObjects,
+  isNonImageKind,
   migrationHash,
   objectKey,
   reconcileLedger,
@@ -979,6 +992,140 @@ section('[15] The health origin is a constant, and nothing may redirect it')
   check('the legitimate --cleanup flag is not mistaken for an origin override', resolveHealthOrigin(['--cleanup=br-abc123']).problems.length === 0)
   check('non-string arguments are ignored rather than crashing the refusal', resolveHealthOrigin([null, 42, undefined, {}]).problems.length === 0)
 
+  /*
+   * THE REFUSAL MUST NOT BECOME THE DISCLOSURE.
+   *
+   * The rejected argument is the one string this tooling is guaranteed to print
+   * about, it is a URL a human just pasted, and the refusal happens at startup —
+   * before the runner has registered a single secret with `redact`. Every
+   * fixture below carries fake credentials in a different position: userinfo, a
+   * query token, a fragment token, and a whole DSN.
+   */
+  const credentialed = [
+    'https://admin:sup3r-s3cret-pw@cloudmarket.cc/api/health?token=tok_live_ABC123',
+    '--host=https://operator:hunter2-password@evil.example/api/health#access_token=frag_9Z',
+    '--base-url=http://127.0.0.1:3000/api/health?apikey=neon_api_leakedkey123',
+    'postgresql://neondb_owner:np_S3cr3t-P4ss@ep-leak.eu-central-1.aws.neon.tech/cloudmarket',
+  ]
+  const credentialFragments = [
+    'sup3r-s3cret-pw',
+    'tok_live_ABC123',
+    'hunter2-password',
+    'frag_9Z',
+    'neon_api_leakedkey123',
+    'np_S3cr3t-P4ss',
+    'admin:',
+    'operator:',
+    'neondb_owner:',
+    'evil.example',
+    '127.0.0.1',
+    'ep-leak.eu-central-1.aws.neon.tech',
+  ]
+  const credentialedRefusals = resolveHealthOrigin(credentialed)
+  check('every credentialed override attempt is refused', credentialedRefusals.problems.length === credentialed.length)
+  check(
+    'no rejected argument is echoed back in full',
+    credentialed.every((argument) => !credentialedRefusals.problems.join('\n').includes(argument)),
+  )
+  check(
+    'no password, token, userinfo, or hostile host survives into the refusal',
+    credentialFragments.every((fragment) => !credentialedRefusals.problems.join('\n').includes(fragment)),
+  )
+  check(
+    'the refusal still says WHAT was refused and where',
+    credentialedRefusals.problems[0].includes('Refusing argument #1') &&
+      credentialedRefusals.problems[1].includes('the --host flag') &&
+      credentialedRefusals.problems.every((problem) => problem.includes(PRODUCTION_HEALTH_ORIGIN)),
+  )
+  check(
+    'the refusal says why the value is withheld, so it does not read as a bug',
+    credentialedRefusals.problems.every((problem) => problem.includes('not repeated here')),
+  )
+  check(
+    'the credentialed origin still cannot be changed by any of them',
+    credentialedRefusals.origin === PRODUCTION_HEALTH_ORIGIN && credentialedRefusals.url === PRODUCTION_HEALTH_URL,
+  )
+  {
+    /* The whole hostile corpus from above, checked the same way for leaked text. */
+    const echoed = resolveHealthOrigin(hostile).problems.join('\n')
+    check('none of the hostile origins is reproduced in its own refusal', hostile.every((argument) => !echoed.includes(argument)))
+    check('the look-alike hosts are not repeated either', !echoed.includes('cloudmarket.cc.attacker.test') && !echoed.includes('user:secret'))
+  }
+  {
+    const originSource = coreSource.slice(
+      coreSource.indexOf('export function resolveHealthOrigin'),
+      coreSource.indexOf('export function describeOriginSafely'),
+    )
+    check('the refusal is built without interpolating the argument at all', originSource.length > 0 && !/\$\{[^}]*\barg\b[^}]*\}/.test(originSource))
+    check('the runner prints only the core-built refusal at startup', runnerSource.includes('for (const problem of origin.problems) console.error(problem)'))
+    check(
+      'nothing in the runner prints raw argv before redaction exists',
+      !runnerSource.includes('console.error(process.argv') && !runnerSource.includes('console.log(process.argv'),
+    )
+  }
+
+  /* ---- redirects are refused, and the answering URL must be the exact one --- */
+  check('the fetch redirect policy is "error", so a 3xx is a failure and never a hop', HEALTH_REDIRECT_POLICY === 'error')
+  check(
+    'the runner hands that policy to its one fetch',
+    runnerSource.includes('redirect: HEALTH_REDIRECT_POLICY') &&
+      !runnerSource.includes("redirect: 'follow'") &&
+      !runnerSource.includes("redirect: 'manual'"),
+  )
+  check(
+    'the runner verifies where the response came from, not only what it said',
+    runnerSource.includes('evaluateHealthEndpointIdentity({ url: health.url, redirected: health.redirected })') &&
+      runnerSource.includes('const identityProblems = [...endpoint.problems, ...identity.problems]'),
+  )
+  check(
+    'a redirect or a wrong response URL stops the run exactly like a wrong body does',
+    /if \(identityProblems\.length > 0\) \{\s*\n\s*stop\(/.test(runnerSource),
+  )
+
+  const endpoint = (input) => evaluateHealthEndpointIdentity(input)
+  check(
+    'a direct answer from the exact URL is accepted',
+    endpoint({ url: PRODUCTION_HEALTH_URL, redirected: false }).problems.length === 0,
+  )
+  check(
+    'a response that was redirected is refused even when it ends at the right URL',
+    has(endpoint({ url: PRODUCTION_HEALTH_URL, redirected: true }).problems, 'was redirected'),
+  )
+  check(
+    'a response with no URL of its own is refused rather than assumed',
+    has(endpoint({ url: null, redirected: false }).problems, 'reported no URL'),
+  )
+  check('an empty response URL is refused', endpoint({ url: '', redirected: false }).problems.length > 0)
+  for (const wrong of [
+    'http://cloudmarket.cc/api/health',
+    'https://cloudmarket.cc:443/api/health',
+    'https://staging.cloudmarket.cc/api/health',
+    'https://cloudmarket.cc.attacker.test/api/health',
+    'https://cloudmarket.cc/api/health/',
+    'https://cloudmarket.cc/api/health?ok=1',
+    'https://cloudmarket.cc/api/health#x',
+    'https://cloudmarket.cc/api/health2',
+    'https://127.0.0.1:3000/api/health',
+    'https://cloudmarket.cc/',
+  ]) {
+    check(
+      `a response from "${wrong}" cannot establish production identity`,
+      endpoint({ url: wrong, redirected: false }).problems.length === 1,
+    )
+  }
+  {
+    const leaky = 'https://root:redirect-p4ssword@evil.example/api/health?session=sess_LEAKED'
+    const refusal = endpoint({ url: leaky, redirected: true }).problems.join('\n')
+    check('a credentialed response URL is refused', refusal.includes('did not come from'))
+    check(
+      'and its userinfo and query are not echoed while refusing it',
+      !refusal.includes('redirect-p4ssword') && !refusal.includes('sess_LEAKED') && !refusal.includes('root:'),
+    )
+    check('only the origin of an unexpected URL is reported', refusal.includes('https://evil.example'))
+    check('the origin description strips userinfo, path, and query', describeOriginSafely(leaky) === 'https://evil.example')
+    check('an unparseable URL is described without being repeated', describeOriginSafely('::not a url::') === '(an unparseable URL)')
+  }
+
   check('the runner no longer takes its base from whichever argument looked like a URL', !runnerSource.includes("startsWith('http')"))
   check(
     'the runner performs exactly one fetch, against the constant health URL',
@@ -1168,6 +1315,209 @@ section('[17] A clone created by a call that FAILED is still found and deleted')
     ),
   )
 
+  /*
+   * ONE LISTING IS NOT PROOF OF ABSENCE.
+   *
+   * `resolveCleanupTarget` answers about the snapshot in its hand, and `ABSENT`
+   * there means only "this response did not carry the id". `confirmCleanupTarget`
+   * is what a caller uses, and it must never turn that into "there is nothing to
+   * clean up": it re-lists within a bound, falls back to the exact generated
+   * name, refuses on any conflict, and otherwise reports UNCONFIRMED so a human
+   * is sent to look.
+   */
+  const listing = (...pages) => {
+    const seen = []
+    const list = async () => {
+      const page = pages[Math.min(seen.length, pages.length - 1)]
+      seen.push(page)
+      if (page instanceof Error) throw page
+      return page
+    }
+    list.calls = seen
+    return list
+  }
+  const noWait = async () => {}
+  const confirm = (input) =>
+    confirmCleanupTarget({ parentId: 'br-prod', attempts: CLEANUP_LIST_ATTEMPTS, wait: noWait, ...input })
+
+  check('the retry bound is a fixed, small number of listings', CLEANUP_LIST_ATTEMPTS === 3)
+
+  {
+    const found = await confirm({ cloneId: 'br-clone', branchName: name, listBranches: listing(project) })
+    check(
+      'a branch that is listed straight away is identified on the first attempt',
+      found.status === CLEANUP_RESOLUTION.IDENTIFIED && found.target.id === 'br-clone' && found.matchedBy === 'id' && found.attemptsMade === 1,
+    )
+  }
+  {
+    /* Eventual consistency: the branch exists, the first listing simply had not caught up. */
+    const lister = listing([parentBranch], [parentBranch], project)
+    const late = await confirm({ cloneId: 'br-clone', branchName: name, listBranches: lister })
+    check(
+      'a branch that only appears in a later listing is still found and deleted',
+      late.status === CLEANUP_RESOLUTION.IDENTIFIED && late.target.id === 'br-clone' && late.attemptsMade === 3,
+    )
+    check('the re-listing is bounded, not a spin', lister.calls.length === CLEANUP_LIST_ATTEMPTS)
+  }
+  {
+    const missing = await confirm({ cloneId: 'br-clone', branchName: name, listBranches: listing([parentBranch]) })
+    check(
+      'a known id absent from EVERY listing is UNCONFIRMED, never ABSENT',
+      missing.status === CLEANUP_RESOLUTION.UNCONFIRMED && missing.status !== CLEANUP_RESOLUTION.ABSENT,
+    )
+    check('nothing is nominated for deletion when nothing was confirmed', missing.target === null && missing.matchedBy === null)
+    check('the bound was actually exhausted before giving up', missing.attemptsMade === CLEANUP_LIST_ATTEMPTS)
+    check(
+      'the operator is told this is not a report that the branch is gone',
+      has(missing.problems, 'is NOT proof that the branch') && has(missing.problems, 'Inspect the project by hand'),
+    )
+    check('the exact name to look for is named in the instruction', has(missing.problems, name))
+    check('each failed attempt is accounted for individually', missing.problems.filter((p) => p.startsWith('Attempt ')).length === CLEANUP_LIST_ATTEMPTS)
+  }
+  {
+    /* The orphan case: the create call failed, so there is no id — only the generated name. */
+    const recovered = await confirm({ cloneId: null, branchName: name, listBranches: listing(project) })
+    check(
+      'with no id at all, the exact generated name recovers the orphan',
+      recovered.status === CLEANUP_RESOLUTION.IDENTIFIED && recovered.target.id === 'br-clone' && recovered.matchedBy === 'name',
+    )
+    const late = await confirm({ cloneId: null, branchName: name, listBranches: listing([parentBranch], project) })
+    check(
+      'name recovery is retried too, for a listing that had not caught up',
+      late.status === CLEANUP_RESOLUTION.IDENTIFIED && late.matchedBy === 'name' && late.attemptsMade === 2,
+    )
+    const never = await confirm({ cloneId: null, branchName: name, listBranches: listing([parentBranch]) })
+    check('a name that never appears is UNCONFIRMED, not absent', never.status === CLEANUP_RESOLUTION.UNCONFIRMED && never.target === null)
+  }
+  {
+    /* The recovered candidate is guarded before it is even nominated. */
+    const impostorProject = [{ id: 'br-prod', name, default: true, primary: true }]
+    const guarded = await confirm({ cloneId: null, branchName: name, listBranches: listing(impostorProject) })
+    check(
+      'a name match that IS the production parent is refused, not nominated',
+      guarded.status === CLEANUP_RESOLUTION.AMBIGUOUS &&
+        guarded.target === null &&
+        has(guarded.problems, 'REFUSING to delete the production parent'),
+    )
+    const flagged = await confirm({
+      cloneId: null,
+      branchName: name,
+      listBranches: listing([{ id: 'br-other', name, default: false, primary: true }]),
+    })
+    check(
+      'a name match marked primary is refused before deletion is considered',
+      flagged.status === CLEANUP_RESOLUTION.AMBIGUOUS && has(flagged.problems, 'marked default/primary'),
+    )
+    const misnamed = await confirm({
+      cloneId: null,
+      branchName: 'production',
+      listBranches: listing(project),
+    })
+    check(
+      'a name this tooling never generated may not drive recovery',
+      misnamed.status === CLEANUP_RESOLUTION.AMBIGUOUS && misnamed.target === null,
+    )
+  }
+  {
+    /* Two facts that cannot both be true about one run's clone. */
+    const conflicting = await confirm({
+      cloneId: 'br-clone',
+      branchName: name,
+      listBranches: listing([parentBranch, { ...orphan, id: 'br-different' }]),
+    })
+    check(
+      'a branch wearing the generated name but another id is a refusal, not a recovery',
+      conflicting.status === CLEANUP_RESOLUTION.AMBIGUOUS &&
+        conflicting.target === null &&
+        has(conflicting.problems, 'Two branches cannot both be it'),
+    )
+    check('the conflicting refusal happens at once rather than after the bound', conflicting.attemptsMade === 1)
+
+    const twins = await confirm({
+      cloneId: null,
+      branchName: name,
+      listBranches: listing([parentBranch, orphan, { ...orphan, id: 'br-twin' }]),
+    })
+    check(
+      'two branches sharing the generated name is a refusal that is never retried away',
+      twins.status === CLEANUP_RESOLUTION.AMBIGUOUS && twins.attemptsMade === 1 && has(twins.problems, 'REFUSING'),
+    )
+    const duplicateIds = await confirm({ cloneId: 'br-clone', branchName: name, listBranches: listing([orphan, orphan]) })
+    check(
+      'two branches reporting one id is refused rather than re-listed',
+      duplicateIds.status === CLEANUP_RESOLUTION.AMBIGUOUS && duplicateIds.attemptsMade === 1,
+    )
+  }
+  {
+    /* A control plane that errors, or answers with something that is not a list. */
+    const broken = await confirm({
+      cloneId: 'br-clone',
+      branchName: name,
+      listBranches: listing(new Error('502 Bad Gateway')),
+    })
+    check(
+      'a listing that keeps failing ends UNCONFIRMED, and says why',
+      broken.status === CLEANUP_RESOLUTION.UNCONFIRMED && has(broken.problems, '502 Bad Gateway'),
+    )
+    check('a failing listing is retried within the bound', broken.attemptsMade === CLEANUP_LIST_ATTEMPTS)
+
+    const recovers = await confirm({
+      cloneId: 'br-clone',
+      branchName: name,
+      listBranches: listing(new Error('502 Bad Gateway'), project),
+    })
+    check('a listing that fails once and then answers still finds the branch', recovers.status === CLEANUP_RESOLUTION.IDENTIFIED)
+
+    const notAList = await confirm({ cloneId: 'br-clone', branchName: name, listBranches: listing(null) })
+    check('a response that is not a branch list deletes nothing', notAList.status === CLEANUP_RESOLUTION.AMBIGUOUS && notAList.target === null)
+
+    const noLister = await confirmCleanupTarget({ cloneId: 'br-clone', branchName: name, parentId: 'br-prod' })
+    check(
+      'no way to list branches at all is UNCONFIRMED rather than a shrug',
+      noLister.status === CLEANUP_RESOLUTION.UNCONFIRMED && has(noLister.problems, 'Inspect the project by hand'),
+    )
+  }
+  {
+    /* The manual-recovery entry point has an id and no generated name. */
+    const manual = await confirm({ cloneId: 'br-clone', branchName: undefined, listBranches: listing(project) })
+    check('manual cleanup by id alone still works when the branch is listed', manual.status === CLEANUP_RESOLUTION.IDENTIFIED && manual.matchedBy === 'id')
+    const manualMissing = await confirm({ cloneId: 'br-gone', branchName: undefined, listBranches: listing(project) })
+    check(
+      'manual cleanup of an id nobody lists is UNCONFIRMED, so it exits non-zero',
+      manualMissing.status === CLEANUP_RESOLUTION.UNCONFIRMED && has(manualMissing.problems, 'no generated name'),
+    )
+  }
+  {
+    const waits = []
+    await confirmCleanupTarget({
+      cloneId: 'br-clone',
+      branchName: name,
+      parentId: 'br-prod',
+      listBranches: listing([parentBranch]),
+      wait: async (ms) => {
+        waits.push(ms)
+      },
+    })
+    check('a delay separates the re-listings, and none precedes the first', waits.length === CLEANUP_LIST_ATTEMPTS - 1 && waits.every((ms) => ms > 0))
+  }
+
+  check(
+    'the runner confirms its target through the bounded resolver, not a single listing',
+    runnerSource.includes('await confirmCleanupTarget({') && countOf(runnerSource, 'confirmCleanupTarget(') === 1,
+  )
+  check('the bounded resolver is layered on the single-snapshot resolution', coreSource.includes('resolveCleanupTarget({ cloneId: knownId, branchName, branches })'))
+  check(
+    'the runner no longer announces that a branch is gone on the strength of one listing',
+    !/if\s*\(\s*resolution\.status\s*===\s*CLEANUP_RESOLUTION\.ABSENT\s*\)/.test(runnerSource) &&
+      !/\bnote\s*\([^)]*no longer exists/.test(runnerSource),
+  )
+  check(
+    'an unconfirmed cleanup fails the run and sends a person to look',
+    /resolution\.status === CLEANUP_RESOLUTION\.UNCONFIRMED\) \{\s*\n\s*stop\(/.test(runnerSource) &&
+      runnerSource.includes('inspect the project by hand'),
+  )
+  check('cleanup is handed the parent id, so a recovered candidate is guarded on the way out', /confirmCleanupTarget\(\{[\s\S]*?parentId,\s*listBranches:\s*\(\)\s*=>\s*listBranches\(apiKey,\s*projectId\)/.test(runnerSource))
+
   check(
     'the runner generates the branch name before it posts the create request',
     runnerSource.indexOf('const branchName = rehearsalBranchName(') < runnerSource.indexOf("method: 'POST'"),
@@ -1194,7 +1544,7 @@ section('[17] A clone created by a call that FAILED is still found and deleted')
 section('[18] The probe transaction rolls back from a finally, before the release')
 
 {
-  const trace = async ({ beginThrows, bodyThrows, rollbackThrows } = {}) => {
+  const trace = async ({ beginThrows, bodyThrows, rollbackThrows, releaseThrows } = {}) => {
     const order = []
     const step = (name, throws) => async () => {
       order.push(name)
@@ -1202,17 +1552,24 @@ section('[18] The probe transaction rolls back from a finally, before the releas
       return name
     }
     let thrown = null
+    let error = null
     try {
       await withProbeTransaction({
         begin: step('begin', beginThrows),
         body: step('body', bodyThrows),
         rollback: step('rollback', rollbackThrows),
-        release: step('release', false),
+        release: step('release', releaseThrows),
       })
-    } catch (error) {
-      thrown = error.message
+    } catch (caught) {
+      error = caught
+      thrown = caught.message
     }
-    return { order: order.join(','), thrown }
+    return {
+      order: order.join(','),
+      thrown,
+      cause: error?.cause?.message ?? null,
+      aggregated: (error?.errors ?? []).map((e) => e.message).join(','),
+    }
   }
 
   const happy = await trace()
@@ -1229,10 +1586,51 @@ section('[18] The probe transaction rolls back from a finally, before the releas
   const bothFailed = await trace({ bodyThrows: true, rollbackThrows: true })
   check('a rollback failure is never swallowed by the error that caused the unwind', bothFailed.thrown === 'rollback failed')
   check('the release still happens when both fail', bothFailed.order === 'begin,body,rollback,release')
+  check('the probe failure that caused the unwind is kept as the cause, not discarded', bothFailed.cause === 'body failed')
 
   const beginFailed = await trace({ beginThrows: true })
   check('a transaction that never began is not rolled back', beginFailed.order === 'begin,release')
   check('a failure to begin propagates, and the connection is still released', beginFailed.thrown === 'begin failed')
+
+  /*
+   * THE RELEASE MUST NOT BURY THE ROLLBACK.
+   *
+   * `try { rollback() } finally { release() }` means that when both fail, the
+   * release's error is the one that leaves the function — so the terminal would
+   * have shown "the connection could not be returned to the pool" where "the
+   * probe rows may still be in this database" belonged. That is the more
+   * alarming of the two failures being replaced by the less alarming one.
+   */
+  const rollbackAndRelease = await trace({ rollbackThrows: true, releaseThrows: true })
+  check('rollback is still attempted before the release when both will fail', rollbackAndRelease.order === 'begin,body,rollback,release')
+  check('a rollback failure is not replaced by a release failure', rollbackAndRelease.thrown.startsWith('rollback failed'))
+  check('the release failure is not lost either — both are named', rollbackAndRelease.thrown === 'rollback failed; additionally, release failed')
+  check('both failures are carried as errors, rollback first', rollbackAndRelease.aggregated === 'rollback failed,release failed')
+
+  const allThree = await trace({ bodyThrows: true, rollbackThrows: true, releaseThrows: true })
+  check('body, rollback and release all failing still runs every step in order', allThree.order === 'begin,body,rollback,release')
+  check('the rollback failure still leads when all three fail', allThree.thrown === 'rollback failed; additionally, release failed')
+  check('and the original probe failure is still recoverable from the cause', allThree.cause === 'body failed')
+
+  const releaseOnly = await trace({ releaseThrows: true })
+  check('a release failure alone fails the rehearsal rather than passing quietly', releaseOnly.thrown === 'release failed')
+  check('the successful rollback still happened before it', releaseOnly.order === 'begin,body,rollback,release')
+  check('a lone release failure carries no invented cause', releaseOnly.cause === null && releaseOnly.aggregated === 'release failed')
+
+  const beginAndRelease = await trace({ beginThrows: true, releaseThrows: true })
+  check('a transaction that never began is still not rolled back when the release fails too', beginAndRelease.order === 'begin,release')
+  check('the release failure fails the run', beginAndRelease.thrown === 'release failed')
+  check('the begin failure is preserved as the cause', beginAndRelease.cause === 'begin failed')
+
+  check(
+    'the core collects cleanup failures instead of letting one overwrite the other',
+    coreSource.includes('const cleanupFailures = []') && coreSource.includes('new AggregateError('),
+  )
+  check(
+    'the rollback and the release are each caught, so neither can skip the other',
+    /catch \(error\) \{\s*\n\s*rollbackError = asError\(error\)/.test(coreSource) &&
+      /catch \(error\) \{\s*\n\s*releaseError = asError\(error\)/.test(coreSource),
+  )
 
   let refusedIncomplete = false
   try {
@@ -1325,6 +1723,42 @@ section('[19] The carried-data report claims exactly what was compared, and no m
   check('a single un-backfilled media row is a failure', has(evaluateMediaBackfill(1).problems, "did not backfill to 'image'"))
   check('a backfill that was never observed fails closed', has(evaluateMediaBackfill(null).problems, 'was not observed'))
 
+  /*
+   * THE EXHAUSTIVE CHECK MUST SEE NULL.
+   *
+   * `kind <> 'image'` is not a check for "every row is 'image'". A comparison
+   * against NULL is NULL, never true, so that predicate counts zero rows on a
+   * table where the backfill left every `kind` NULL — the single outcome the
+   * check exists to catch — and the rehearsal would then have printed "the media
+   * backfill covered every row" about a column full of nulls.
+   */
+  check('the media check uses the null-safe predicate', MEDIA_NON_IMAGE_PREDICATE_SQL === `"kind" is distinct from 'image'`)
+  check(
+    'it is not the inequality that cannot see NULL',
+    !MEDIA_BACKFILL_QUERY.includes("<> 'image'") &&
+      !MEDIA_BACKFILL_QUERY.includes("!= 'image'") &&
+      MEDIA_BACKFILL_QUERY.includes('is distinct from'),
+  )
+  check(
+    'it still counts rows of media, as an integer, and nothing else',
+    MEDIA_BACKFILL_QUERY.includes('count(*)::int as n') && MEDIA_BACKFILL_QUERY.includes('from media where'),
+  )
+  check('a NULL kind counts as a row that did not backfill', isNonImageKind(null) === true)
+  check('a missing kind counts too, rather than being read as absent', isNonImageKind(undefined) === true)
+  check("only the exact value 'image' is a backfilled row", isNonImageKind('image') === false)
+  check(
+    'any other value counts, including the empty string and a different case',
+    isNonImageKind('video') === true && isNonImageKind('') === true && isNonImageKind('Image') === true,
+  )
+  check(
+    'the runner runs the core query rather than one of its own',
+    runnerSource.includes('await query(MEDIA_BACKFILL_QUERY)') && !runnerSource.includes("kind <> 'image'"),
+  )
+  check(
+    'the success line no longer claims only non-image values were looked for',
+    runnerSource.includes("rows have a kind that is NULL or ") && runnerSource.includes("anything other than 'image'"),
+  )
+
   const report = describeCarriedEvidence(signature())
   check('the report does not claim byte-identity', !report.includes('byte-identical'))
   check('the report does not claim that every carried row was compared', !/every carried row/i.test(report))
@@ -1341,13 +1775,25 @@ section('[19] The carried-data report claims exactly what was compared, and no m
     'the report states that the digest is null-safe and covers every row of those tables',
     report.includes('null-safe') && report.includes('covering every row of those tables'),
   )
+  check(
+    'the report says HOW the digest is unambiguous, rather than asserting that it is',
+    report.includes('length-framed') && report.includes('boundaries are lengths rather than delimiter bytes'),
+  )
+  check(
+    'the report distinguishes NULL from the empty string in words as well as in bytes',
+    report.includes('NULL and the empty string encode differently'),
+  )
+  check(
+    'the report claims nothing about bytes it never read',
+    !report.includes('no value can forge') && !/every column/i.test(report),
+  )
   check('the runner no longer prints the old universal claim', !runnerSource.includes('every carried row is byte-identical'))
   check('the runner prints the built report rather than a hand-written sentence', runnerSource.includes('ok(describeCarriedEvidence(after))'))
 
   const usersSql = buildRowDigestQuery({ table: 'users', columns: [...CARRIED_DIGEST_COLUMNS.users] })
   check(
-    'every digested column is coalesced to a null sentinel',
-    CARRIED_DIGEST_COLUMNS.users.every((column) => usersSql.includes(`coalesce("${column}"::text, ${NULL_SENTINEL_SQL})`)),
+    'every digested column is framed by its own length, and NULL is a tag rather than a value',
+    CARRIED_DIGEST_COLUMNS.users.every((column) => usersSql.includes(digestFieldSql(column))),
   )
   check(
     'the nullable columns that used to vanish from the digest are the ones being covered',
@@ -1356,7 +1802,148 @@ section('[19] The carried-data report claims exactly what was compared, and no m
   check('the digest is ordered deterministically', usersSql.includes('order by "id"'))
   check('the digest reports how many rows it covered', usersSql.includes('count(*)::int as n'))
   check('an empty table digests to a stable value rather than null', usersSql.includes("'empty'"))
-  check('the column and row separators cannot be forged by the data', usersSql.includes('concat_ws(chr(2)') && usersSql.includes('chr(3) order by'))
+  check(
+    'no field or row boundary is a byte the data could contain',
+    !usersSql.includes('chr(1)') &&
+      !usersSql.includes('chr(2)') &&
+      !usersSql.includes('chr(3)') &&
+      !usersSql.includes('concat_ws'),
+  )
+
+  /* ---- the encoding, proved rather than asserted --------------------------- */
+  check('a NULL field and an empty string field are different encodings', encodeDigestField(null) === 'N:' && encodeDigestField('') === 'S0:')
+  check('the NULL tag in SQL is the same tag the model uses', DIGEST_NULL_FIELD_SQL === "'N:'" && encodeDigestField(null) === 'N:')
+  check('a value is framed by its own length', encodeDigestField('abc') === 'S3:abc')
+  check('a row is framed by its own length too, so no row separator is needed', encodeDigestRow(['a']) === 'R4:S1:a')
+  check('the SQL frames rows the same way the model does', usersSql.includes(`'R' || length("row_body") || ':' || "row_body"`))
+  check('the SQL aggregates with no delimiter at all, because the frames are the boundaries', usersSql.includes(", '' order by"))
+
+  {
+    /*
+     * THE CORPUS IS THE POINT. `chr(1)`, `chr(2)` and `chr(3)` were asserted to
+     * be impossible in PostgreSQL text; they are not — every code point except
+     * U+0000 is storable, and so are the old sentinel and the new tags. A digest
+     * whose boundaries are bytes can be forged with any of them; a digest whose
+     * boundaries are lengths cannot, and the round trip is the proof.
+     *
+     * They appear twice over: as the raw code points written into the literals
+     * below, and again built with String.fromCharCode just after them, so that
+     * an editor which hides such characters or a tool which rewrites them cannot
+     * quietly weaken this test.
+     */
+    const hostileValues = [
+      null,
+      '',
+      'ordinary',
+      '',
+      '',
+      '',
+      'NULL',
+      'N:',
+      'S3:abc',
+      'R4:S1:a',
+      ':',
+      '::::',
+      'abc',
+      'line\nbreak\ttab',
+      '12:34',
+      'S',
+      'N',
+      '999:',
+      'value with spaces',
+      "quote'and\"double",
+      '',
+      '',
+      '',
+      'NULL',
+      'columnrow',
+      'beforeafter',
+      'bellunit',
+    ]
+    /* Built rather than typed, so no editor or normaliser can turn them into something else. */
+    const chr = (code) => String.fromCharCode(code)
+    const controlValues = [
+      chr(1),
+      chr(2),
+      chr(3),
+      chr(1) + 'NULL',
+      'a' + chr(2) + 'b' + chr(3) + 'c',
+      chr(7) + chr(27) + chr(31),
+      'S3:' + chr(2) + 'abc',
+    ]
+    const corpus = [...hostileValues, ...controlValues]
+
+    const rows = [corpus, [null, null, null, null], ['', '', '', ''], corpus.slice().reverse()]
+    const encoded = encodeDigestRows(rows)
+    const decoded = decodeDigestRows(encoded)
+    check(
+      'chr(1), chr(2) and chr(3) are ordinary content, not boundaries',
+      [1, 2, 3].every((code) => decodeDigestRows(encodeDigestRow([chr(code)]))[0][0] === chr(code)),
+    )
+    check(
+      'a value carrying chr(2) and chr(3) cannot split itself into more fields or rows',
+      decodeDigestRows(encodeDigestRow(['a' + chr(2) + 'b' + chr(3) + 'c'])).length === 1 &&
+        decodeDigestRows(encodeDigestRow(['a' + chr(2) + 'b' + chr(3) + 'c']))[0].length === 1,
+    )
+    check(
+      'the old chr(1) sentinel, as data, is still not NULL',
+      encodeDigestField(chr(1) + 'NULL') !== encodeDigestField(null),
+    )
+    check(
+      'every control character, delimiter-like value, NULL and empty string round-trips exactly',
+      JSON.stringify(decoded) === JSON.stringify(rows.map((row) => row.map((v) => (v === null ? null : String(v))))),
+    )
+    check('the round trip preserves the row count', decoded.length === rows.length)
+    check('the round trip preserves each row\'s field count', decoded.every((row, i) => row.length === rows[i].length))
+    check('an empty table encodes to an empty string, and back to no rows', encodeDigestRows([]) === '' && decodeDigestRows('').length === 0)
+
+    /* Field boundaries cannot be moved by field contents. */
+    check(
+      'a value that looks like a NULL tag is not read as NULL',
+      encodeDigestField('N:') !== encodeDigestField(null) && decodeDigestRows(encodeDigestRow(['N:']))[0][0] === 'N:',
+    )
+    check(
+      'a value that looks like a framed field is not read as one',
+      decodeDigestRows(encodeDigestRow(['S3:abc']))[0][0] === 'S3:abc',
+    )
+    check(
+      'the old chr(1) NULL sentinel is now just text, and distinguishable from NULL',
+      encodeDigestField('NULL') !== encodeDigestField(null),
+    )
+    check(
+      'two rows cannot be made to look like one by their contents',
+      encodeDigestRows([['a', 'b']]) !== encodeDigestRows([['a'], ['b']]),
+    )
+    check(
+      'a field cannot absorb the field after it',
+      encodeDigestRows([['ab', 'c']]) !== encodeDigestRows([['a', 'bc']]),
+    )
+    check(
+      'a field cannot absorb the row after it',
+      encodeDigestRows([['ab'], ['c']]) !== encodeDigestRows([['a'], ['bc']]),
+    )
+    check(
+      'NULL, the empty string, and the string "NULL" are three different things',
+      new Set([encodeDigestField(null), encodeDigestField(''), encodeDigestField('NULL')]).size === 3,
+    )
+    check(
+      'the same values in a different order encode differently, so ordering still matters',
+      encodeDigestRows([['a'], ['b']]) !== encodeDigestRows([['b'], ['a']]),
+    )
+
+    const malformed = (input) => {
+      try {
+        decodeDigestRows(input)
+        return false
+      } catch {
+        return true
+      }
+    }
+    check('a truncated frame is refused rather than guessed at', malformed('R9:S1:a'))
+    check('an unknown row tag is refused', malformed('X4:S1:a'))
+    check('a length that is not a count is refused', malformed('Rx:S1:a'))
+    check('a non-string digest input is refused', malformed(null))
+  }
 
   const refuses = (input) => {
     try {
@@ -1382,6 +1969,92 @@ section('[19] The carried-data report claims exactly what was compared, and no m
   check(
     'the isolation probe reuses exactly the same comparison',
     runnerSource.includes('evaluateCarriedData({ before: after, after: afterProbes })'),
+  )
+}
+
+/* ================================ 20. THE REPOSITORY, NOT THE CALLER'S CWD = */
+section('[20] Every path is derived from the module, so the launch directory cannot change the run')
+
+{
+  /*
+   * WHY THIS IS A CORRECTNESS PROBLEM AND NOT A CONVENIENCE ONE.
+   *
+   * Relative paths made the run depend on where the shell happened to be. From
+   * the folder above this checkout — `…/GitHub/CloudMarket/cloud-market-ai-team`,
+   * or any unrelated directory — `readFileSync('drizzle/meta/_journal.json')`
+   * misses, and the rehearsal reports that the repository does not describe its
+   * migration stack when the repository is perfectly intact. Worse, the child
+   * `drizzle-kit migrate` inherited that same directory, so it resolved
+   * `drizzle.config.ts`, the migrations folder and the journal from wherever the
+   * operator was standing rather than from the twenty files this run hashed.
+   *
+   * The root is a fact about this file's own location: `<repo>/scripts/…`, one
+   * level up. It is derived here exactly as the runner derives it, and then USED
+   * to read the journal, so the derivation is proved rather than described.
+   */
+  const derivedRoot = fileURLToPath(new URL('../', new URL('./rehearse-migration-branch.mjs', import.meta.url)))
+  check('the derived root is an absolute path', /^(?:[a-zA-Z]:[\\/]|\/)/.test(derivedRoot))
+  check(
+    'the derived root really is this repository — the committed journal is there',
+    readFileSync(`${derivedRoot}drizzle/meta/_journal.json`).toString() === repoFile('drizzle/meta/_journal.json'),
+  )
+  check(
+    'and so are the migration files the run hashes',
+    readFileSync(`${derivedRoot}drizzle/0018_strain_leaning_types.sql`).toString() ===
+      repoFile('drizzle/0018_strain_leaning_types.sql'),
+  )
+  check(
+    'the runner, the core and this verifier all resolve to the same repository root',
+    derivedRoot === fileURLToPath(new URL('../', import.meta.url)) &&
+      derivedRoot === fileURLToPath(new URL('../', new URL('./rehearse-migration-branch-core.mjs', import.meta.url))),
+  )
+  check(
+    'the derived root is a directory the run can read from wherever it was launched, because it is not relative',
+    !/^\.\.?[\\/]/.test(derivedRoot) && derivedRoot.length > 1,
+  )
+
+  check(
+    'the runner derives its root from import.meta.url, not from where it was launched',
+    runnerSource.includes("const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url))"),
+  )
+  check('the runner never consults the current working directory', !runnerSource.includes('process.cwd()'))
+  check(
+    'the journal is read by absolute path, not by a relative literal',
+    runnerSource.includes("join(REPO_ROOT, 'drizzle', 'meta', '_journal.json')") &&
+      !runnerSource.includes("'drizzle/meta/_journal.json'"),
+  )
+  check(
+    'each migration file is read by absolute path too',
+    runnerSource.includes("join(REPO_ROOT, 'drizzle', `${tag}.sql`)") && !runnerSource.includes('`drizzle/${tag}.sql`'),
+  )
+  check(
+    'the one migrate child process is given the repository as its cwd',
+    /gate\.run\('npx', \['drizzle-kit', 'migrate'\], \{[\s\S]{0,1500}?cwd: REPO_ROOT,/.test(runnerSource),
+  )
+  check(
+    'the migrate invocation is still exactly one gated npx drizzle-kit migrate',
+    countOf(runnerSource, "gate.run('npx', ['drizzle-kit', 'migrate']") === 1 && countOf(runnerSource, 'gate.run(') === 1,
+  )
+  check(
+    'cwd does not become a new way to point the command somewhere else',
+    countOf(runnerSource, 'cwd:') === 1 && !runnerSource.includes('cwd: process'),
+  )
+  check(
+    'the paths the runner reads are all built from the derived root',
+    [...runnerSource.matchAll(/readFileSync\(([^)]*)\)/g)].every((m) => /JOURNAL_PATH|migrationPath\(/.test(m[1])),
+  )
+  check(
+    'this verifier reads the repository the same way, from its own module URL',
+    verifierSource.includes("readFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url)))"),
+  )
+  check(
+    'the core, which decides everything, has no notion of a path or a directory at all',
+    importsOf(coreSource).join(',') === './environment-fingerprints.mjs,node:crypto' &&
+      !coreSource.includes('import.meta.url') &&
+      !coreSource.includes('process.cwd()') &&
+      !coreSource.includes('REPO_ROOT') &&
+      !coreSource.includes('JOURNAL_PATH') &&
+      !coreSource.includes('migrationPath'),
   )
 }
 

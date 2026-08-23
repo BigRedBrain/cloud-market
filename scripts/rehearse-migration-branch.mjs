@@ -68,11 +68,21 @@
  *   - touch `.env.local`, or print a connection string or credential — child
  *     stdout, child stderr, and every Error-derived string are redacted before
  *     they reach a terminal or a CI log
+ *   - echo a rejected argument: the startup refusal reports an argument's
+ *     position and shape, never its text, because a rejected URL is exactly the
+ *     kind of string that carries userinfo or a token and the refusal happens
+ *     before redaction has anything registered
  *   - accept a health origin from an argument or a variable: it is the frozen
- *     constant `https://cloudmarket.cc`, and an attempt to supply another stops
- *     the run
+ *     constant `https://cloudmarket.cc`, its `/api/health` route is fetched with
+ *     redirects REFUSED rather than followed, and the response's own URL must be
+ *     that URL character for character before anything it says is believed
  *   - claim more about the carried data than it compared
- *   - leave a branch, a row, an open transaction, or a connection behind
+ *   - depend on the directory it was launched from: the repository root is
+ *     derived from `import.meta.url`, the journal and migration files are read
+ *     by absolute path, and the one migrate child process is given that root as
+ *     its `cwd`
+ *   - leave a branch, a row, an open transaction, or a connection behind, or
+ *     report a branch "absent" because one listing did not mention it
  *
  * IMPORT SAFETY. `verify-migration-target.mjs` is imported for its pure
  * fingerprint helpers. Verified by inspection: every I/O call it makes sits
@@ -82,6 +92,8 @@
 import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Pool, neonConfig } from '@neondatabase/serverless'
 
 import { PRODUCTION_HOST_FINGERPRINT } from './environment-fingerprints.mjs'
@@ -99,6 +111,8 @@ import {
   CARRIED_DIGEST_COLUMNS,
   CARRIED_TABLES,
   CLEANUP_RESOLUTION,
+  HEALTH_REDIRECT_POLICY,
+  MEDIA_BACKFILL_QUERY,
   PENDING_TAGS,
   PRODUCTION_HEALTH_ORIGIN,
   PRODUCTION_HEALTH_URL,
@@ -108,6 +122,7 @@ import {
   buildPendingInventory,
   buildRepositoryMigrations,
   buildRowDigestQuery,
+  confirmCleanupTarget,
   createMigrationGate,
   derivePendingStack,
   describeCarriedEvidence,
@@ -118,13 +133,13 @@ import {
   evaluateCloneTargets,
   evaluateDeletionGuard,
   evaluateDrift,
+  evaluateHealthEndpointIdentity,
   evaluateHealthIdentity,
   evaluateMediaBackfill,
   evaluateProbeOutcomes,
   reconcileLedger,
   redactSecrets,
   rehearsalBranchName,
-  resolveCleanupTarget,
   resolveHealthOrigin,
   withProbeTransaction,
 } from './rehearse-migration-branch-core.mjs'
@@ -143,8 +158,26 @@ const PROJECT_ID = process.env.NEON_PROJECT_ID
 const DATABASE = process.env.NEON_DATABASE ?? 'cloudmarket'
 const ROLE = process.env.NEON_ROLE ?? 'neondb_owner'
 
-const JOURNAL_PATH = 'drizzle/meta/_journal.json'
-const migrationPath = (tag) => `drizzle/${tag}.sql`
+/*
+ * WHERE THE REPOSITORY IS, NOT WHERE THE OPERATOR WAS STANDING.
+ *
+ * Every path here used to be relative, which made the run depend on the shell's
+ * current directory: launched from the parent folder that holds this checkout
+ * (`…/GitHub/CloudMarket/cloud-market-ai-team`, say), `readFileSync` would miss
+ * the journal and the rehearsal would report "the repository does not describe
+ * the migration stack" about a repository that is perfectly fine — and, worse,
+ * `npx drizzle-kit migrate` would inherit that same directory, find a different
+ * `drizzle.config.ts` or none, and either fail or migrate from a migrations
+ * folder nobody chose.
+ *
+ * This file lives in `<repo>/scripts/`, so the root is one level up from its own
+ * module URL. That is a fact about the file, available before any I/O, and it is
+ * true no matter where the process was started.
+ */
+const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url))
+
+const JOURNAL_PATH = join(REPO_ROOT, 'drizzle', 'meta', '_journal.json')
+const migrationPath = (tag) => join(REPO_ROOT, 'drizzle', `${tag}.sql`)
 
 /*
  * STEP MODE IS GONE, AND ITS ABSENCE IS ENFORCED.
@@ -179,6 +212,13 @@ for (const banned of ['step', 'to', 'keep', 'skip', 'repair', 'force']) {
  * The origin is a frozen constant in the core module. There is no replacement
  * override — not a flag, not a variable — and an attempt to supply one stops the
  * run here rather than being quietly ignored.
+ *
+ * AND THE REFUSAL DOES NOT PRINT THE ARGUMENT. This runs before `redact` exists
+ * and before a single secret is registered with it, so anything echoed here is
+ * echoed raw — and the argument being refused is a URL somebody just pasted,
+ * which is exactly where userinfo, a token, or a query secret lives. The core
+ * builds a refusal out of the argument's position and shape and nothing else;
+ * this loop prints those strings and never `process.argv`.
  */
 const origin = resolveHealthOrigin(process.argv.slice(2))
 if (origin.problems.length > 0) {
@@ -339,10 +379,14 @@ async function readLedger(query) {
  * `id::text||':'||email||…` over columns that are genuinely nullable
  * (`users.email`, `media.alt_text`). One NULL makes the whole concatenation
  * NULL, and `string_agg` drops it — so every row carrying a NULL fell out of the
- * aggregate on both sides and compared equal no matter what happened to it. The
- * queries are built by the core module, which coalesces every column to a
- * sentinel byte and returns the number of rows the digest covered so the
- * coverage can be checked against the table's own count.
+ * aggregate on both sides and compared equal no matter what happened to it.
+ *
+ * NOR DOES ANY BOUNDARY DEPEND ON A BYTE THE DATA COULD CONTAIN. The queries are
+ * built by the core module, which length-frames every field and every row —
+ * `S<len>:<text>` for a value, `N:` for NULL — so NULL and the empty string are
+ * distinguishable, control characters are ordinary content, and no value can
+ * move a column or row boundary. The number of rows the digest covered comes
+ * back with it, so the coverage can be checked against the table's own count.
  */
 async function readDataSignature(query) {
   const [counts] = await query(
@@ -674,26 +718,36 @@ async function runProbes(pool) {
  * JSON, or the JSON carries no `branch.id`. Any of those used to leave a
  * complete copy of production data in a branch nobody was watching. `branchName`
  * is generated before the request, so it is available in exactly those cases;
- * `resolveCleanupTarget` re-lists the project and accepts it only on an EXACT
- * name match with exactly one candidate.
+ * `confirmCleanupTarget` re-lists the project and puts each listing through
+ * `resolveCleanupTarget(...)`, accepting a name only on an EXACT match with
+ * exactly one candidate.
+ *
+ * AND ONE LISTING IS NOT PROOF OF ABSENCE. A listing that did not mention the
+ * created id used to end this function with "branch … no longer exists" and a
+ * zero exit — an announcement of a clean-up that may never have happened.
+ * `confirmCleanupTarget` re-lists a bounded number of times, falls back to the
+ * exact generated name, and reports UNCONFIRMED rather than absent when it still
+ * cannot tell. UNCONFIRMED fails the run, because the alternative is a copy of
+ * production nobody has been told to look for.
  *
  * Whatever is identified still goes through `evaluateDeletionGuard`, which is
  * what refuses the production parent, a default or primary branch, a branch that
  * is not named `rehearsal-*`, and a branch whose name is not the expected one.
  */
 async function deleteBranch(apiKey, projectId, { cloneId, branchName, parentId }) {
-  const resolution = resolveCleanupTarget({
+  const resolution = await confirmCleanupTarget({
     cloneId,
     branchName,
-    branches: await listBranches(apiKey, projectId),
+    parentId,
+    listBranches: () => listBranches(apiKey, projectId),
   })
 
-  if (resolution.status === CLEANUP_RESOLUTION.ABSENT) {
-    note(`branch ${cloneId} no longer exists`)
-    return
-  }
   if (resolution.status === CLEANUP_RESOLUTION.UNCONFIRMED) {
-    stop('Cleanup could not confirm a branch to delete:', resolution.problems)
+    stop(
+      `Cleanup could not confirm a branch to delete after ${resolution.attemptsMade} branch listing(s). ` +
+        'This is NOT a report that the branch is gone — inspect the project by hand:',
+      resolution.problems,
+    )
   }
   if (resolution.status !== CLEANUP_RESOLUTION.IDENTIFIED) {
     stop('Refusing to delete anything during cleanup:', resolution.problems)
@@ -704,7 +758,10 @@ async function deleteBranch(apiKey, projectId, { cloneId, branchName, parentId }
   if (problems.length > 0) stop(`Refusing to delete ${target.id}:`, problems)
 
   await api(apiKey, `/projects/${projectId}/branches/${target.id}`, { method: 'DELETE' })
-  note(`deleted branch ${target.id} ("${target.name}"), matched by ${resolution.matchedBy}`)
+  note(
+    `deleted branch ${target.id} ("${target.name}"), matched by ${resolution.matchedBy} after ` +
+      `${resolution.attemptsMade} listing(s)`,
+  )
 }
 
 /* ==================================================================== main = */
@@ -736,16 +793,27 @@ async function main() {
   stage(`[1] Live production identity at ${PRODUCTION_HEALTH_ORIGIN} (required, and not configurable)`)
   let health
   try {
-    const res = await fetch(PRODUCTION_HEALTH_URL, { signal: AbortSignal.timeout(10_000) })
+    /*
+     * REDIRECTS ARE REFUSED, NOT FOLLOWED. A 3xx would move this check to
+     * whatever the Location header named — plain HTTP, another host, a port, a
+     * credentialed URL — and everything after this stage is anchored to what the
+     * answering deployment published. `redirect: 'error'` turns the hop into a
+     * transport failure, and the response's own URL is then required to be the
+     * constant, character for character.
+     */
+    const res = await fetch(PRODUCTION_HEALTH_URL, {
+      redirect: HEALTH_REDIRECT_POLICY,
+      signal: AbortSignal.timeout(10_000),
+    })
     let body = null
     try {
       body = await res.json()
     } catch {
       body = null
     }
-    health = { reachable: true, httpStatus: res.status, body }
+    health = { reachable: true, httpStatus: res.status, body, url: res.url, redirected: res.redirected === true }
   } catch (error) {
-    health = { reachable: false, httpStatus: 0, body: null, error: error.message }
+    health = { reachable: false, httpStatus: 0, body: null, url: null, redirected: false, error: error.message }
   }
 
   const identity = evaluateHealthIdentity({
@@ -754,11 +822,20 @@ async function main() {
     body: health.body,
     expectedFingerprint: PRODUCTION_HOST_FINGERPRINT,
   })
-  if (identity.problems.length > 0) {
+  const endpoint = health.reachable
+    ? evaluateHealthEndpointIdentity({ url: health.url, redirected: health.redirected })
+    : { problems: [] }
+  const identityProblems = [...endpoint.problems, ...identity.problems]
+  if (identityProblems.length > 0) {
     stop(
       `The deployment at ${PRODUCTION_HEALTH_ORIGIN} did not establish production identity. Nothing has ` +
         'been created:',
-      identity.problems,
+      [
+        ...identityProblems,
+        `This rehearsal talks to ${PRODUCTION_HEALTH_URL} and to nothing else. If that address now ` +
+          'answers with a redirect, the redirect is refused rather than followed: identity may only be ' +
+          'established by that exact URL answering directly.',
+      ],
     )
   }
   const liveFingerprint = identity.fingerprint
@@ -958,6 +1035,15 @@ async function main() {
       let migrateOk = true
       try {
         output = gate.run('npx', ['drizzle-kit', 'migrate'], {
+          /*
+           * THE CHILD IS GIVEN THE REPOSITORY, NOT THE OPERATOR'S DIRECTORY.
+           * `drizzle-kit` resolves `drizzle.config.ts` — and through it the
+           * migrations folder and the journal — relative to its cwd. Inheriting
+           * this process's cwd meant the command applied whatever stack the
+           * shell happened to be standing in, which is not necessarily the one
+           * the twenty files above were hashed from.
+           */
+          cwd: REPO_ROOT,
           env: { ...process.env, DATABASE_URL: direct, DATABASE_URL_UNPOOLED: direct },
           shell: process.platform === 'win32',
         })
@@ -1015,7 +1101,15 @@ async function main() {
       /* ---- 11. the data that was carried ----------------------------- */
       stage('[11] Carried data')
       const after = await readDataSignature(query)
-      const [{ n: notImage }] = await query(`select count(*)::int n from media where kind <> 'image'`)
+      /*
+       * NULL-SAFE, AND THAT IS THE WHOLE CHECK. A plain inequality against
+       * 'image' counts nothing when `kind` is NULL, because a comparison with
+       * NULL is NULL — so the query that was supposed to prove the backfill
+       * reached every row would have reported zero on a table where it reached
+       * none of them. The core's predicate is `IS DISTINCT FROM`, which counts
+       * NULL and any other value alike.
+       */
+      const [{ n: notImage }] = await query(MEDIA_BACKFILL_QUERY)
       const dataProblems = [
         ...evaluateCarriedData({ before, after }).problems,
         ...evaluateMediaBackfill(notImage).problems,
@@ -1029,7 +1123,10 @@ async function main() {
        * was not compared is said to be not compared.
        */
       ok(describeCarriedEvidence(after))
-      ok(`the media backfill covered every row: 0 of ${after.counts.media} rows have a kind other than 'image'`)
+      ok(
+        `the media backfill covered every row: 0 of ${after.counts.media} rows have a kind that is NULL or ` +
+          "anything other than 'image'",
+      )
 
       /* ---- 12. behavioural probes ------------------------------------ */
       stage('[12] Behavioural probes — one transaction, always rolled back')
@@ -1106,7 +1203,14 @@ async function main() {
   process.exitCode = exitCode
 }
 
-/** Manual recovery for a clone a crashed run could not delete. */
+/**
+ * Manual recovery for a clone a crashed run could not delete.
+ *
+ * There is no generated name to fall back on here, so an id that no listing
+ * carries ends as UNCONFIRMED and a non-zero exit: this command will not tell an
+ * operator a branch is gone on the strength of a control-plane response that
+ * simply did not mention it.
+ */
 async function cleanupOnly(branchId) {
   const apiKey = requireApiKey(SELF)
   const project = await resolveProject(apiKey, { projectId: PROJECT_ID, projectName: PROJECT_NAME })
