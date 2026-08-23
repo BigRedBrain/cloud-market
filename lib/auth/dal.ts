@@ -6,7 +6,20 @@ import { forbidden, redirect } from 'next/navigation'
 import { and, eq, isNull } from 'drizzle-orm'
 
 import { db } from '@/lib/db'
-import { adminBackup, userPermissions, type AdminPermission, type UserRole } from '@/lib/db/schema'
+import {
+  adminBackup,
+  marketplaceAccess,
+  userPermissions,
+  type AdminPermission,
+  type UserRole,
+} from '@/lib/db/schema'
+import {
+  deniedForAnonymous,
+  resolveMarketplaceAccess,
+  type MarketplaceAccessDecision,
+  type MarketplaceAccessGranted,
+  type MarketplaceMembership,
+} from '@/lib/marketplace/access'
 import {
   auditEventForFailure,
   auditEventForOwnerConfig,
@@ -410,5 +423,128 @@ export async function requireAdminIdentity(): Promise<AdminIdentity> {
     })
   }
 
+  forbidden()
+}
+
+/* ==========================================================================
+ * Private-marketplace access — membership probe + guard
+ * ==========================================================================
+ *
+ * NOT WIRED. NOTHING BELOW CHANGES WHAT ANY USER CAN REACH TODAY.
+ *
+ * `requireMarketplaceAccess()` has ZERO call sites: no route, no page, no
+ * layout, no Server Action, no proxy matcher, no sign-up path, no catalog
+ * query. The storefront is exactly as open as it was before this landed, and
+ * `scripts/verify-marketplace-access.ts` scans the tree to keep it that way —
+ * adding the first call site is meant to fail that check and force the
+ * conversation, not to slip through as a one-line diff.
+ *
+ * WHY IT MUST STAY UNWIRED FOR NOW. `marketplace_access` is EMPTY. Migration
+ * 0019 created the table and granted nobody a row, which is safe only while
+ * nothing reads it. Wiring this guard today would deny every account on the
+ * platform, including the owner. Before enforcement, a production-reviewed
+ * backfill has to identify the explicitly grandfathered accounts and grant them
+ * `scope = 'shopper', status = 'active'` — and that population MUST NOT be
+ * derived from `users.role` or `users.status`, which is the entire reason
+ * membership got its own table instead of another enum value on `users`.
+ *
+ * NO AUDIT EVENTS, IN EITHER DIRECTION. Unlike `requireAdminIdentity()` above,
+ * this guard writes nothing: `audit_log`'s event enum has no marketplace values
+ * yet, deliberately — migration 0019 added none, on the grounds that audit
+ * values arrive with the mutations that emit them. Inventing one here would
+ * mean a schema change smuggled in beside an unwired guard. Deciding what a
+ * marketplace denial is worth recording belongs to the wiring batch, together
+ * with the rate-limiting question the admin cutover already has open.
+ */
+
+/**
+ * The membership row for one account, or null.
+ *
+ * `LIMIT 1` against `marketplace_access_user_unique`, which is a unique index
+ * on `user_id` — one membership per account, enforced by the database. The
+ * limit costs nothing and means that if that guarantee were ever relaxed this
+ * returns at most one row; choosing deterministically would require an ORDER BY if uniqueness were ever relaxed.
+ *
+ * Selects only `scope` and `status`. The decision needs no more than that, and
+ * a narrow projection is what keeps the resolver honest: `users.role` and
+ * `users.status` are not merely unread here, they are never fetched.
+ */
+async function lookupMarketplaceMembership(
+  userId: string,
+): Promise<MarketplaceMembership | null> {
+  const [row] = await db
+    .select({ scope: marketplaceAccess.scope, status: marketplaceAccess.status })
+    .from(marketplaceAccess)
+    .where(eq(marketplaceAccess.userId, userId))
+    .limit(1)
+
+  return row ?? null
+}
+
+/**
+ * Non-redirecting probe: may the current user enter the private marketplace,
+ * and if not, why not?
+ *
+ * Read fresh from the database rather than carried on the session, matching
+ * `holdsPermission` above: a suspension that only took effect whenever the
+ * member next happened to sign out would not be a suspension.
+ *
+ * `cache()`-wrapped, and safe to cache precisely because it is side-effect free
+ * — no audit write, no navigation interrupt. A render where a layout, a page
+ * and the guard all ask performs one membership query. This is the DAL's
+ * standing rule: memoise the resolution, never the guard that throws.
+ *
+ * NOT AN AUTHORIZATION BOUNDARY. Rendering decisions only. Anything that
+ * actually exposes private-marketplace data must call
+ * `requireMarketplaceAccess()`, and a hidden nav item is not a check.
+ */
+export const getMarketplaceAccess = cache(
+  async (): Promise<MarketplaceAccessDecision> => {
+    const user = await getCurrentUser()
+    if (!user) return deniedForAnonymous()
+
+    return resolveMarketplaceAccess(await lookupMarketplaceMembership(user.id))
+  },
+)
+
+/**
+ * Requires live marketplace membership. 403 otherwise.
+ *
+ * UNWIRED — see the block comment above before adding the first call site.
+ *
+ * NOT `cache()`-WRAPPED, following the same rule as every other guard here: its
+ * failure result is a thrown `forbidden()`, and memoising a thrown control-flow
+ * signal buys nothing. The query is already deduplicated inside
+ * `getMarketplaceAccess()`.
+ *
+ * ANONYMOUS REQUESTS REDIRECT TO SIGN-IN; THEY DO NOT GET A 403. `requireUser()`
+ * runs first for that reason and is not redundant with the probe's
+ * `not_signed_in` denial — relying on that branch would hand a signed-out
+ * member a "forbidden" page instead of a login form, which is a dead end
+ * offering no way forward. It costs nothing: the session lookup underneath is
+ * `cache()`-wrapped and shared with the probe.
+ *
+ * Deliberately `requireUser()` and not `requireVerifiedUser()`. Membership and
+ * email verification are separate gates; ordering and payment gate on the
+ * latter, and quietly folding it in here would make this guard mean two things.
+ *
+ * RETURNS THE GRANTED DECISION, so the caller has the scope without asking
+ * again — and the type it gets back is the granted arm, so a call site cannot
+ * read `scope` off a denial. THAT SCOPE IS ENTRY, NOT A SELLING RIGHT: see
+ * `authorizesSelling` in `lib/marketplace/access.ts`. A vendor is admitted to
+ * the marketplace and is neither a seller nor an administrator.
+ */
+export async function requireMarketplaceAccess(): Promise<MarketplaceAccessGranted> {
+  await requireUser()
+
+  const decision = await getMarketplaceAccess()
+  if (decision.granted) return decision
+
+  /*
+   * Written as an early return above rather than `if (!granted) forbidden()`,
+   * so that narrowing to the granted arm comes from the discriminant itself and
+   * not from `forbidden()`'s `never` return. Both compile today; only one keeps
+   * compiling if that signature is ever widened.
+   */
   forbidden()
 }
