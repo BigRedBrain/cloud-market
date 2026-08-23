@@ -713,7 +713,232 @@ export function evaluateApplied({ inventory, dropped, observedKeys }) {
   return { problems }
 }
 
+/* ========================================================== carried data === */
+
+/**
+ * The tables whose row COUNT must be identical either side of the migration.
+ *
+ * The pending stack adds columns and types; it is not permitted to add, remove,
+ * or renumber a row anywhere in this list.
+ */
+export const CARRIED_TABLES = Object.freeze([
+  'users',
+  'media',
+  'product_media',
+  'products',
+  'product_variants',
+])
+
+/**
+ * The columns actually compared value-for-value, per table.
+ *
+ * SPELLED OUT BECAUSE THE CLAIM IS SPELLED OUT. What this rehearsal can honestly
+ * report is exactly what it read: these columns, of these tables, of every row.
+ * It is not a comparison of every column of every table, and the report says so
+ * (see `describeCarriedEvidence`). A digest is only evidence about the bytes it
+ * consumed.
+ */
+export const CARRIED_DIGEST_COLUMNS = Object.freeze({
+  users: Object.freeze(['id', 'email', 'role', 'status']),
+  media: Object.freeze(['id', 'url', 'alt_text']),
+})
+
+/** The disclaimer that keeps the carried-data report narrower than the data. */
+export const CARRIED_EVIDENCE_DISCLAIMER =
+  'columns outside those lists were not compared and are not claimed unchanged'
+
+const SQL_IDENTIFIER = /^[a-z_][a-z0-9_]*$/
+
+/**
+ * The NULL sentinel, as SQL.
+ *
+ * A NULL ANYWHERE IN A CONCATENATION MAKES THE WHOLE ROW NULL, and `string_agg`
+ * then drops that row silently. The previous digest was
+ * `md5(string_agg(id||':'||email||':'||…))` over columns that are genuinely
+ * nullable — `users.email` and `media.alt_text` — so every row with a NULL in
+ * one of them fell out of the aggregate on BOTH sides and compared equal no
+ * matter what the migration did to it. Coalescing to a byte that cannot occur in
+ * the data (`chr(1)`) makes NULL an ordinary, distinguishable value.
+ */
+export const NULL_SENTINEL_SQL = "chr(1)||'NULL'"
+
+/**
+ * A deterministic, null-safe digest of one table, plus the number of rows it
+ * covered.
+ *
+ * The row count travels WITH the digest on purpose: a digest that silently
+ * covered fewer rows than the table holds is the exact failure mode above, and
+ * `evaluateCarriedData` refuses to conclude anything from a digest whose
+ * coverage does not equal the table's own count.
+ */
+export function buildRowDigestQuery({ table, columns, orderBy = 'id' }) {
+  if (typeof table !== 'string' || !SQL_IDENTIFIER.test(table)) {
+    throw new Error(`Refusing to build a digest query for the table name ${JSON.stringify(table)}.`)
+  }
+  if (!Array.isArray(columns) || columns.length === 0) {
+    throw new Error(`Refusing to build a digest query for "${table}" with no columns.`)
+  }
+  for (const column of columns) {
+    if (typeof column !== 'string' || !SQL_IDENTIFIER.test(column)) {
+      throw new Error(`Refusing to digest the column name ${JSON.stringify(column)} of "${table}".`)
+    }
+  }
+  if (typeof orderBy !== 'string' || !SQL_IDENTIFIER.test(orderBy) || !columns.includes(orderBy)) {
+    throw new Error(`Refusing to order the digest of "${table}" by ${JSON.stringify(orderBy)}.`)
+  }
+
+  /* chr(2) separates columns and chr(3) separates rows, so no value can forge either. */
+  const parts = columns.map((column) => `coalesce("${column}"::text, ${NULL_SENTINEL_SQL})`)
+  return (
+    `select count(*)::int as n,\n` +
+    `       coalesce(md5(string_agg(concat_ws(chr(2), ${parts.join(', ')}), chr(3) order by "${orderBy}")), 'empty') as d\n` +
+    `  from "${table}"`
+  )
+}
+
+const usableDigest = (side) =>
+  side !== null &&
+  typeof side === 'object' &&
+  typeof side.digest === 'string' &&
+  side.digest.length > 0 &&
+  Number.isInteger(side.rows)
+
+/**
+ * What the carried data proves, and nothing beyond it.
+ *
+ * Every comparison here fails closed on missing evidence: a count that was not
+ * observed on both sides, a digest that is absent, and a digest that did not
+ * cover every row of its table are all failures, because each of them is a
+ * question that was not answered rather than an answer of "unchanged".
+ */
+export function evaluateCarriedData({ before, after }) {
+  const problems = []
+
+  for (const table of CARRIED_TABLES) {
+    const b = before?.counts?.[table]
+    const a = after?.counts?.[table]
+    if (!Number.isInteger(b) || !Number.isInteger(a)) {
+      problems.push(
+        `The row count of "${table}" was not observed on both sides, so nothing may be concluded about it.`,
+      )
+      continue
+    }
+    if (a !== b) problems.push(`${table} row count changed: ${b} -> ${a}`)
+  }
+
+  for (const [table, columns] of Object.entries(CARRIED_DIGEST_COLUMNS)) {
+    const b = before?.digests?.[table]
+    const a = after?.digests?.[table]
+    if (!usableDigest(b) || !usableDigest(a)) {
+      problems.push(
+        `No usable digest of "${table}" (${columns.join(', ')}) was observed on both sides, so its rows ` +
+          'are unverified.',
+      )
+      continue
+    }
+
+    for (const [label, side, counts] of [
+      ['before', b, before?.counts],
+      ['after', a, after?.counts],
+    ]) {
+      const count = counts?.[table]
+      if (Number.isInteger(count) && side.rows !== count) {
+        problems.push(
+          `The ${label} digest of "${table}" covered ${side.rows} of ${count} row(s). A digest that does ` +
+            'not cover every row is not evidence about the rows it missed.',
+        )
+      }
+    }
+
+    if (a.digest !== b.digest) {
+      problems.push(`The digest of "${table}" over (${columns.join(', ')}) changed.`)
+    }
+  }
+
+  return { problems }
+}
+
+/** The `media.kind` backfill, which IS proved exhaustively and may be said so. */
+export function evaluateMediaBackfill(nonImageRows) {
+  if (!Number.isInteger(nonImageRows)) {
+    return { problems: ["The media backfill was not observed, so 'image' cannot be claimed for any row."] }
+  }
+  if (nonImageRows !== 0) {
+    return { problems: [`${nonImageRows} pre-existing media row(s) did not backfill to 'image'.`] }
+  }
+  return { problems: [] }
+}
+
+/**
+ * The carried-data report, in words the evidence actually supports.
+ *
+ * THE WORDING IS PART OF THE CONTRACT. The previous version printed "every
+ * carried row is byte-identical" on the strength of five row counts and two
+ * partial-column digests that dropped every row containing a NULL. A rehearsal
+ * is believed; a rehearsal that overstates what it checked is worse than one
+ * that checks less and says so, because the overstatement is what gets quoted in
+ * the decision to migrate production.
+ */
+export function describeCarriedEvidence(signature) {
+  const counts = CARRIED_TABLES.map((table) => `${table} ${signature?.counts?.[table] ?? '?'}`).join(', ')
+  const digested = Object.entries(CARRIED_DIGEST_COLUMNS)
+    .map(([table, columns]) => `${table}(${columns.join(', ')})`)
+    .join(' and ')
+  return (
+    `row counts held across all ${CARRIED_TABLES.length} carried tables (${counts}); ` +
+    `a null-safe digest of ${digested} covering every row of those tables is unchanged; ` +
+    CARRIED_EVIDENCE_DISCLAIMER
+  )
+}
+
 /* =============================================================== identity == */
+
+/**
+ * THE HEALTH ORIGIN IS A CONSTANT, NOT AN ARGUMENT.
+ *
+ * Every refusal downstream is anchored to what ONE specific deployment says
+ * about itself: the parent branch is cloned only because the live application at
+ * this origin published the fingerprint that branch resolves to. An origin that
+ * can be supplied on the command line is an origin that can be pointed at a
+ * preview deployment, a local server, a look-alike host, or a plaintext proxy —
+ * and the fingerprint comparison would then be comparing production's Neon
+ * branch against somebody else's idea of production.
+ *
+ * There is no override. `resolveHealthOrigin` returns this constant in every
+ * branch, so a caller that ignored its `problems` entirely still cannot obtain a
+ * different origin from it. The problems exist so that an operator who tried
+ * gets an explanation instead of a silently different run.
+ */
+export const PRODUCTION_HEALTH_ORIGIN = 'https://cloudmarket.cc'
+export const PRODUCTION_HEALTH_URL = `${PRODUCTION_HEALTH_ORIGIN}/api/health`
+
+/**
+ * Anything shaped like an attempt to supply an origin: a scheme-qualified URL in
+ * any scheme, or a flag whose name means "where to look".
+ */
+const ORIGIN_ARGUMENT =
+  /^(?:[a-z][a-z0-9+.-]*:\/\/|--(?:base|base-url|url|origin|host|hostname|endpoint|health|target)(?:=|$))/i
+
+/**
+ * The production health origin, and a refusal for anyone who tried to change it.
+ *
+ * @param {readonly unknown[]} argv  the user-supplied arguments only
+ */
+export function resolveHealthOrigin(argv) {
+  const problems = []
+
+  for (const arg of Array.isArray(argv) ? argv : []) {
+    if (typeof arg !== 'string') continue
+    if (!ORIGIN_ARGUMENT.test(arg.trim())) continue
+    problems.push(
+      `Refusing "${arg}": the health origin of this production rehearsal is fixed at ` +
+        `${PRODUCTION_HEALTH_ORIGIN}. It cannot be redirected to another scheme, host, port, or ` +
+        'credentialed URL, and this tooling reads it from no argument and no variable.',
+    )
+  }
+
+  return { problems, origin: PRODUCTION_HEALTH_ORIGIN, url: PRODUCTION_HEALTH_URL }
+}
 
 /**
  * The deployed application must say, in its own words, that it is production
@@ -944,6 +1169,119 @@ export function evaluateCloneTargets({
   return { problems }
 }
 
+/* ============================================================= redaction === */
+
+/** What every suppressed value is replaced by, so a redaction is visible. */
+export const REDACTED = '[redacted]'
+
+/**
+ * A URI in a scheme Postgres is reached over, credentials or not.
+ *
+ * Matched structurally rather than by literal, because the value that must never
+ * be printed is not always a value this process is holding: `drizzle-kit`
+ * rewrites, quotes, and truncates the string it was handed, and a driver error
+ * can carry a URI assembled somewhere else entirely.
+ */
+const POSTGRES_URI = /\bpostgres(?:ql)?:\/\/[^\s'"`<>]*/gi
+
+/** Any URI carrying userinfo, in any scheme — `scheme://user:secret@host/…`. */
+const CREDENTIALED_URI = /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"`<>]*@[^\s'"`<>]*/gi
+
+/** `DATABASE_URL=…`, `DATABASE_URL: …`, and the rest of the named carriers. */
+const SECRET_ASSIGNMENT =
+  /\b(DATABASE_URL_UNPOOLED|DATABASE_URL|POSTGRES_URL|PGPASSWORD|NEON_API_KEY)\b(\s*[=:]\s*)("?)([^\s'"`,;]+)\3/g
+
+/** `password=…` and `password: …` in a query string, DSN, or log line. */
+const PASSWORD_ASSIGNMENT = /\b(password|pgpassword|pwd)\b(\s*[=:]\s*)("?)([^\s&'"`,;]+)\3/gi
+
+/**
+ * Everything a connection string discloses, decomposed.
+ *
+ * The whole URI is only the easiest form to spot. Tools print the userinfo alone,
+ * the password alone, and the URI with the scheme stripped, and any one of those
+ * is the credential. Returned longest-first so a shorter component cannot chop a
+ * longer one into unrecognisable pieces before it is matched.
+ */
+export function collectSecretLiterals(secrets) {
+  const literals = new Set()
+  /* Four characters is the floor: shorter fragments match unrelated prose. */
+  const add = (value) => {
+    if (typeof value === 'string' && value.trim().length >= 4) literals.add(value.trim())
+  }
+
+  for (const secret of secrets ?? []) {
+    if (typeof secret !== 'string' || secret.length === 0) continue
+    add(secret)
+
+    const scheme = secret.indexOf('://')
+    if (scheme === -1) continue
+    const rest = secret.slice(scheme + 3)
+    add(rest)
+
+    const at = rest.lastIndexOf('@')
+    if (at === -1) continue
+
+    /*
+     * The host too. It is not a credential, but it is half of a connection
+     * target that this tooling prints only as a 12-character fingerprint, and a
+     * child process writing `host=… user=… password=…` should not be the thing
+     * that discloses it.
+     */
+    const authority = rest.slice(at + 1)
+    const slash = authority.indexOf('/')
+    add(slash === -1 ? authority : authority.slice(0, slash))
+
+    const userinfo = rest.slice(0, at)
+    add(userinfo)
+    const colon = userinfo.indexOf(':')
+    if (colon !== -1) {
+      add(userinfo.slice(0, colon))
+      add(userinfo.slice(colon + 1))
+      try {
+        add(decodeURIComponent(userinfo.slice(colon + 1)))
+      } catch {
+        /* A password that is not valid percent-encoding is already covered above. */
+      }
+    }
+  }
+
+  return [...literals].sort((a, b) => b.length - a.length || a.localeCompare(b))
+}
+
+/**
+ * Credentials out of anything about to be printed.
+ *
+ * WHY THIS IS NOT OPTIONAL. The clone is a byte-for-byte copy of production and
+ * its connection string is handed to a child process as `DATABASE_URL` and
+ * `DATABASE_URL_UNPOOLED`. When `drizzle-kit migrate` fails, it prints the
+ * configuration it was given; when the driver fails, the URI is frequently in
+ * `error.message`. The previous runner echoed the last three kilobytes of that
+ * output verbatim, into a terminal and into whatever CI log was watching. A
+ * credential in a build log is a credential that has been disclosed.
+ *
+ * Redaction is applied to child stdout, child stderr, and every Error-derived
+ * string, ALWAYS — including on the success path, because "it only prints on
+ * failure" is a property of today's code, not of the value.
+ */
+export function redactSecrets(value, secrets = []) {
+  let text
+  if (typeof value === 'string') text = value
+  else if (value === null || value === undefined) text = ''
+  else if (value instanceof Error) text = value.message
+  else text = String(value)
+
+  for (const literal of collectSecretLiterals(secrets)) {
+    text = text.split(literal).join(REDACTED)
+  }
+
+  text = text.replace(POSTGRES_URI, REDACTED)
+  text = text.replace(CREDENTIALED_URI, REDACTED)
+  text = text.replace(SECRET_ASSIGNMENT, `$1$2${REDACTED}`)
+  text = text.replace(PASSWORD_ASSIGNMENT, `$1$2${REDACTED}`)
+
+  return text
+}
+
 /* ========================================================= the one command = */
 
 /** The only command this tooling is permitted to run against the clone. */
@@ -1008,6 +1346,55 @@ export function createMigrationGate(invoke) {
 }
 
 /* ==================================================== probes and cleanup === */
+
+/**
+ * The probe transaction's whole lifecycle: begin, body, rollback, release — in
+ * that order, on every path there is.
+ *
+ * WHY THIS IS A FUNCTION AND NOT FOUR LINES IN THE RUNNER. "Nothing persists" is
+ * the entire basis on which the probes are safe to run against a copy of
+ * production, and it rests on a `rollback` that the previous version placed as
+ * the last statement of the `try` block. Any unexpected exception above it — a
+ * driver error, a null dereference in a `settle` expression, a socket dropping —
+ * skipped the rollback and went straight to `client.release()`, returning a
+ * connection to the pool with an open write transaction on it, whose fate is
+ * then whatever the pool decides. Extracted here, the ordering is a property of
+ * a function that can be tested with counters instead of a database.
+ *
+ * THE ROLLBACK'S FAILURE IS NEVER SWALLOWED. It is the one error that means the
+ * probe rows may still be there, so it propagates even when it displaces the
+ * error that caused the rollback, and it propagates even from the success path.
+ * `release` still runs, because a leaked connection helps nobody.
+ *
+ * `rollback` is attempted only if `begin` reported success: rolling back a
+ * transaction that was never opened would replace a real connection error with a
+ * meaningless one.
+ */
+export async function withProbeTransaction({ begin, body, rollback, release }) {
+  for (const [name, fn] of [
+    ['begin', begin],
+    ['body', body],
+    ['rollback', rollback],
+    ['release', release],
+  ]) {
+    if (typeof fn !== 'function') {
+      throw new TypeError(`withProbeTransaction requires a ${name} function; the probes will not run without one.`)
+    }
+  }
+
+  let began = false
+  try {
+    await begin()
+    began = true
+    return await body()
+  } finally {
+    try {
+      if (began) await rollback()
+    } finally {
+      await release()
+    }
+  }
+}
 
 /**
  * Probe results, judged strictly.
@@ -1079,6 +1466,120 @@ export function evaluateDeletionGuard({ target, parentId, expectedName }) {
   }
 
   return { problems }
+}
+
+/* ============================================== resolving what to clean up = */
+
+/**
+ * The four answers cleanup is allowed to reach.
+ *
+ * `UNCONFIRMED` and `AMBIGUOUS` are deliberately different: the first is "no
+ * branch by that name exists, so there may be nothing to clean up and this run
+ * cannot prove it either way", and the second is "several things match, so
+ * choosing one of them would be a guess". Both refuse to delete; only one of
+ * them describes a possible orphan.
+ */
+export const CLEANUP_RESOLUTION = Object.freeze({
+  IDENTIFIED: 'identified',
+  ABSENT: 'absent',
+  UNCONFIRMED: 'unconfirmed',
+  AMBIGUOUS: 'ambiguous',
+})
+
+/**
+ * WHICH BRANCH, IF ANY, THIS RUN MAY DELETE.
+ *
+ * THE ORPHAN THIS CLOSES. Neon's create-branch call can succeed server-side and
+ * still fail the caller: the connection drops after the branch is committed, the
+ * response is not JSON, or the JSON carries no `branch.id`. The previous runner
+ * read `clone.id` from that response and only THEN entered the try/finally that
+ * deletes it, so every one of those cases left a full copy of production data in
+ * a branch nobody was watching, with the run reporting an error about something
+ * else entirely.
+ *
+ * So the name is generated first, cleanup is armed before the request is made,
+ * and when no trustworthy id came back this function re-lists the project and
+ * looks for the name it generated — EXACTLY, not by prefix and not by
+ * similarity. One match is the branch this run created, because the name embeds
+ * a timestamp and was proved absent from the project moments earlier. Zero
+ * matches is unconfirmed. More than one is a refusal, not a choice.
+ *
+ * This function never decides that deletion is SAFE. Whatever it identifies is
+ * still put through `evaluateDeletionGuard`, which is what refuses the
+ * production parent, a default or primary branch, a non-`rehearsal-*` branch,
+ * and a branch whose name is not the expected one.
+ */
+export function resolveCleanupTarget({ cloneId, branchName, branches }) {
+  if (!Array.isArray(branches)) {
+    return {
+      status: CLEANUP_RESOLUTION.AMBIGUOUS,
+      target: null,
+      matchedBy: null,
+      problems: ['Neon returned no branch list, so no branch may be deleted on the strength of it.'],
+    }
+  }
+
+  const trustworthyId = typeof cloneId === 'string' && cloneId.trim().length > 0 ? cloneId.trim() : null
+
+  if (trustworthyId !== null) {
+    const byId = branches.filter((b) => b?.id === trustworthyId)
+    if (byId.length === 1) {
+      return { status: CLEANUP_RESOLUTION.IDENTIFIED, target: byId[0], matchedBy: 'id', problems: [] }
+    }
+    if (byId.length > 1) {
+      return {
+        status: CLEANUP_RESOLUTION.AMBIGUOUS,
+        target: null,
+        matchedBy: null,
+        problems: [`REFUSING: ${byId.length} branches report the id "${trustworthyId}".`],
+      }
+    }
+    return { status: CLEANUP_RESOLUTION.ABSENT, target: null, matchedBy: null, problems: [] }
+  }
+
+  /*
+   * No id. The generated name is the only handle left, and it is usable only
+   * because this tooling generated it: a name it did not generate could match
+   * anything.
+   */
+  if (typeof branchName !== 'string' || !branchName.startsWith(REHEARSAL_BRANCH_PREFIX)) {
+    return {
+      status: CLEANUP_RESOLUTION.AMBIGUOUS,
+      target: null,
+      matchedBy: null,
+      problems: [
+        'REFUSING: no clone id and no generated ' +
+          `${REHEARSAL_BRANCH_PREFIX}* name are available, so there is nothing this run may safely delete.`,
+      ],
+    }
+  }
+
+  const exact = branches.filter((b) => typeof b?.name === 'string' && b.name === branchName)
+
+  if (exact.length === 1) {
+    return { status: CLEANUP_RESOLUTION.IDENTIFIED, target: exact[0], matchedBy: 'name', problems: [] }
+  }
+  if (exact.length === 0) {
+    return {
+      status: CLEANUP_RESOLUTION.UNCONFIRMED,
+      target: null,
+      matchedBy: null,
+      problems: [
+        `Cleanup could not confirm a branch: no branch in this project is named exactly "${branchName}". ` +
+          'Either the branch was never created or it is not visible here. Nothing was deleted; check the ' +
+          'project by hand before assuming there is no orphan.',
+      ],
+    }
+  }
+  return {
+    status: CLEANUP_RESOLUTION.AMBIGUOUS,
+    target: null,
+    matchedBy: null,
+    problems: [
+      `REFUSING: ${exact.length} branches are named exactly "${branchName}". Deleting one of them would ` +
+        'be a guess, and a wrong guess here deletes a database. Resolve it by hand.',
+    ],
+  }
 }
 
 /** A rehearsal branch name that cannot collide and cannot be mistaken for anything else. */

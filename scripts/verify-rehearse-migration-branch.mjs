@@ -30,8 +30,16 @@ import { fileURLToPath } from 'node:url'
 
 import {
   ALL_TAGS,
+  CARRIED_DIGEST_COLUMNS,
+  CARRIED_EVIDENCE_DISCLAIMER,
+  CARRIED_TABLES,
+  CLEANUP_RESOLUTION,
+  NULL_SENTINEL_SQL,
   PENDING_TAGS,
+  PRODUCTION_HEALTH_ORIGIN,
+  PRODUCTION_HEALTH_URL,
   RECORDED_TAGS,
+  REDACTED,
   REHEARSAL_BRANCH_PREFIX,
   REQUIRED_PROBES,
   STRAIN_LEANING_VALUES,
@@ -39,21 +47,30 @@ import {
   buildObservedKeys,
   buildPendingInventory,
   buildRepositoryMigrations,
+  buildRowDigestQuery,
+  collectSecretLiterals,
   createMigrationGate,
   derivePendingStack,
+  describeCarriedEvidence,
   evaluateApplied,
   evaluateBranchTopology,
+  evaluateCarriedData,
   evaluateCloneMetadata,
   evaluateCloneTargets,
   evaluateDeletionGuard,
   evaluateDrift,
   evaluateHealthIdentity,
+  evaluateMediaBackfill,
   evaluateProbeOutcomes,
   extractDeclaredObjects,
   migrationHash,
   objectKey,
   reconcileLedger,
+  redactSecrets,
   rehearsalBranchName,
+  resolveCleanupTarget,
+  resolveHealthOrigin,
+  withProbeTransaction,
 } from './rehearse-migration-branch-core.mjs'
 import {
   PRODUCTION_HOST_FINGERPRINT,
@@ -897,6 +914,476 @@ check(
   'the runner holds a production credential only long enough to hash it',
   countOf(runnerSource, 'connectionUri(') === 4 && !runnerSource.includes('console.log(parentPooled'),
 )
+
+/* ================================================ 15. THE HEALTH ORIGIN == */
+section('[15] The health origin is a constant, and nothing may redirect it')
+
+{
+  const url = new URL(PRODUCTION_HEALTH_ORIGIN)
+  check('the origin is exactly https://cloudmarket.cc', PRODUCTION_HEALTH_ORIGIN === 'https://cloudmarket.cc')
+  check('the origin is https, so production identity is never established over plaintext', url.protocol === 'https:')
+  check('the origin names cloudmarket.cc exactly — not a subdomain, not a look-alike', url.hostname === 'cloudmarket.cc')
+  check(
+    'the origin carries no port, no credentials, and no path of its own',
+    url.port === '' && url.username === '' && url.password === '' && url.pathname === '/',
+  )
+  check('the health URL is that origin and the health route, and nothing else', PRODUCTION_HEALTH_URL === 'https://cloudmarket.cc/api/health')
+
+  check(
+    'an ordinary run supplies no origin and is not obstructed',
+    resolveHealthOrigin([]).problems.length === 0 && resolveHealthOrigin([]).url === PRODUCTION_HEALTH_URL,
+  )
+  check(
+    'a missing or non-array argv still yields exactly the constant',
+    resolveHealthOrigin(undefined).origin === PRODUCTION_HEALTH_ORIGIN &&
+      resolveHealthOrigin(null).problems.length === 0,
+  )
+
+  /*
+   * Every shape an override has ever taken. The assertion is deliberately in two
+   * halves: the attempt is REFUSED, and — separately — the origin it returns is
+   * still the constant, so a caller that ignored the refusal gains nothing.
+   */
+  const hostile = [
+    'http://cloudmarket.cc',
+    'http://cloudmarket.cc/api/health',
+    'https://staging.cloudmarket.cc',
+    'https://cloudmarket.cc.attacker.test',
+    'https://cloudmarket.cc:8443',
+    'https://user:secret@cloudmarket.cc',
+    'http://127.0.0.1:3000',
+    'https://evil.example/api/health',
+    'file:///etc/hosts',
+    '--base=https://evil.example',
+    '--base-url=http://localhost:3000',
+    '--url=https://evil.example',
+    '--origin=https://evil.example',
+    '--host=evil.example',
+    '--endpoint=https://evil.example',
+    '--health=http://localhost:3000/api/health',
+  ]
+  for (const argument of hostile) {
+    const resolved = resolveHealthOrigin([argument])
+    check(
+      `"${argument}" is refused and still cannot change the origin`,
+      resolved.problems.length === 1 &&
+        resolved.origin === PRODUCTION_HEALTH_ORIGIN &&
+        resolved.url === PRODUCTION_HEALTH_URL,
+    )
+  }
+  check(
+    'all of them at once are all refused, and the origin is still the constant',
+    resolveHealthOrigin(hostile).problems.length === hostile.length &&
+      resolveHealthOrigin(hostile).origin === PRODUCTION_HEALTH_ORIGIN,
+  )
+  check('the legitimate --cleanup flag is not mistaken for an origin override', resolveHealthOrigin(['--cleanup=br-abc123']).problems.length === 0)
+  check('non-string arguments are ignored rather than crashing the refusal', resolveHealthOrigin([null, 42, undefined, {}]).problems.length === 0)
+
+  check('the runner no longer takes its base from whichever argument looked like a URL', !runnerSource.includes("startsWith('http')"))
+  check(
+    'the runner performs exactly one fetch, against the constant health URL',
+    countOf(runnerSource, 'fetch(') === 1 && runnerSource.includes('fetch(PRODUCTION_HEALTH_URL'),
+  )
+  check(
+    'the runner reads no environment variable that could redirect the health origin',
+    [...runnerSource.matchAll(/process\.env\.([A-Z0-9_]+)/g)].every((m) =>
+      ['NEON_PROJECT_NAME', 'NEON_PROJECT_ID', 'NEON_DATABASE', 'NEON_ROLE'].includes(m[1]),
+    ),
+  )
+  check(
+    'the runner refuses a supplied origin at startup rather than ignoring it silently',
+    runnerSource.includes('resolveHealthOrigin(process.argv.slice(2))') && /origin\.problems\.length > 0/.test(runnerSource),
+  )
+}
+
+/* ==================================================== 16. REDACTED OUTPUT = */
+section('[16] No credential reaches stdout, stderr, or an error message')
+
+{
+  const password = 'np_S3cr3t-P4ssw0rd'
+  const pooledUri = `postgresql://neondb_owner:${password}@ep-rehearsal-clone-pooler.eu-central-1.aws.neon.tech/cloudmarket?sslmode=require`
+  const directUri = `postgresql://neondb_owner:${password}@ep-rehearsal-clone.eu-central-1.aws.neon.tech/cloudmarket?sslmode=require`
+  const secrets = [pooledUri, directUri]
+
+  /* The representative secrets: the whole URI, its userinfo, and the password alone. */
+  const leaks = [password, pooledUri, directUri, `neondb_owner:${password}`, 'ep-rehearsal-clone.eu-central-1.aws.neon.tech']
+  const clean = (text) => {
+    const redacted = redactSecrets(text, secrets)
+    return leaks.every((leak) => !redacted.includes(leak))
+  }
+
+  const childStdout =
+    "> drizzle-kit migrate\nReading config file '/app/drizzle.config.ts'\n" +
+    `Using DATABASE_URL=${directUri}\n` +
+    `Using DATABASE_URL_UNPOOLED="${directUri}"\n` +
+    `error: connection to ${pooledUri} failed\n`
+  check('a child stdout blob quoting both connection strings is fully redacted', clean(childStdout))
+  check('the redaction is visible rather than a silent deletion', redactSecrets(childStdout, secrets).includes(REDACTED))
+  check('text that is not a secret survives redaction', redactSecrets(childStdout, secrets).includes('drizzle-kit migrate'))
+
+  const childStderr =
+    'PostgresError: password authentication failed\n' +
+    `  dsn: host=ep-rehearsal-clone.eu-central-1.aws.neon.tech user=neondb_owner password=${password} dbname=cloudmarket\n`
+  check('a child stderr blob carrying a DSN password is redacted', clean(childStderr))
+  check('a bare password= assignment is redacted even with no secrets registered', !redactSecrets(childStderr, []).includes(password))
+
+  const failure = new Error(`drizzle-kit migrate failed for ${directUri}`)
+  check('an Error message is redacted before printing', clean(failure.message))
+  check('an Error handed in directly is redacted, not stringified around', !redactSecrets(failure, secrets).includes(password) && redactSecrets(failure, secrets).includes('migrate failed'))
+
+  const unregistered = 'Error: could not connect to postgresql://someone:hunter2000@ep-elsewhere.aws.neon.tech/db'
+  check(
+    'a connection URI this run never held is still redacted, by shape',
+    !redactSecrets(unregistered, []).includes('hunter2000') && !redactSecrets(unregistered, []).includes('ep-elsewhere.aws.neon.tech'),
+  )
+  check('a credentialed URI in any scheme is redacted', !redactSecrets('see https://admin:letmein99@internal.example/x', []).includes('letmein99'))
+  check('a DATABASE_URL assignment with no scheme at all is redacted', !redactSecrets('DATABASE_URL=totally-opaque-token-value', []).includes('totally-opaque-token-value'))
+  check('a DATABASE_URL_UNPOOLED assignment is redacted', !redactSecrets('DATABASE_URL_UNPOOLED: opaque-unpooled-token', []).includes('opaque-unpooled-token'))
+  check('a NEON_API_KEY that reached the output is redacted', !redactSecrets('NEON_API_KEY=neon_api_abc123def456', []).includes('neon_api_abc123def456'))
+  check('a null or undefined value redacts to an empty string rather than throwing', redactSecrets(null, secrets) === '' && redactSecrets(undefined, secrets) === '')
+  check('a non-string value is stringified before redaction', redactSecrets(1234, secrets) === '1234')
+
+  const literals = collectSecretLiterals([pooledUri])
+  check('the password alone is a secret, not only the whole URI', literals.includes(password))
+  check('the userinfo pair is a secret', literals.includes(`neondb_owner:${password}`))
+  check('the clone host is a secret too, so a DSN cannot disclose it', literals.includes('ep-rehearsal-clone-pooler.eu-central-1.aws.neon.tech'))
+  check('the longest literals are replaced first, so none is chopped up before it matches', literals[0].length >= literals[literals.length - 1].length)
+  check('empty, short, and non-string secrets are ignored rather than blanking the log', collectSecretLiterals([null, '', 'abc', 42]).length === 0)
+
+  const errorPrints = [...runnerSource.matchAll(/console\.error\(([^\n]*)\)/g)]
+    .map((m) => m[1])
+    .filter((argument) => /error\.message|error\.stdout|error\.stderr|\boutput\b/.test(argument))
+  check('the runner has error-derived prints for this check to be about', errorPrints.length >= 4)
+  check('every error-derived print in the runner is redacted first', errorPrints.every((argument) => argument.includes('redact(')))
+  check('child output is redacted at capture, not only at print', runnerSource.includes('output = redact('))
+  check('every connection string the runner fetches is registered as a secret', countOf(runnerSource, 'remember(') === 4)
+  check(
+    'no print in the runner interpolates a raw connection string',
+    [...runnerSource.matchAll(/(?:console\.(?:log|error)|note|ok|stage)\(([^\n]*)/g)].every(
+      (m) => !/\$\{\s*(?:direct|pooled|parentDirect|parentPooled)\s*\}/.test(m[1]),
+    ),
+  )
+}
+
+/* ============================================ 17. THE ORPHANED CLONE ====== */
+section('[17] A clone created by a call that FAILED is still found and deleted')
+
+{
+  const name = `${REHEARSAL_BRANCH_PREFIX}0016-0019-1770000000000`
+  const parentBranch = { id: 'br-prod', name: 'production', default: true, primary: true }
+  const orphan = { id: 'br-clone', name, default: false, primary: false, parent_id: 'br-prod' }
+  const project = [parentBranch, orphan]
+
+  const byId = resolveCleanupTarget({ cloneId: 'br-clone', branchName: name, branches: project })
+  check(
+    'a run that got an id deletes that exact branch',
+    byId.status === CLEANUP_RESOLUTION.IDENTIFIED && byId.target.id === 'br-clone' && byId.matchedBy === 'id',
+  )
+
+  const byName = resolveCleanupTarget({ cloneId: null, branchName: name, branches: project })
+  check(
+    'a run whose create call threw finds the orphan by its generated name',
+    byName.status === CLEANUP_RESOLUTION.IDENTIFIED && byName.target.id === 'br-clone' && byName.matchedBy === 'name',
+  )
+  check(
+    'a response carrying no branch.id is the same case, not a lost branch',
+    resolveCleanupTarget({ cloneId: undefined, branchName: name, branches: project }).target?.id === 'br-clone',
+  )
+  check('a blank id is not mistaken for an id', resolveCleanupTarget({ cloneId: '   ', branchName: name, branches: project }).matchedBy === 'name')
+
+  const none = resolveCleanupTarget({ cloneId: null, branchName: name, branches: [parentBranch] })
+  check(
+    'ZERO exact matches reports that cleanup could not confirm a branch',
+    none.status === CLEANUP_RESOLUTION.UNCONFIRMED && has(none.problems, 'could not confirm a branch'),
+  )
+  check('zero matches deletes nothing at all', none.target === null)
+
+  const twins = resolveCleanupTarget({
+    cloneId: null,
+    branchName: name,
+    branches: [parentBranch, orphan, { ...orphan, id: 'br-twin' }],
+  })
+  check(
+    'MULTIPLE exact matches is a refusal, not a choice',
+    twins.status === CLEANUP_RESOLUTION.AMBIGUOUS && twins.target === null && has(twins.problems, 'REFUSING'),
+  )
+
+  check(
+    'a differently named branch is never an exact match',
+    resolveCleanupTarget({ cloneId: null, branchName: name, branches: [parentBranch, { ...orphan, name: `${name}-2` }] }).status ===
+      CLEANUP_RESOLUTION.UNCONFIRMED,
+  )
+  check(
+    'another rehearsal branch sharing the prefix is not an exact match',
+    resolveCleanupTarget({
+      cloneId: null,
+      branchName: name,
+      branches: [parentBranch, { ...orphan, name: `${REHEARSAL_BRANCH_PREFIX}0016-0019-9` }],
+    }).status === CLEANUP_RESOLUTION.UNCONFIRMED,
+  )
+  check(
+    'a name this tooling did not generate may not be used to find anything',
+    resolveCleanupTarget({ cloneId: null, branchName: 'production', branches: project }).status === CLEANUP_RESOLUTION.AMBIGUOUS,
+  )
+  check(
+    'no id and no generated name deletes nothing',
+    resolveCleanupTarget({ cloneId: null, branchName: null, branches: project }).status === CLEANUP_RESOLUTION.AMBIGUOUS,
+  )
+  check(
+    'a branch list that is not a list deletes nothing',
+    resolveCleanupTarget({ cloneId: 'br-clone', branchName: name, branches: null }).status === CLEANUP_RESOLUTION.AMBIGUOUS,
+  )
+  check(
+    'a known id that is already gone is ABSENT, which is not the same as unconfirmed',
+    resolveCleanupTarget({ cloneId: 'br-clone', branchName: name, branches: [parentBranch] }).status === CLEANUP_RESOLUTION.ABSENT,
+  )
+  check(
+    'two branches reporting the same id is a refusal',
+    resolveCleanupTarget({ cloneId: 'br-clone', branchName: name, branches: [orphan, orphan] }).status === CLEANUP_RESOLUTION.AMBIGUOUS,
+  )
+
+  /*
+   * The layering, proved: resolution only ever nominates a candidate, and the
+   * guard is what refuses. A branch that matched the name exactly and IS the
+   * production parent is nominated and then refused twice over.
+   */
+  const impostor = { id: 'br-prod', name, default: true, primary: true }
+  const nominated = resolveCleanupTarget({ cloneId: null, branchName: name, branches: [impostor] })
+  const guarded = evaluateDeletionGuard({ target: nominated.target, parentId: 'br-prod', expectedName: name })
+  check(
+    'an exact-name match that is the production parent is still refused by the guard',
+    nominated.status === CLEANUP_RESOLUTION.IDENTIFIED &&
+      has(guarded.problems, 'REFUSING to delete the production parent') &&
+      has(guarded.problems, 'marked default/primary'),
+  )
+  check(
+    'a branch found by id but wearing another name is refused by the guard',
+    has(
+      evaluateDeletionGuard({
+        target: { id: 'br-clone', name: 'development', default: false, primary: false },
+        parentId: 'br-prod',
+        expectedName: name,
+      }).problems,
+      'not a rehearsal-*',
+    ),
+  )
+
+  check(
+    'the runner generates the branch name before it posts the create request',
+    runnerSource.indexOf('const branchName = rehearsalBranchName(') < runnerSource.indexOf("method: 'POST'"),
+  )
+  check(
+    'cleanup is armed before the create request is made',
+    runnerSource.indexOf('let cloneId = null') < runnerSource.indexOf("method: 'POST'"),
+  )
+  check(
+    'the create request itself sits inside the try whose finally deletes the branch',
+    /try \{\s*\n\s*const created = await api\(/.test(runnerSource) && /finally \{[\s\S]*deleteBranch\(/.test(runnerSource),
+  )
+  check(
+    'cleanup is handed both the id and the generated name',
+    runnerSource.includes('deleteBranch(apiKey, project.id, { cloneId, branchName, parentId: parent.id })'),
+  )
+  check(
+    'the deletion path resolves a candidate and then guards it',
+    runnerSource.includes('resolveCleanupTarget(') && runnerSource.includes('evaluateDeletionGuard('),
+  )
+}
+
+/* ======================================== 18. THE PROBE TRANSACTION ======= */
+section('[18] The probe transaction rolls back from a finally, before the release')
+
+{
+  const trace = async ({ beginThrows, bodyThrows, rollbackThrows } = {}) => {
+    const order = []
+    const step = (name, throws) => async () => {
+      order.push(name)
+      if (throws) throw new Error(`${name} failed`)
+      return name
+    }
+    let thrown = null
+    try {
+      await withProbeTransaction({
+        begin: step('begin', beginThrows),
+        body: step('body', bodyThrows),
+        rollback: step('rollback', rollbackThrows),
+        release: step('release', false),
+      })
+    } catch (error) {
+      thrown = error.message
+    }
+    return { order: order.join(','), thrown }
+  }
+
+  const happy = await trace()
+  check('the ordinary path is begin, body, rollback, release', happy.order === 'begin,body,rollback,release' && happy.thrown === null)
+
+  const bodyFailed = await trace({ bodyThrows: true })
+  check('an unexpected exception in the probes still rolls back BEFORE releasing', bodyFailed.order === 'begin,body,rollback,release')
+  check('the probe failure still propagates', bodyFailed.thrown === 'body failed')
+
+  const rollbackFailed = await trace({ rollbackThrows: true })
+  check('a rollback failure fails the rehearsal instead of being swallowed', rollbackFailed.thrown === 'rollback failed')
+  check('the connection is released even when the rollback fails', rollbackFailed.order === 'begin,body,rollback,release')
+
+  const bothFailed = await trace({ bodyThrows: true, rollbackThrows: true })
+  check('a rollback failure is never swallowed by the error that caused the unwind', bothFailed.thrown === 'rollback failed')
+  check('the release still happens when both fail', bothFailed.order === 'begin,body,rollback,release')
+
+  const beginFailed = await trace({ beginThrows: true })
+  check('a transaction that never began is not rolled back', beginFailed.order === 'begin,release')
+  check('a failure to begin propagates, and the connection is still released', beginFailed.thrown === 'begin failed')
+
+  let refusedIncomplete = false
+  try {
+    await withProbeTransaction({ begin: () => {}, body: () => {}, rollback: () => {} })
+  } catch (error) {
+    refusedIncomplete = error.message.includes('requires a release function')
+  }
+  check('a lifecycle missing its release is refused rather than half-run', refusedIncomplete)
+
+  check('the runner runs its probes through the shared lifecycle', countOf(runnerSource, 'withProbeTransaction(') === 1)
+  check('the runner no longer releases the client from a finally of its own', !/finally \{\s*\n\s*client\.release\(\)/.test(runnerSource))
+  check(
+    'the runner hands over rollback and release as a pair, rollback first',
+    runnerSource.indexOf("rollback: () => client.query('rollback')") < runnerSource.indexOf('release: () => client.release()'),
+  )
+  check(
+    'the core rolls back inside a finally that still reaches the release',
+    /finally \{[\s\S]*?if \(began\) await rollback\(\)[\s\S]*?finally \{[\s\S]*?await release\(\)/.test(coreSource),
+  )
+}
+
+/* ======================================== 19. THE CARRIED-DATA EVIDENCE === */
+section('[19] The carried-data report claims exactly what was compared, and no more')
+
+{
+  const signature = (over = {}) => ({
+    counts: { users: 4, media: 7, product_media: 3, products: 2, product_variants: 5 },
+    digests: { users: { rows: 4, digest: 'u1' }, media: { rows: 7, digest: 'm1' } },
+    ...over,
+  })
+
+  check('an unchanged signature passes', evaluateCarriedData({ before: signature(), after: signature() }).problems.length === 0)
+  check(
+    'a row count that changed is a failure',
+    has(
+      evaluateCarriedData({
+        before: signature(),
+        after: signature({ counts: { users: 5, media: 7, product_media: 3, products: 2, product_variants: 5 } }),
+      }).problems,
+      'users row count changed: 4 -> 5',
+    ),
+  )
+  check(
+    'a digest that changed is a failure',
+    has(
+      evaluateCarriedData({
+        before: signature(),
+        after: signature({ digests: { users: { rows: 4, digest: 'u2' }, media: { rows: 7, digest: 'm1' } } }),
+      }).problems,
+      'The digest of "users"',
+    ),
+  )
+  {
+    /*
+     * The null-collapse failure, as data: a digest whose row coverage is short of
+     * the table's own count is refused even though both sides agree, because
+     * "identical over the rows we happened to aggregate" is not an answer.
+     */
+    const short = signature({ digests: { users: { rows: 3, digest: 'u1' }, media: { rows: 7, digest: 'm1' } } })
+    check(
+      'a digest that covered fewer rows than the table holds is a failure on both sides',
+      has(evaluateCarriedData({ before: short, after: short }).problems, 'covered 3 of 4 row(s)') &&
+        evaluateCarriedData({ before: short, after: short }).problems.length === 2,
+    )
+  }
+  check(
+    'a count that was not observed fails closed rather than passing',
+    has(evaluateCarriedData({ before: signature({ counts: { users: 4 } }), after: signature() }).problems, 'was not observed on both sides'),
+  )
+  check(
+    'a digest that was not observed fails closed rather than passing',
+    has(evaluateCarriedData({ before: signature({ digests: {} }), after: signature() }).problems, 'No usable digest'),
+  )
+  check(
+    'a null digest value fails closed',
+    evaluateCarriedData({
+      before: signature({ digests: { users: { rows: 4, digest: null }, media: { rows: 7, digest: 'm1' } } }),
+      after: signature(),
+    }).problems.length > 0,
+  )
+  check('no signature at all fails closed', evaluateCarriedData({ before: null, after: null }).problems.length >= CARRIED_TABLES.length)
+  check(
+    'every carried table and every digested table is actually accounted for',
+    CARRIED_TABLES.length === 5 &&
+      evaluateCarriedData({ before: { counts: {}, digests: {} }, after: { counts: {}, digests: {} } }).problems.length ===
+        CARRIED_TABLES.length + Object.keys(CARRIED_DIGEST_COLUMNS).length,
+  )
+
+  check('a fully backfilled media table passes', evaluateMediaBackfill(0).problems.length === 0)
+  check('a single un-backfilled media row is a failure', has(evaluateMediaBackfill(1).problems, "did not backfill to 'image'"))
+  check('a backfill that was never observed fails closed', has(evaluateMediaBackfill(null).problems, 'was not observed'))
+
+  const report = describeCarriedEvidence(signature())
+  check('the report does not claim byte-identity', !report.includes('byte-identical'))
+  check('the report does not claim that every carried row was compared', !/every carried row/i.test(report))
+  check('the report names every table whose row count was checked', CARRIED_TABLES.every((table) => report.includes(table)))
+  check(
+    'the report names the exact columns that were digested',
+    Object.entries(CARRIED_DIGEST_COLUMNS).every(([table, columns]) => report.includes(`${table}(${columns.join(', ')})`)),
+  )
+  check(
+    'the report says, in the same breath, what it did NOT compare',
+    report.includes(CARRIED_EVIDENCE_DISCLAIMER) && CARRIED_EVIDENCE_DISCLAIMER.includes('not compared'),
+  )
+  check(
+    'the report states that the digest is null-safe and covers every row of those tables',
+    report.includes('null-safe') && report.includes('covering every row of those tables'),
+  )
+  check('the runner no longer prints the old universal claim', !runnerSource.includes('every carried row is byte-identical'))
+  check('the runner prints the built report rather than a hand-written sentence', runnerSource.includes('ok(describeCarriedEvidence(after))'))
+
+  const usersSql = buildRowDigestQuery({ table: 'users', columns: [...CARRIED_DIGEST_COLUMNS.users] })
+  check(
+    'every digested column is coalesced to a null sentinel',
+    CARRIED_DIGEST_COLUMNS.users.every((column) => usersSql.includes(`coalesce("${column}"::text, ${NULL_SENTINEL_SQL})`)),
+  )
+  check(
+    'the nullable columns that used to vanish from the digest are the ones being covered',
+    CARRIED_DIGEST_COLUMNS.users.includes('email') && CARRIED_DIGEST_COLUMNS.media.includes('alt_text'),
+  )
+  check('the digest is ordered deterministically', usersSql.includes('order by "id"'))
+  check('the digest reports how many rows it covered', usersSql.includes('count(*)::int as n'))
+  check('an empty table digests to a stable value rather than null', usersSql.includes("'empty'"))
+  check('the column and row separators cannot be forged by the data', usersSql.includes('concat_ws(chr(2)') && usersSql.includes('chr(3) order by'))
+
+  const refuses = (input) => {
+    try {
+      buildRowDigestQuery(input)
+      return false
+    } catch {
+      return true
+    }
+  }
+  check('an unsafe table name is refused rather than interpolated', refuses({ table: 'users"; drop table users; --', columns: ['id'] }))
+  check('an unsafe column name is refused rather than interpolated', refuses({ table: 'users', columns: ['id', 'email"'] }))
+  check('a digest over no columns is refused', refuses({ table: 'users', columns: [] }))
+  check('an order key that is not one of the digested columns is refused', refuses({ table: 'users', columns: ['email'], orderBy: 'id' }))
+
+  check(
+    'the runner builds its digests from the core rather than by hand',
+    runnerSource.includes('buildRowDigestQuery({ table, columns })') && countOf(runnerSource, 'md5(') === 0,
+  )
+  check(
+    'the runner compares carried data through the core evaluators',
+    runnerSource.includes('evaluateCarriedData({ before, after })') && runnerSource.includes('evaluateMediaBackfill(notImage)'),
+  )
+  check(
+    'the isolation probe reuses exactly the same comparison',
+    runnerSource.includes('evaluateCarriedData({ before: after, after: afterProbes })'),
+  )
+}
 
 /* ================================================================ summary = */
 console.log('\n==========================================================')

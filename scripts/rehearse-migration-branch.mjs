@@ -17,9 +17,10 @@
  * composes. It cannot prove anything about data, because there is none. This
  * script answers the questions an empty database answers for the wrong reason:
  * does `ADD COLUMN ... DEFAULT ... NOT NULL` succeed against populated tables,
- * do existing rows survive byte-identical, does the new uniqueness model behave.
+ * do the compared columns of the existing rows survive unchanged, does the new
+ * uniqueness model behave.
  *
- * THE FOUR REFUSALS THAT MATTER
+ * THE FIVE REFUSALS THAT MATTER
  *
  *   1. THE PARENT MUST BE LIVE PRODUCTION. Every other identity check is of the
  *      form "X is not production", and a clone of the wrong database passes all
@@ -47,6 +48,14 @@
  *      back, so SKIP is not a state it can reach; if one is missing, not
  *      reached, or failed, the verdict is FAILED.
  *
+ *   5. A CLONE THAT WAS CREATED MUST BE DELETABLE, EVEN IF THE CALL THAT
+ *      CREATED IT FAILED. Neon can commit a branch server-side and still fail
+ *      the caller — a dropped socket, a non-JSON body, a body with no
+ *      `branch.id`. The name is therefore generated BEFORE the request and
+ *      cleanup is armed BEFORE the request, so that every one of those cases
+ *      ends with the branch deleted by its exact generated name rather than
+ *      with a copy of production data left in a branch nobody is watching.
+ *
  * WHAT THIS NEVER DOES
  *
  *   - connect to production (its connection URI is fetched only to be hashed,
@@ -56,8 +65,14 @@
  *   - truncate `_journal.json`, pass `--step`, skip a migration, or edit any
  *     migration file (the repository files are re-read afterwards and proved
  *     unchanged)
- *   - touch `.env.local`, or print a connection string or credential
- *   - leave a branch, a row, or a connection behind
+ *   - touch `.env.local`, or print a connection string or credential — child
+ *     stdout, child stderr, and every Error-derived string are redacted before
+ *     they reach a terminal or a CI log
+ *   - accept a health origin from an argument or a variable: it is the frozen
+ *     constant `https://cloudmarket.cc`, and an attempt to supply another stops
+ *     the run
+ *   - claim more about the carried data than it compared
+ *   - leave a branch, a row, an open transaction, or a connection behind
  *
  * IMPORT SAFETY. `verify-migration-target.mjs` is imported for its pure
  * fingerprint helpers. Verified by inspection: every I/O call it makes sits
@@ -81,24 +96,37 @@ import {
 import { endpointFp, hostFp } from './verify-migration-target.mjs'
 import {
   ALL_TAGS,
+  CARRIED_DIGEST_COLUMNS,
+  CARRIED_TABLES,
+  CLEANUP_RESOLUTION,
   PENDING_TAGS,
+  PRODUCTION_HEALTH_ORIGIN,
+  PRODUCTION_HEALTH_URL,
   RECORDED_TAGS,
   REQUIRED_PROBES,
   buildObservedKeys,
   buildPendingInventory,
   buildRepositoryMigrations,
+  buildRowDigestQuery,
   createMigrationGate,
   derivePendingStack,
+  describeCarriedEvidence,
   evaluateApplied,
   evaluateBranchTopology,
+  evaluateCarriedData,
   evaluateCloneMetadata,
   evaluateCloneTargets,
   evaluateDeletionGuard,
   evaluateDrift,
   evaluateHealthIdentity,
+  evaluateMediaBackfill,
   evaluateProbeOutcomes,
   reconcileLedger,
+  redactSecrets,
   rehearsalBranchName,
+  resolveCleanupTarget,
+  resolveHealthOrigin,
+  withProbeTransaction,
 } from './rehearse-migration-branch-core.mjs'
 
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
@@ -110,7 +138,6 @@ const flag = (name) => {
   return hit ? hit.slice(name.length + 3) : null
 }
 
-const BASE = process.argv.find((a) => a.startsWith('http')) ?? 'https://cloudmarket.cc'
 const PROJECT_NAME = process.env.NEON_PROJECT_NAME ?? 'cloud-market'
 const PROJECT_ID = process.env.NEON_PROJECT_ID
 const DATABASE = process.env.NEON_DATABASE ?? 'cloudmarket'
@@ -139,9 +166,50 @@ for (const banned of ['step', 'to', 'keep', 'skip', 'repair', 'force']) {
   }
 }
 
-const stage = (title) => console.log(`\n${title}`)
-const note = (text) => console.log(`    ${text}`)
-const ok = (text) => console.log(`    ok    ${text}`)
+/*
+ * THE HEALTH ORIGIN IS NOT AN ARGUMENT, AND SAYING SO IS THE POINT.
+ *
+ * This used to be the first argument that looked like a URL, falling back to the
+ * production address — which meant any operator could aim the identity check
+ * anywhere: a preview deployment, an unencrypted origin on an untrusted network,
+ * a host with credentials in it, or a look-alike domain. Everything after stage
+ * [1] is anchored to what THAT deployment published, so a redirectable origin
+ * makes every later refusal refuse the wrong thing while still reporting PASS.
+ *
+ * The origin is a frozen constant in the core module. There is no replacement
+ * override — not a flag, not a variable — and an attempt to supply one stops the
+ * run here rather than being quietly ignored.
+ */
+const origin = resolveHealthOrigin(process.argv.slice(2))
+if (origin.problems.length > 0) {
+  for (const problem of origin.problems) console.error(problem)
+  process.exit(1)
+}
+
+/*
+ * EVERY SECRET THIS PROCESS TOUCHES, SO NOTHING PRINTS ONE.
+ *
+ * The clone's connection string is a live credential to a byte-for-byte copy of
+ * production, and it is handed to `drizzle-kit` as DATABASE_URL and
+ * DATABASE_URL_UNPOOLED. When that child fails it prints the configuration it
+ * was given; when the driver fails the URI is usually in `error.message`. The
+ * previous runner echoed the tail of that output verbatim into the terminal and
+ * into whatever CI log was watching.
+ *
+ * Values are registered the moment they are fetched, and every print in this
+ * file — including the ones that only run on the success path — goes through
+ * `redact`.
+ */
+const SECRETS = new Set()
+const remember = (secret) => {
+  if (typeof secret === 'string' && secret.length > 0) SECRETS.add(secret)
+  return secret
+}
+const redact = (value) => redactSecrets(value, SECRETS)
+
+const stage = (title) => console.log(`\n${redact(title)}`)
+const note = (text) => console.log(`    ${redact(text)}`)
+const ok = (text) => console.log(`    ok    ${redact(text)}`)
 
 /** Every failure path in this script goes through here. There is no "warn and continue". */
 function stop(headline, problems) {
@@ -264,22 +332,30 @@ async function readLedger(query) {
   return query('select id, hash, created_at from drizzle.__drizzle_migrations order by id asc')
 }
 
-/** Row counts and digests over the tables the pending stack touches or claims not to touch. */
+/**
+ * Row counts, and a null-safe digest of the columns that are actually compared.
+ *
+ * NULLS ARE VALUES HERE, NOT GAPS. The digests this replaces were built with
+ * `id::text||':'||email||…` over columns that are genuinely nullable
+ * (`users.email`, `media.alt_text`). One NULL makes the whole concatenation
+ * NULL, and `string_agg` drops it — so every row carrying a NULL fell out of the
+ * aggregate on both sides and compared equal no matter what happened to it. The
+ * queries are built by the core module, which coalesces every column to a
+ * sentinel byte and returns the number of rows the digest covered so the
+ * coverage can be checked against the table's own count.
+ */
 async function readDataSignature(query) {
-  const [counts] = await query(`
-    select (select count(*)::int from users) as users,
-           (select count(*)::int from media) as media,
-           (select count(*)::int from product_media) as product_media,
-           (select count(*)::int from products) as products,
-           (select count(*)::int from product_variants) as product_variants`)
-  const [{ d: usersDigest }] = await query(`
-    select coalesce(md5(string_agg(id::text||':'||email||':'||role::text||':'||status::text, ',' order by id)),
-                    'empty') d
-      from users`)
-  const [{ d: mediaDigest }] = await query(`
-    select coalesce(md5(string_agg(id::text||':'||url||':'||alt_text, ',' order by id)), 'empty') d
-      from media`)
-  return { ...counts, usersDigest, mediaDigest }
+  const [counts] = await query(
+    `select ${CARRIED_TABLES.map((table) => `(select count(*)::int from "${table}") as "${table}"`).join(',\n           ')}`,
+  )
+
+  const digests = {}
+  for (const [table, columns] of Object.entries(CARRIED_DIGEST_COLUMNS)) {
+    const [row] = await query(buildRowDigestQuery({ table, columns }))
+    digests[table] = { rows: row?.n ?? null, digest: row?.d ?? null }
+  }
+
+  return { counts, digests }
 }
 
 /* ================================================================== probes = */
@@ -328,9 +404,8 @@ const probeEmail = () => `rehearsal-probe-${randomUUID()}@invalid.test`
  */
 async function runProbes(pool) {
   const client = await pool.connect()
-  try {
-    await client.query('begin')
 
+  const probes = async () => {
     /* ---- 0016: the media columns, against the existing media table ------- */
     const defaults = await attempt(
       client,
@@ -562,34 +637,74 @@ async function runProbes(pool) {
         probeResults.set(id, { id, status: 'NOT-REACHED', detail })
       }
     }
-
-    /*
-     * AWAITED, AND ITS FAILURE PROPAGATES. "Nothing persists" is the entire
-     * basis on which these probes are safe, and an un-rolled-back transaction is
-     * precisely the case where that stops being true.
-     */
-    await client.query('rollback')
-  } finally {
-    client.release()
   }
+
+  /*
+   * ROLLBACK, THEN RELEASE, ON EVERY PATH THERE IS.
+   *
+   * The rollback used to be the last statement of the try block, with only
+   * `client.release()` in the finally. Any unexpected exception above it — a
+   * driver error, a null dereference inside a `settle` expression, a socket
+   * dropping — skipped the rollback entirely and handed a connection carrying an
+   * open write transaction back to the pool. "Nothing persists" is the whole
+   * basis on which it is safe to run these probes against a copy of production,
+   * and that path is precisely where it stopped being true.
+   *
+   * `withProbeTransaction` rolls back from a finally, before the release, and
+   * lets a rollback failure propagate: it is the one error that means the probe
+   * rows may still be there, so it fails the rehearsal rather than being
+   * swallowed by the path that was already unwinding.
+   */
+  return withProbeTransaction({
+    begin: () => client.query('begin'),
+    body: probes,
+    rollback: () => client.query('rollback'),
+    release: () => client.release(),
+  })
 }
 
 /* ================================================================= cleanup = */
 
-async function deleteBranch(apiKey, projectId, branchId, { parentId, expectedName }) {
-  const branches = await listBranches(apiKey, projectId)
-  const target = branches.find((b) => b.id === branchId)
+/**
+ * Delete the disposable clone — by id when one came back, otherwise by the exact
+ * name this run generated before the branch was ever requested.
+ *
+ * THE SECOND PATH IS THE ORPHAN FIX. Neon can commit a branch server-side and
+ * still fail the caller: the socket drops after the write, the response is not
+ * JSON, or the JSON carries no `branch.id`. Any of those used to leave a
+ * complete copy of production data in a branch nobody was watching. `branchName`
+ * is generated before the request, so it is available in exactly those cases;
+ * `resolveCleanupTarget` re-lists the project and accepts it only on an EXACT
+ * name match with exactly one candidate.
+ *
+ * Whatever is identified still goes through `evaluateDeletionGuard`, which is
+ * what refuses the production parent, a default or primary branch, a branch that
+ * is not named `rehearsal-*`, and a branch whose name is not the expected one.
+ */
+async function deleteBranch(apiKey, projectId, { cloneId, branchName, parentId }) {
+  const resolution = resolveCleanupTarget({
+    cloneId,
+    branchName,
+    branches: await listBranches(apiKey, projectId),
+  })
 
-  if (!target) {
-    note(`branch ${branchId} no longer exists`)
+  if (resolution.status === CLEANUP_RESOLUTION.ABSENT) {
+    note(`branch ${cloneId} no longer exists`)
     return
   }
+  if (resolution.status === CLEANUP_RESOLUTION.UNCONFIRMED) {
+    stop('Cleanup could not confirm a branch to delete:', resolution.problems)
+  }
+  if (resolution.status !== CLEANUP_RESOLUTION.IDENTIFIED) {
+    stop('Refusing to delete anything during cleanup:', resolution.problems)
+  }
 
-  const { problems } = evaluateDeletionGuard({ target, parentId, expectedName })
-  if (problems.length > 0) stop(`Refusing to delete ${branchId}:`, problems)
+  const target = resolution.target
+  const { problems } = evaluateDeletionGuard({ target, parentId, expectedName: branchName })
+  if (problems.length > 0) stop(`Refusing to delete ${target.id}:`, problems)
 
-  await api(apiKey, `/projects/${projectId}/branches/${branchId}`, { method: 'DELETE' })
-  note(`deleted branch ${branchId} ("${target.name}")`)
+  await api(apiKey, `/projects/${projectId}/branches/${target.id}`, { method: 'DELETE' })
+  note(`deleted branch ${target.id} ("${target.name}"), matched by ${resolution.matchedBy}`)
 }
 
 /* ==================================================================== main = */
@@ -618,10 +733,10 @@ async function main() {
   ok(`${inventory.length} declared objects and ${dropped.length} dropped objects inventoried from the pending stack`)
 
   /* ---- 1. live production identity ------------------------------------ */
-  stage('[1] Live production identity (required)')
+  stage(`[1] Live production identity at ${PRODUCTION_HEALTH_ORIGIN} (required, and not configurable)`)
   let health
   try {
-    const res = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(10_000) })
+    const res = await fetch(PRODUCTION_HEALTH_URL, { signal: AbortSignal.timeout(10_000) })
     let body = null
     try {
       body = await res.json()
@@ -641,12 +756,13 @@ async function main() {
   })
   if (identity.problems.length > 0) {
     stop(
-      `The deployment at ${BASE} did not establish production identity. Nothing has been created:`,
+      `The deployment at ${PRODUCTION_HEALTH_ORIGIN} did not establish production identity. Nothing has ` +
+        'been created:',
       identity.problems,
     )
   }
   const liveFingerprint = identity.fingerprint
-  ok(`${BASE} reports environment "production" and database ${liveFingerprint}`)
+  ok(`${PRODUCTION_HEALTH_ORIGIN} reports environment "production" and database ${liveFingerprint}`)
 
   /* ---- 2. which Neon branch is production ------------------------------ */
   stage('[2] Neon project and branch topology')
@@ -668,16 +784,12 @@ async function main() {
    * They exist to be hashed and are never printed, logged, stored, or given to a
    * Pool. Production is not connected to at any point in this run.
    */
-  const parentPooled = await connectionUri(apiKey, project.id, parent.id, {
-    database: DATABASE,
-    role: ROLE,
-    pooled: true,
-  })
-  const parentDirect = await connectionUri(apiKey, project.id, parent.id, {
-    database: DATABASE,
-    role: ROLE,
-    pooled: false,
-  })
+  const parentPooled = remember(
+    await connectionUri(apiKey, project.id, parent.id, { database: DATABASE, role: ROLE, pooled: true }),
+  )
+  const parentDirect = remember(
+    await connectionUri(apiKey, project.id, parent.id, { database: DATABASE, role: ROLE, pooled: false }),
+  )
   assertEndpointShape(parentPooled, parentDirect)
 
   const parentPooledFp = hostFp(parentPooled)
@@ -703,43 +815,62 @@ async function main() {
   if (branchName === parent.name) freshness.push('the rehearsal name collides with the production branch name')
   if (freshness.length > 0) stop('Refusing to create the clone:', freshness)
 
-  const created = await api(apiKey, `/projects/${project.id}/branches`, {
-    method: 'POST',
-    body: JSON.stringify({
-      branch: { name: branchName, parent_id: parent.id },
-      endpoints: [{ type: 'read_write' }],
-    }),
-  })
-
   /*
-   * Read from the POST response only. A follow-up list lookup could return a
-   * pre-existing branch of the same name — the exact thing the freshness check
-   * above exists to prevent.
+   * CLEANUP IS ARMED BEFORE THE BRANCH IS REQUESTED, NOT AFTER IT ANSWERS.
+   *
+   * The name is generated first and the try/finally is entered first, because
+   * the dangerous window is the one between Neon committing a branch and this
+   * process learning about it. A dropped socket, a non-JSON response, or a body
+   * with no `branch.id` all used to throw out here — outside the finally — and
+   * leave a full copy of production data behind. Now every one of those lands in
+   * the catch, and the finally deletes the branch by the name it generated.
    */
-  const clone = created.branch
-  if (!clone?.id) throw new Error('Branch creation returned no branch.')
-  note(`created ${clone.id} ("${clone.name}")`)
-  note(`parent_lsn ${clone.parent_lsn ?? '(none reported)'}`)
-
+  let cloneId = null
   let exitCode = 0
 
   try {
+    const created = await api(apiKey, `/projects/${project.id}/branches`, {
+      method: 'POST',
+      body: JSON.stringify({
+        branch: { name: branchName, parent_id: parent.id },
+        endpoints: [{ type: 'read_write' }],
+      }),
+    })
+
+    /*
+     * Read from the POST response only. A follow-up list lookup could return a
+     * pre-existing branch of the same name — the exact thing the freshness check
+     * above exists to prevent. (Cleanup may look the name up, because by then
+     * "delete whatever is called this" is the safe answer, not the risky one.)
+     */
+    const clone = created?.branch ?? null
+    if (typeof clone?.id === 'string' && clone.id.length > 0) cloneId = clone.id
+    if (cloneId === null) {
+      throw new Error(
+        'Branch creation returned no usable branch id. If Neon created a branch anyway, cleanup will ' +
+          `find it by its exact name ("${branchName}") and delete it.`,
+      )
+    }
+    note(`created ${cloneId} ("${clone.name}")`)
+    note(`parent_lsn ${clone.parent_lsn ?? '(none reported)'}`)
+
     /* ---- 5. the clone is provably not production --------------------- */
     stage('[5] Clone identity — before any database connection')
     const metadata = evaluateCloneMetadata({ clone, parent, flagEvidence: topology.flagEvidence })
     if (metadata.problems.length > 0) stop('The created branch is not provably a disposable clone:', metadata.problems)
     ok(`non-default, non-primary, parent_id ${clone.parent_id}`)
 
-    const pooled = await connectionUri(apiKey, project.id, clone.id, {
-      database: DATABASE,
-      role: ROLE,
-      pooled: true,
-    })
-    const direct = await connectionUri(apiKey, project.id, clone.id, {
-      database: DATABASE,
-      role: ROLE,
-      pooled: false,
-    })
+    /*
+     * Registered as secrets the moment they exist. The clone is a byte-for-byte
+     * copy of production, so its credentials are production's data behind a
+     * different hostname.
+     */
+    const pooled = remember(
+      await connectionUri(apiKey, project.id, cloneId, { database: DATABASE, role: ROLE, pooled: true }),
+    )
+    const direct = remember(
+      await connectionUri(apiKey, project.id, cloneId, { database: DATABASE, role: ROLE, pooled: false }),
+    )
     assertEndpointShape(pooled, direct)
 
     note(`clone pooled fingerprint ${hostFp(pooled)}`)
@@ -808,10 +939,7 @@ async function main() {
       ok('no declared object of the pending stack exists yet')
 
       before = await readDataSignature(query)
-      note(
-        `carried rows — users ${before.users}, media ${before.media}, product_media ${before.product_media}, ` +
-          `products ${before.products}, product_variants ${before.product_variants}`,
-      )
+      note(`carried rows — ${CARRIED_TABLES.map((table) => `${table} ${before.counts[table]}`).join(', ')}`)
 
       /* ---- 9. THE ONE MIGRATION COMMAND ------------------------------ */
       stage('[9] Applying the pending stack — the repository\'s own drizzle-kit migrate, once')
@@ -835,12 +963,19 @@ async function main() {
         })
       } catch (error) {
         migrateOk = false
-        output = `${error.stdout ?? ''}${error.stderr ?? ''}` || error.message
+        /*
+         * REDACTED AT CAPTURE, NOT AT PRINT. The child was handed the clone's
+         * connection string as DATABASE_URL and DATABASE_URL_UNPOOLED, and a
+         * failing drizzle-kit prints the configuration it was given. Whatever
+         * this variable holds may end up in an exception message or a CI log, so
+         * it never holds a credential in the first place.
+         */
+        output = redact(`${error.stdout ?? ''}${error.stderr ?? ''}` || error.message)
       }
       migrationMs = Date.now() - started
 
       if (!migrateOk) {
-        console.error(String(output).slice(-3000))
+        console.error(redact(String(output)).slice(-3000))
         stop('The migration failed on the clone:', ['drizzle-kit migrate exited non-zero — see the output above.'])
       }
       ok(`applied in ${migrationMs} ms, ${gate.invocations} invocation`)
@@ -880,32 +1015,37 @@ async function main() {
       /* ---- 11. the data that was carried ----------------------------- */
       stage('[11] Carried data')
       const after = await readDataSignature(query)
-      const dataProblems = []
-      for (const key of ['users', 'media', 'product_media', 'products', 'product_variants']) {
-        if (after[key] !== before[key]) dataProblems.push(`${key} row count changed: ${before[key]} -> ${after[key]}`)
-      }
-      if (after.usersDigest !== before.usersDigest) dataProblems.push('the users digest changed')
-      if (after.mediaDigest !== before.mediaDigest) dataProblems.push('the media digest changed')
       const [{ n: notImage }] = await query(`select count(*)::int n from media where kind <> 'image'`)
-      if (notImage !== 0) dataProblems.push(`${notImage} pre-existing media row(s) did not backfill to 'image'`)
+      const dataProblems = [
+        ...evaluateCarriedData({ before, after }).problems,
+        ...evaluateMediaBackfill(notImage).problems,
+      ]
       if (dataProblems.length > 0) stop('The migration changed data it was not supposed to change:', dataProblems)
-      ok(`every carried row is byte-identical; all ${after.media} media rows backfilled to 'image'`)
+      /*
+       * THE WORDING IS THE EVIDENCE, SO IT IS BUILT FROM THE EVIDENCE. This line
+       * used to assert universal byte-identity across the carried rows on the
+       * strength of five row counts and two partial-column digests that silently
+       * dropped every row containing a NULL. What is proved is stated, and what
+       * was not compared is said to be not compared.
+       */
+      ok(describeCarriedEvidence(after))
+      ok(`the media backfill covered every row: 0 of ${after.counts.media} rows have a kind other than 'image'`)
 
       /* ---- 12. behavioural probes ------------------------------------ */
       stage('[12] Behavioural probes — one transaction, always rolled back')
       await runProbes(pool)
 
+      /*
+       * The same comparison, so the isolation probe is exactly as strong as the
+       * carried-data check: same tables, same null-safe digests, same refusal to
+       * conclude anything from a digest that did not cover every row.
+       */
       const afterProbes = await readDataSignature(query)
-      const isolated =
-        ['users', 'media', 'product_media', 'products', 'product_variants'].every(
-          (key) => afterProbes[key] === after[key],
-        ) &&
-        afterProbes.usersDigest === after.usersDigest &&
-        afterProbes.mediaDigest === after.mediaDigest
+      const isolation = evaluateCarriedData({ before: after, after: afterProbes })
       probeResults.set('probe.isolation', {
         id: 'probe.isolation',
-        status: isolated ? 'PASS' : 'FAIL',
-        detail: isolated ? '' : 'the probes left rows behind',
+        status: isolation.problems.length === 0 ? 'PASS' : 'FAIL',
+        detail: isolation.problems.join('; '),
       })
 
       const outcomes = evaluateProbeOutcomes([...probeResults.values()])
@@ -933,7 +1073,7 @@ async function main() {
     console.log('PRODUCTION-SHAPED REHEARSAL PASSED')
     console.log(`  pending stack applied      ${PENDING_TAGS.join(', ')}`)
     console.log(`  migration duration         ${migrationMs} ms`)
-    console.log(`  carried users / media      ${before.users} / ${before.media}`)
+    console.log(`  carried users / media      ${before.counts.users} / ${before.counts.media}`)
     console.log(`  probes passed              ${REQUIRED_PROBES.length}/${REQUIRED_PROBES.length}`)
     console.log(`\nThis ran against a clone of production taken at parent_lsn ${clone.parent_lsn ?? '(unreported)'}.`)
     console.log('Production was never connected to. Take a restore point before the real')
@@ -943,20 +1083,22 @@ async function main() {
     exitCode = 1
     console.error(`\n==========================================================`)
     console.error('REHEARSAL FAILED')
-    console.error(error.message)
+    console.error(redact(error.message))
     console.error('\nDO NOT APPLY THIS MIGRATION TO PRODUCTION.')
     console.error('==========================================================')
   } finally {
     /*
-     * ALWAYS. A disposable clone that outlives its run is a copy of production
-     * data sitting in a branch nobody is watching.
+     * ALWAYS, AND REACHABLE FROM EVERY FAILURE INCLUDING THE CREATE CALL ITSELF.
+     * A disposable clone that outlives its run is a copy of production data
+     * sitting in a branch nobody is watching.
      */
     console.log('\n[cleanup]')
     try {
-      await deleteBranch(apiKey, project.id, clone.id, { parentId: parent.id, expectedName: branchName })
+      await deleteBranch(apiKey, project.id, { cloneId, branchName, parentId: parent.id })
     } catch (error) {
-      console.error(`    WARNING: could not delete ${clone.id} — ${error.message}`)
-      console.error(`    Remove it by hand: node ${SELF} --cleanup=${clone.id}`)
+      console.error(`    WARNING: the rehearsal branch was not deleted — ${redact(error.message)}`)
+      console.error(`    Look for a branch named exactly "${branchName}" in project ${project.id}.`)
+      console.error(`    Remove it by hand: node ${SELF} --cleanup=${cloneId ?? '<its branch id>'}`)
       exitCode = 1
     }
   }
@@ -974,13 +1116,13 @@ async function cleanupOnly(branchId) {
     stop('Neon\'s branch metadata is ambiguous, so nothing may be deleted:', topology.problems)
   }
   console.log(`[cleanup] removing ${branchId} from ${project.name} (${project.id})`)
-  await deleteBranch(apiKey, project.id, branchId, { parentId: topology.parent.id })
+  await deleteBranch(apiKey, project.id, { cloneId: branchId, parentId: topology.parent.id })
 }
 
 const cleanupId = flag('cleanup')
 const entry = cleanupId ? cleanupOnly(cleanupId) : main()
 
 entry.catch((error) => {
-  console.error(`\nABORTED: ${error.message}`)
+  console.error(`\nABORTED: ${redact(error.message)}`)
   process.exitCode = 1
 })
