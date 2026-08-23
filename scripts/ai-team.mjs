@@ -18,8 +18,18 @@
  *   npm run ai:team -- "review the CloudMarket production migration drift"
  */
 
-import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import {
+  execFileSync,
+  spawn,
+} from 'node:child_process';
+
+import {
+  readFileSync,
+} from 'node:fs';
+
+import {
+  join,
+} from 'node:path';
 import { Agent, run } from '@openai/agents';
 
 const GPT_MODEL = 'gpt-5.6-sol';
@@ -29,7 +39,14 @@ const CLAUDE_MAX_TURNS =
     ?.trim() ||
   '30';
 const CLAUDE_TIMEOUT_MS = 600_000;
+const GPT_SNAPSHOT_MAX_CHARS =
+  140_000;
 
+const GPT_FILE_MAX_CHARS =
+  18_000;
+
+const GPT_TREE_MAX_CHARS =
+  35_000;
 const REVIEW_REPO =
   process.env
     .AI_TEAM_REPO
@@ -94,10 +111,16 @@ CloudMarket is a private, invite/application-gated multi-vendor marketplace:
 Next.js on Vercel, PostgreSQL on Neon, Drizzle migrations, production branch
 "main". Checkout, crypto payments, and auctions are feature-gated OFF.
 
-You are reviewing only. You have no tools and cannot read the repository, so
-reason from the task statement and from general architecture and security
-judgment. Say plainly when something must be confirmed against the actual code
-or migration history rather than asserting it.
+You are reviewing only. You have no tools, but the coordinator provides a
+bounded read-only snapshot of the actual CloudMarket repository.
+
+Treat the supplied repository snapshot as the source of truth for
+repository-specific findings.
+
+Cite exact repository paths when the snapshot supports a finding.
+Never invent a file, route, schema, migration, or implementation detail.
+If the bounded snapshot does not contain enough evidence, say exactly what
+still requires confirmation.
 
 Focus on:
 - correctness and safety risks, especially anything touching production data,
@@ -198,25 +221,278 @@ function resolveClaudeCommand() {
     'claude.exe',
   );
 }
+function shouldSnapshotFile(
+  filePath,
+) {
+  const lower =
+    filePath.toLowerCase();
 
+  if (
+    lower === '.env' ||
+    (
+      lower.startsWith('.env.') &&
+      lower !== '.env.example'
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    lower === 'package-lock.json' ||
+    lower === 'pnpm-lock.yaml' ||
+    lower === 'yarn.lock'
+  ) {
+    return false;
+  }
+
+  if (
+    lower.startsWith(
+      'drizzle/meta/',
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|woff2?|ttf|otf|mp4|mov|avi|mp3)$/i
+      .test(filePath)
+  ) {
+    return false;
+  }
+
+  return (
+    /\.(ts|tsx|js|jsx|mjs|cjs|json|sql|md|css|scss|yml|yaml|toml)$/i
+      .test(filePath)
+  );
+}
+
+function snapshotPriority(
+  filePath,
+) {
+  const lower =
+    filePath.toLowerCase();
+
+  if (
+    lower === 'proxy.ts' ||
+    lower === 'middleware.ts' ||
+    lower.includes('/auth/') ||
+    lower.includes('/security/') ||
+    lower.includes('/schema/') ||
+    lower.includes('permission') ||
+    lower.includes('invite') ||
+    lower.includes('marketplace') ||
+    lower.includes('admin')
+  ) {
+    return 0;
+  }
+
+  if (
+    lower.startsWith('app/') ||
+    lower.startsWith('lib/') ||
+    lower.startsWith('drizzle/')
+  ) {
+    return 1;
+  }
+
+  if (
+    lower.startsWith('components/') ||
+    lower.startsWith('scripts/') ||
+    lower.endsWith('.md')
+  ) {
+    return 2;
+  }
+
+  return 3;
+}
+function buildGptRepositorySnapshot() {
+  const tracked =
+    execFileSync(
+      'git',
+      [
+        'ls-files',
+        '-z',
+      ],
+      {
+        cwd:
+          REVIEW_REPO,
+
+        encoding:
+          'utf8',
+
+        stdio: [
+          'ignore',
+          'pipe',
+          'pipe',
+        ],
+
+        maxBuffer:
+          10 * 1024 * 1024,
+      },
+    );
+
+  const files =
+    tracked
+      .split('\0')
+      .filter(Boolean)
+      .filter(
+        shouldSnapshotFile,
+      )
+      .sort(
+        (
+          left,
+          right,
+        ) => {
+          const priorityDiff =
+            snapshotPriority(left) -
+            snapshotPriority(right);
+
+          if (
+            priorityDiff !== 0
+          ) {
+            return priorityDiff;
+          }
+
+          return left.localeCompare(
+            right,
+          );
+        },
+      );
+
+  const fullTree =
+    files.join('\n');
+
+  const tree =
+    fullTree.length >
+    GPT_TREE_MAX_CHARS
+      ? `${
+          fullTree.slice(
+            0,
+            GPT_TREE_MAX_CHARS,
+          )
+        }\n...[file tree truncated]`
+      : fullTree;
+
+  const sections = [
+    [
+      'CLOUDMARKET READ-ONLY REPOSITORY SNAPSHOT',
+      `Target: ${REVIEW_REPO}`,
+      '',
+      'TRACKED TEXT FILE TREE:',
+      tree,
+    ].join('\n'),
+  ];
+
+  let used =
+    sections[0].length;
+
+  for (
+    const filePath
+    of files
+  ) {
+    let text;
+
+    try {
+      text =
+        readFileSync(
+          join(
+            REVIEW_REPO,
+            filePath,
+          ),
+          'utf8',
+        );
+    } catch {
+      continue;
+    }
+
+    if (
+      text.includes('\0')
+    ) {
+      continue;
+    }
+
+    if (
+      text.length >
+      GPT_FILE_MAX_CHARS
+    ) {
+      text =
+        `${
+          text.slice(
+            0,
+            GPT_FILE_MAX_CHARS,
+          )
+        }\n...[file truncated]`;
+    }
+
+    const block =
+      [
+        `===== FILE: ${filePath} =====`,
+        text,
+      ].join('\n');
+
+    if (
+      used +
+        block.length >
+      GPT_SNAPSHOT_MAX_CHARS
+    ) {
+      continue;
+    }
+
+    sections.push(
+      block,
+    );
+
+    used +=
+      block.length;
+  }
+
+  return sections.join(
+    '\n\n',
+  );
+}
 /** LANE 1 — GPT reviewer. No tools, so it cannot modify anything. */
 async function runGptLane(task) {
-  if (!process.env.OPENAI_API_KEY) {
+  if (
+    !process.env.OPENAI_API_KEY
+  ) {
     throw new Error(
       'OPENAI_API_KEY is not set in this environment; the GPT lane cannot run.',
     );
   }
 
-  const agent = new Agent({
-    name: 'CloudMarket GPT Reviewer',
-    model: GPT_MODEL,
-    instructions: GPT_INSTRUCTIONS,
-    tools: [],
-  });
+  const repositorySnapshot =
+    buildGptRepositorySnapshot();
 
-  const result = await run(agent, task);
-  const output = (result.finalOutput ?? '').toString().trim();
-  return output || '(GPT returned no text output.)';
+  const agent =
+    new Agent({
+      name:
+        'CloudMarket GPT Reviewer',
+      model:
+        GPT_MODEL,
+      instructions:
+        GPT_INSTRUCTIONS,
+      tools: [],
+    });
+
+  const result =
+    await run(
+      agent,
+      [
+        'TASK:',
+        task,
+        '',
+        repositorySnapshot,
+      ].join('\n'),
+    );
+
+  const output =
+    (result.finalOutput ?? '')
+      .toString()
+      .trim();
+
+  return (
+    output ||
+    '(GPT returned no text output.)'
+  );
 }
 
 /** LANE 2 — Claude Code reviewer, non-interactive and turn-limited. */
@@ -345,7 +621,9 @@ async function main() {
   console.log(
     `Review target: ${REVIEW_REPO}`,
   );
-  console.log(`Lane 1: @openai/agents (${GPT_MODEL})`);
+    console.log(
+    `Lane 1: @openai/agents (${GPT_MODEL}) — bounded read-only repository snapshot`,
+  );
   console.log(
     `Lane 2: claude -p --max-turns ${CLAUDE_MAX_TURNS} — plan/read-only mode, ` +
       `tools limited to ${CLAUDE_TOOLS}, no MCP, no hooks/plugins/skills, no Chrome`,
