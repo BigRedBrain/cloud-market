@@ -17,12 +17,19 @@
  * DDL, and never touches Vercel project settings. The production branch is
  * used strictly as the copy-on-write parent.
  */
-import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 
-const API = 'https://console.neon.tech/api/v2'
+import {
+  api,
+  assertEndpointShape,
+  connectionUri as fetchConnectionUri,
+  findDefaultBranch,
+  fingerprint,
+  listBranches,
+  requireApiKey,
+  resolveProject as resolveNeonProject,
+} from './neon-api.mjs'
 
-const API_KEY = process.env.NEON_API_KEY
 const PROJECT_NAME = process.env.NEON_PROJECT_NAME ?? 'cloud-market'
 const PROJECT_ID = process.env.NEON_PROJECT_ID
 const BRANCH_NAME = process.env.NEON_DEV_BRANCH ?? 'development'
@@ -30,68 +37,13 @@ const DATABASE = process.env.NEON_DATABASE ?? 'cloudmarket'
 const ROLE = process.env.NEON_ROLE ?? 'neondb_owner'
 const ENV_FILE = '.env.local'
 
-if (!API_KEY) {
-  console.error(
-    'NEON_API_KEY is not set.\n' +
-      'Create one at https://console.neon.tech/app/settings/api-keys, then:\n' +
-      '  NEON_API_KEY=neon_api_... node scripts/neon-dev-branch.mjs',
-  )
-  process.exit(1)
-}
+const API_KEY = requireApiKey('scripts/neon-dev-branch.mjs')
 
-/** Truncated digest of a hostname — matches the scheme used by /api/health. */
-function fingerprint(connectionString) {
-  try {
-    return createHash('sha256')
-      .update(new URL(connectionString).hostname)
-      .digest('hex')
-      .slice(0, 12)
-  } catch {
-    return null
-  }
-}
-
-async function api(path, init = {}) {
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${API_KEY}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      ...(init.headers ?? {}),
-    },
-  })
-
-  const text = await res.text()
-  if (!res.ok) {
-    throw new Error(`${init.method ?? 'GET'} ${path} -> ${res.status}: ${text}`)
-  }
-  return text ? JSON.parse(text) : {}
-}
-
-async function resolveProject() {
-  if (PROJECT_ID) return { id: PROJECT_ID, name: '(by id)' }
-
-  const { projects } = await api('/projects')
-  const match = projects.filter((p) => p.name === PROJECT_NAME)
-
-  if (match.length === 0) {
-    const names = projects.map((p) => p.name).join(', ') || '(none)'
-    throw new Error(
-      `No Neon project named "${PROJECT_NAME}". Available: ${names}. ` +
-        'Set NEON_PROJECT_NAME or NEON_PROJECT_ID.',
-    )
-  }
-  if (match.length > 1) {
-    throw new Error(
-      `${match.length} Neon projects named "${PROJECT_NAME}". Set NEON_PROJECT_ID to disambiguate.`,
-    )
-  }
-  return match[0]
-}
+const resolveProject = () =>
+  resolveNeonProject(API_KEY, { projectId: PROJECT_ID, projectName: PROJECT_NAME })
 
 async function findOrCreateBranch(projectId) {
-  const { branches } = await api(`/projects/${projectId}/branches`)
+  const branches = await listBranches(API_KEY, projectId)
 
   const existing = branches.find((b) => b.name === BRANCH_NAME)
   if (existing) {
@@ -110,11 +62,10 @@ async function findOrCreateBranch(projectId) {
     return existing
   }
 
-  const parent = branches.find((b) => b.default) ?? branches.find((b) => b.primary)
-  if (!parent) throw new Error('Could not identify the default (production) branch.')
+  const parent = findDefaultBranch(branches)
 
   console.log(`Creating branch "${BRANCH_NAME}" from "${parent.name}" (copy-on-write)…`)
-  const created = await api(`/projects/${projectId}/branches`, {
+  const created = await api(API_KEY, `/projects/${projectId}/branches`, {
     method: 'POST',
     body: JSON.stringify({
       branch: { name: BRANCH_NAME, parent_id: parent.id },
@@ -125,29 +76,12 @@ async function findOrCreateBranch(projectId) {
   return created.branch
 }
 
-async function connectionUri(projectId, branchId, pooled) {
-  const params = new URLSearchParams({
-    branch_id: branchId,
-    database_name: DATABASE,
-    role_name: ROLE,
-    pooled: String(pooled),
+const connectionUri = (projectId, branchId, pooled) =>
+  fetchConnectionUri(API_KEY, projectId, branchId, {
+    database: DATABASE,
+    role: ROLE,
+    pooled,
   })
-
-  // A freshly created endpoint takes a moment to become routable.
-  let lastError
-  for (let attempt = 1; attempt <= 12; attempt += 1) {
-    try {
-      const { uri } = await api(`/projects/${projectId}/connection_uri?${params}`)
-      if (uri) return uri
-    } catch (error) {
-      lastError = error
-    }
-    await new Promise((r) => setTimeout(r, 2500))
-  }
-  throw new Error(
-    `Timed out fetching the ${pooled ? 'pooled' : 'direct'} connection URI. ${lastError ?? ''}`,
-  )
-}
 
 /** Rewrite only the two database lines, preserving comments and every other key. */
 function updateEnvFile(pooledUri, directUri) {
@@ -181,12 +115,7 @@ async function main() {
   const direct = await connectionUri(project.id, branch.id, false)
 
   // Endpoint shape is asserted here so a bad pair never reaches .env.local.
-  if (!new URL(pooled).hostname.includes('-pooler')) {
-    throw new Error('Expected a pooled host (containing "-pooler") for DATABASE_URL.')
-  }
-  if (new URL(direct).hostname.includes('-pooler')) {
-    throw new Error('Expected a direct host (no "-pooler") for DATABASE_URL_UNPOOLED.')
-  }
+  assertEndpointShape(pooled, direct)
 
   updateEnvFile(pooled, direct)
 
