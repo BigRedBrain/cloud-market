@@ -164,8 +164,8 @@ export const PRODUCTION_ROLE = 'neondb_owner'
  * flags must read explicitly `false` — an omitted, null, or non-boolean flag is
  * unproven, and this script does not migrate production on an inferred negative.
  */
-export const RESTORE_BRANCH_ID = 'br-rough-dew-axs1gf3p'
-export const RESTORE_BRANCH_NAME = 'restore-pre-0016-0019-1787540740418'
+export const RESTORE_BRANCH_ID = 'br-damp-bird-axk2dy92'
+export const RESTORE_BRANCH_NAME = 'restore-pre-0016-0019-1787595530198'
 export const RESTORE_PARENT_BRANCH_ID = 'br-morning-dust-axka99k2'
 
 /* ======================================================== the authorization = */

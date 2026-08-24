@@ -223,10 +223,10 @@ check(
   PRODUCTION_HEALTH_URL === 'https://cloudmarket.cc/api/health' && HEALTH_REDIRECT_POLICY === 'error',
   `${PRODUCTION_HEALTH_URL} / ${HEALTH_REDIRECT_POLICY}`,
 )
-check('the restore branch id is the hard-coded one', RESTORE_BRANCH_ID === 'br-rough-dew-axs1gf3p', RESTORE_BRANCH_ID)
+check('the restore branch id is the hard-coded one', RESTORE_BRANCH_ID === 'br-damp-bird-axk2dy92', RESTORE_BRANCH_ID)
 check(
   'the restore branch name is the hard-coded one',
-  RESTORE_BRANCH_NAME === 'restore-pre-0016-0019-1787540740418',
+  RESTORE_BRANCH_NAME === 'restore-pre-0016-0019-1787595530198',
   RESTORE_BRANCH_NAME,
 )
 check(
@@ -451,7 +451,7 @@ check(
   refused(evaluateRestoreBranch({ branches: [productionBranch(), without(restoreBranchFixture(), 'primary')] })) &&
     refused(restoreOf({ primary: null })),
 )
-check('a restore branch with the wrong name refuses', refused(restoreOf({ name: 'restore-pre-0016-0019-1787540740419' })))
+check('a restore branch with the wrong name refuses', refused(restoreOf({ name: 'restore-pre-0016-0019-1787595530199' })))
 check('a restore branch with the wrong parent refuses', refused(restoreOf({ parent_id: 'br-somewhere-else-0000aaaa' })))
 check(
   'a restore branch that is not in the project at all refuses',
