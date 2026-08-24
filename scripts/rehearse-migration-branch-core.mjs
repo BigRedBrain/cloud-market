@@ -716,6 +716,575 @@ export function evaluateApplied({ inventory, dropped, observedKeys }) {
   return { problems }
 }
 
+/* ================== the one equivalence exception, for 0018 and nothing else */
+
+/**
+ * THE ONLY EXCEPTION TO "PRE-EXISTING MEANS BLOCKING", AND IT PROVES ITSELF.
+ *
+ * The general rule above is unchanged, and stays unchanged: an object that
+ * exists on the clone while the migration declaring it is unrecorded is drift,
+ * and `evaluateDrift` reports it as blocking no matter which migration it
+ * belongs to. Nothing in this section edits that function, relaxes it, or is
+ * consulted by it.
+ *
+ * ONE CONFIRMED STATE IS RECONCILABLE RATHER THAN DANGEROUS. A clone whose
+ * ledger is exactly 0000 … 0015, whose pending stack is exactly 0016 … 0019,
+ * whose ONLY pre-existing pending objects are `strain_type.hybrid_i` and
+ * `strain_type.hybrid_s`, whose repository copy of 0018 still carries exactly
+ * the two intended `ADD VALUE IF NOT EXISTS … BEFORE 'cbd'` operations and no
+ * other executable statement, and whose live `public.strain_type` already reads
+ * exactly indica, sativa, hybrid, hybrid_i, hybrid_s, cbd — that clone differs
+ * from the repository in 0018's ledger row alone, and 0018's own statements are
+ * idempotent no-ops against it that leave the enum in precisely the sequence the
+ * repository declares. The whole pending stack may then go through the ONE gated
+ * `drizzle-kit migrate` exactly as it always does.
+ *
+ * FIVE PROOFS, ALL REQUIRED, NONE INFERRED FROM ANOTHER
+ *
+ *   1. the recorded ledger is exactly RECORDED_TAGS, in order;
+ *   2. the derived pending stack is exactly PENDING_TAGS, in order;
+ *   3. the complete set of pre-existing pending objects is exactly the two
+ *      leaning enum values — one is not enough, three is too many, and each must
+ *      be declared by 0018 with idempotent (`silent`) semantics;
+ *   4. the repository's 0018 source PARSES to exactly those two operations, in
+ *      that order, with that type, those labels, that anchor, and no additional
+ *      executable statement — proved by a tokenizer and a grammar, never by a
+ *      substring test, and cross-checked against `extractDeclaredObjects`;
+ *   5. a direct catalog reading of the clone reports the COMPLETE ordered value
+ *      sequence of `public.strain_type`, and it is exactly the expected six.
+ *
+ * EVERY OTHER ANSWER REFUSES. Evidence that is missing, null, malformed,
+ * ambiguous, partially observed, reordered, or additional is a refusal.
+ * `equivalent` is true only when there are no problems AND all five proofs were
+ * positively established, so a caller cannot reach the accepting branch by
+ * supplying less evidence.
+ *
+ * WHAT THIS IS NOT. It is not a repair, not a ledger row, not a way to skip
+ * 0018, not a per-file executor, and not a second migration path. It decides one
+ * boolean; the run it belongs to still applies the whole stack once, through the
+ * repository's own command, and still reconciles the ledger through 0019
+ * afterwards.
+ */
+
+/** The migration this exception is scoped to. There is no second one. */
+export const STRAIN_EQUIVALENCE_TAG = '0018_strain_leaning_types'
+
+/** The complete, ordered value sequence `public.strain_type` must already hold. */
+export const STRAIN_TYPE_EXPECTED_ORDER = Object.freeze([
+  'indica',
+  'sativa',
+  'hybrid',
+  'hybrid_i',
+  'hybrid_s',
+  'cbd',
+])
+
+/** The exact executable semantics 0018 is permitted to carry, in this order. */
+export const STRAIN_EQUIVALENCE_OPERATIONS = Object.freeze([
+  Object.freeze({
+    schema: 'public',
+    type: 'strain_type',
+    ifNotExists: true,
+    value: 'hybrid_i',
+    position: 'before',
+    anchor: 'cbd',
+  }),
+  Object.freeze({
+    schema: 'public',
+    type: 'strain_type',
+    ifNotExists: true,
+    value: 'hybrid_s',
+    position: 'before',
+    anchor: 'cbd',
+  }),
+])
+
+/**
+ * The direct catalog question, asked of the disposable clone.
+ *
+ * `enumsortorder` is the enum's own ordering, which is the thing that matters:
+ * `hybrid_i` existing says nothing about WHERE it sits, and 0018's whole content
+ * is a position. Read-only, and about one type only.
+ */
+export const STRAIN_TYPE_ORDER_QUERY = `select e.enumlabel as label
+                 from pg_enum e
+                 join pg_type t on t.oid = e.enumtypid
+                 join pg_namespace n on n.oid = t.typnamespace
+                where n.nspname = 'public' and t.typname = 'strain_type'
+                order by e.enumsortorder asc`
+
+/**
+ * SQL, as tokens, with comments and whitespace removed only where they are
+ * PROVEN not to be part of a value.
+ *
+ * WHY NOT A REGEX. `stripComments` above deletes `--…` wherever it appears,
+ * which is right for inventorying declared objects and wrong for deciding
+ * whether a file's executable meaning is unchanged: it would also delete a `--`
+ * that a string literal contains, silently rewriting the label being added. And
+ * a substring test — "does the file contain these two statements?" — is
+ * satisfied by a file that contains them AND a `DROP TABLE` after them.
+ *
+ * So the text is scanned once, character by character, and every construct is
+ * classified: a single-quoted literal (with `''` for an embedded quote), a
+ * double-quoted identifier (with `""`), a `--` line comment, a nested `/* … *\/`
+ * block comment, a word, a dot, or a statement-terminating semicolon. Comments
+ * and whitespace are dropped only once they have been recognised as such —
+ * OUTSIDE a literal — which is what makes "they do not alter execution" a
+ * property of the scan rather than an assumption about the file.
+ *
+ * ANYTHING ELSE REFUSES. An unterminated literal, an unterminated block comment,
+ * a dollar-quoted body, an `E''` escape string, a parenthesis, a comma, an
+ * operator — any character this grammar does not model — ends the scan with a
+ * problem and no statements, because a token this parser cannot name is a
+ * meaning it cannot prove.
+ */
+export function tokenizeMigrationSql(sql) {
+  if (typeof sql !== 'string') {
+    return {
+      problems: ['No SQL text was supplied, so nothing about its executable meaning can be proved.'],
+      statements: null,
+    }
+  }
+
+  const statements = []
+  let tokens = []
+  let at = 0
+
+  const isSpace = (c) => c === ' ' || c === '\t' || c === '\r' || c === '\n' || c === '\f' || c === '\v'
+  const isWordStart = (c) => /[A-Za-z_]/.test(c)
+  const isWordPart = (c) => /[A-Za-z0-9_]/.test(c)
+  const refuse = (message) => ({ problems: [message], statements: null })
+
+  /** A quoted run, `close`-delimited, where a doubled delimiter is the delimiter. */
+  const readQuoted = (start, quote) => {
+    let scan = start + 1
+    let value = ''
+    while (scan < sql.length) {
+      if (sql[scan] === quote) {
+        if (sql[scan + 1] === quote) {
+          value += quote
+          scan += 2
+          continue
+        }
+        return { value, next: scan + 1 }
+      }
+      value += sql[scan]
+      scan += 1
+    }
+    return null
+  }
+
+  while (at < sql.length) {
+    const c = sql[at]
+
+    if (isSpace(c)) {
+      at += 1
+      continue
+    }
+
+    if (c === '-' && sql[at + 1] === '-') {
+      const end = sql.indexOf('\n', at)
+      at = end === -1 ? sql.length : end + 1
+      continue
+    }
+
+    if (c === '/' && sql[at + 1] === '*') {
+      let depth = 1
+      let scan = at + 2
+      while (scan < sql.length && depth > 0) {
+        if (sql[scan] === '/' && sql[scan + 1] === '*') {
+          depth += 1
+          scan += 2
+          continue
+        }
+        if (sql[scan] === '*' && sql[scan + 1] === '/') {
+          depth -= 1
+          scan += 2
+          continue
+        }
+        scan += 1
+      }
+      if (depth !== 0) {
+        return refuse('A block comment is never closed, so where the executable text resumes is unknown.')
+      }
+      at = scan
+      continue
+    }
+
+    if (c === "'") {
+      const literal = readQuoted(at, "'")
+      if (literal === null) return refuse('A string literal is never closed, so the file cannot be read.')
+      tokens.push({ kind: 'string', value: literal.value })
+      at = literal.next
+      continue
+    }
+
+    if (c === '"') {
+      const name = readQuoted(at, '"')
+      if (name === null) return refuse('A quoted identifier is never closed, so the file cannot be read.')
+      /* Quoted identifiers keep their case, exactly as PostgreSQL keeps it. */
+      tokens.push({ kind: 'name', value: name.value })
+      at = name.next
+      continue
+    }
+
+    if (isWordStart(c)) {
+      let scan = at
+      while (scan < sql.length && isWordPart(sql[scan])) scan += 1
+      /* Unquoted words fold to lower case, exactly as PostgreSQL folds them. */
+      tokens.push({ kind: 'word', value: sql.slice(at, scan).toLowerCase() })
+      at = scan
+      continue
+    }
+
+    if (c === '.') {
+      tokens.push({ kind: 'dot', value: '.' })
+      at += 1
+      continue
+    }
+
+    if (c === ';') {
+      statements.push(tokens)
+      tokens = []
+      at += 1
+      continue
+    }
+
+    return refuse(
+      `The character ${JSON.stringify(c)} at offset ${at} is not something this parser models, so the ` +
+        'statement it belongs to cannot be proved equivalent to anything.',
+    )
+  }
+
+  if (tokens.length > 0) statements.push(tokens)
+  return { problems: [], statements }
+}
+
+/**
+ * One `ALTER TYPE … ADD VALUE …` statement, or nothing.
+ *
+ * The whole token list must be consumed: a statement with a tail is a statement
+ * whose meaning has not been read, so it is not matched at all rather than
+ * matched loosely. `BEFORE`/`AFTER` and `IF NOT EXISTS` are PARSED rather than
+ * required, so that a changed anchor direction or a dropped idempotence guard
+ * becomes a precise refusal from the comparison below instead of an unreadable
+ * statement.
+ */
+function matchAlterTypeAddValue(tokens) {
+  let at = 0
+
+  const takeWord = (expected) => {
+    const token = tokens[at]
+    if (!token || token.kind !== 'word' || token.value !== expected) return false
+    at += 1
+    return true
+  }
+  const takeIdentifier = () => {
+    const token = tokens[at]
+    if (!token || (token.kind !== 'word' && token.kind !== 'name')) return null
+    at += 1
+    return token.value
+  }
+  const takeString = () => {
+    const token = tokens[at]
+    if (!token || token.kind !== 'string') return null
+    at += 1
+    return token.value
+  }
+
+  if (!takeWord('alter') || !takeWord('type')) return null
+
+  const first = takeIdentifier()
+  if (first === null) return null
+  let schema = null
+  let type = first
+  if (tokens[at]?.kind === 'dot') {
+    at += 1
+    const qualified = takeIdentifier()
+    if (qualified === null) return null
+    schema = first
+    type = qualified
+  }
+
+  if (!takeWord('add') || !takeWord('value')) return null
+
+  let ifNotExists = false
+  if (tokens[at]?.kind === 'word' && tokens[at].value === 'if') {
+    if (!takeWord('if') || !takeWord('not') || !takeWord('exists')) return null
+    ifNotExists = true
+  }
+
+  const value = takeString()
+  if (value === null) return null
+
+  let position = 'end'
+  let anchor = null
+  if (tokens[at]?.kind === 'word' && (tokens[at].value === 'before' || tokens[at].value === 'after')) {
+    position = tokens[at].value
+    at += 1
+    anchor = takeString()
+    if (anchor === null) return null
+  }
+
+  if (at !== tokens.length) return null
+
+  return { schema, type, ifNotExists, value, position, anchor }
+}
+
+/** A statement, in words, for a refusal that has to say what it read. */
+export function describeAddValueOperation(operation) {
+  return (
+    `ALTER TYPE ${operation.schema === null ? '' : `${operation.schema}.`}${operation.type} ` +
+    `ADD VALUE${operation.ifNotExists ? ' IF NOT EXISTS' : ''} '${operation.value}'` +
+    (operation.position === 'end' ? '' : ` ${operation.position.toUpperCase()} '${operation.anchor}'`)
+  )
+}
+
+/**
+ * The complete executable content of a migration file, as operations — or
+ * nothing at all.
+ *
+ * A file that contains one statement this grammar cannot name yields NO
+ * operations, not "the ones it understood". Partial comprehension is exactly
+ * the failure mode a substring test has.
+ */
+export function parseAddValueScript(sql) {
+  const { problems, statements } = tokenizeMigrationSql(sql)
+  if (statements === null) return { problems, operations: null }
+
+  const refusals = []
+  const operations = []
+
+  statements.forEach((tokens, index) => {
+    /* `;;`, or a trailing `;`, is an empty statement: no tokens, no execution. */
+    if (tokens.length === 0) return
+    const operation = matchAlterTypeAddValue(tokens)
+    if (operation === null) {
+      refusals.push(
+        `Statement ${index + 1} is not a provable "ALTER TYPE … ADD VALUE …" and this parser will not ` +
+          'guess at it. Anything else in the file — another DDL statement, a longer form of this one, or ' +
+          'a tail after it — is an additional migration semantic.',
+      )
+      return
+    }
+    operations.push(operation)
+  })
+
+  if (refusals.length > 0) return { problems: refusals, operations: null }
+  if (operations.length === 0) {
+    return { problems: ['The file carries no executable statement at all.'], operations: null }
+  }
+  return { problems: [], operations }
+}
+
+const sameAddValueOperation = (a, b) =>
+  a.schema === b.schema &&
+  a.type === b.type &&
+  a.ifNotExists === b.ifNotExists &&
+  a.value === b.value &&
+  a.position === b.position &&
+  a.anchor === b.anchor
+
+/**
+ * The ordered enum labels a catalog reading reports, or null.
+ *
+ * A reading that is not a list, is empty, or carries a row without a usable
+ * label is NOT a partial answer to be worked with — it is an unanswered
+ * question, and the exception refuses on it.
+ */
+export function normalizeCatalogEnumOrder(rows) {
+  if (!Array.isArray(rows)) {
+    return {
+      problems: [
+        'The clone was not asked, or did not answer, for the complete ordered values of ' +
+          'public.strain_type. A missing catalog observation is a refusal, never a pass.',
+      ],
+      labels: null,
+    }
+  }
+  if (rows.length === 0) {
+    return {
+      problems: ['The clone reported no public.strain_type values at all, which cannot be the truth about it.'],
+      labels: null,
+    }
+  }
+
+  const labels = []
+  for (const row of rows) {
+    const label = typeof row === 'string' ? row : row?.label
+    if (typeof label !== 'string' || label.length === 0) {
+      return {
+        problems: [
+          'A public.strain_type row carried no usable label, so the observed value sequence is ' +
+            'malformed and nothing may be concluded from it.',
+        ],
+        labels: null,
+      }
+    }
+    labels.push(label)
+  }
+  return { problems: [], labels }
+}
+
+/**
+ * The exception itself: five independent proofs, or a refusal.
+ *
+ * @param {object} input
+ * @param {string[]|null} input.recordedTags   tags reconciled out of the clone ledger
+ * @param {string[]|null} input.pendingTags    the stack derived from that ledger
+ * @param {Array|null} input.driftPresent      every pre-existing pending object, from evaluateDrift
+ * @param {string|undefined} input.source      the repository text of 0018
+ * @param {Array|null} input.strainTypeRows    STRAIN_TYPE_ORDER_QUERY's rows, unmodified
+ */
+export function evaluateStrainLeaningEquivalence({
+  recordedTags,
+  pendingTags,
+  driftPresent,
+  source,
+  strainTypeRows,
+}) {
+  const problems = []
+  const proofs = { ledger: false, pending: false, preExisting: false, source: false, catalog: false }
+
+  /* ---- 1. the ledger is exactly 0000 … 0015 ------------------------------ */
+  if (!Array.isArray(recordedTags)) {
+    problems.push('No ledger evidence was supplied to the 0018 equivalence exception, so it refuses.')
+  } else if (recordedTags.join(',') !== RECORDED_TAGS.join(',')) {
+    problems.push(
+      `The exception applies only to a ledger of exactly [${RECORDED_TAGS.join(', ')}]; this clone ` +
+        `records [${recordedTags.join(', ') || 'nothing'}].`,
+    )
+  } else {
+    proofs.ledger = true
+  }
+
+  /* ---- 2. the pending stack is exactly 0016 … 0019 ---------------------- */
+  if (!Array.isArray(pendingTags)) {
+    problems.push('No pending-stack evidence was supplied to the 0018 equivalence exception, so it refuses.')
+  } else if (pendingTags.join(',') !== PENDING_TAGS.join(',')) {
+    problems.push(
+      `The exception applies only to a pending stack of exactly [${PENDING_TAGS.join(', ')}]; this run ` +
+        `derived [${pendingTags.join(', ') || 'nothing'}].`,
+    )
+  } else {
+    proofs.pending = true
+  }
+
+  /* ---- 3. the pre-existing set is exactly the two leaning values -------- */
+  const expectedKeys = STRAIN_LEANING_VALUES.map((value) => objectKey.enumValue('strain_type', value))
+  const expectedKeyList = [...expectedKeys].sort().join(' + ')
+
+  if (!Array.isArray(driftPresent)) {
+    problems.push('No inventory of pre-existing objects was supplied, so the exception cannot bound what drifted.')
+  } else {
+    const keys = driftPresent.map((object) => (typeof object?.key === 'string' ? object.key : null))
+    if (keys.some((key) => key === null)) {
+      problems.push('A pre-existing object was reported without a usable key, so the drifted set is unreadable.')
+    } else if (keys.length !== expectedKeys.length || [...keys].sort().join(' + ') !== expectedKeyList) {
+      problems.push(
+        `The exception covers exactly ${expectedKeyList} and nothing else. The clone's complete ` +
+          `pre-existing set is [${keys.join(', ') || 'empty'}], which is a different state and blocks.`,
+      )
+    } else if (
+      !driftPresent.every(
+        (object) => object.tag === STRAIN_EQUIVALENCE_TAG && object.conflictKind === 'silent',
+      )
+    ) {
+      problems.push(
+        `Both pre-existing values must be declared by "${STRAIN_EQUIVALENCE_TAG}" with idempotent ` +
+          '(ADD VALUE IF NOT EXISTS) semantics; they are not, so re-running the stack is not a no-op.',
+      )
+    } else {
+      proofs.preExisting = true
+    }
+  }
+
+  /* ---- 4. the repository's 0018 is provably the two intended operations - */
+  const parsed = parseAddValueScript(source)
+  if (parsed.operations === null) {
+    problems.push(
+      `The repository copy of ${STRAIN_EQUIVALENCE_TAG}.sql cannot be proved equivalent: ` +
+        parsed.problems.join(' '),
+    )
+  } else if (
+    parsed.operations.length !== STRAIN_EQUIVALENCE_OPERATIONS.length ||
+    !parsed.operations.every((operation, index) =>
+      sameAddValueOperation(operation, STRAIN_EQUIVALENCE_OPERATIONS[index]),
+    )
+  ) {
+    problems.push(
+      `${STRAIN_EQUIVALENCE_TAG}.sql no longer carries exactly [` +
+        `${STRAIN_EQUIVALENCE_OPERATIONS.map(describeAddValueOperation).join('; ')}]. It carries [` +
+        `${parsed.operations.map(describeAddValueOperation).join('; ')}], which is a different migration.`,
+    )
+  } else {
+    /*
+     * Cross-checked against the declared-object extractor the drift rule itself
+     * uses, so the exception cannot be satisfied by a source form that the
+     * inventory would read differently from this parser.
+     */
+    let declaredKeys = null
+    try {
+      declaredKeys = extractDeclaredObjects(STRAIN_EQUIVALENCE_TAG, source)
+        .map((object) => object.key)
+        .sort()
+        .join(' + ')
+    } catch {
+      declaredKeys = null
+    }
+    if (declaredKeys !== expectedKeyList) {
+      problems.push(
+        `${STRAIN_EQUIVALENCE_TAG}.sql declares [${declaredKeys ?? 'nothing readable'}] to the drift ` +
+          `inventory, not ${expectedKeyList}. The two readings of the file must agree exactly.`,
+      )
+    } else {
+      proofs.source = true
+    }
+  }
+
+  /* ---- 5. the clone's own catalog, complete and in order ---------------- */
+  const catalog = normalizeCatalogEnumOrder(strainTypeRows)
+  if (catalog.labels === null) {
+    problems.push(...catalog.problems)
+  } else if (catalog.labels.join(',') !== STRAIN_TYPE_EXPECTED_ORDER.join(',')) {
+    problems.push(
+      `The clone's public.strain_type reads [${catalog.labels.join(', ')}]; the exception requires ` +
+        `exactly [${STRAIN_TYPE_EXPECTED_ORDER.join(', ')}], in that order, with nothing missing and ` +
+        'nothing extra.',
+    )
+  } else {
+    proofs.catalog = true
+  }
+
+  /*
+   * BOTH CONDITIONS, ALWAYS. "No problems" alone would accept an input shape
+   * that reached no branch; "all proofs" alone would accept a state that also
+   * produced a problem. Neither can happen, and it costs one `&&` to say so.
+   */
+  const equivalent = problems.length === 0 && Object.values(proofs).every((proved) => proved === true)
+
+  return { problems, equivalent, proofs }
+}
+
+/**
+ * What the exception proved, in the words of the evidence — and only when it
+ * actually proved it. A description is not available for a state that refused.
+ */
+export function describeStrainLeaningEquivalence(equivalence) {
+  if (equivalence?.equivalent !== true) return []
+  return [
+    `the ledger is exactly ${RECORDED_TAGS[0]} … ${RECORDED_TAGS[RECORDED_TAGS.length - 1]} and the ` +
+      `pending stack is exactly ${PENDING_TAGS.join(', ')}`,
+    `the complete pre-existing set is exactly ${STRAIN_LEANING_VALUES.map((value) => `strain_type.${value}`).join(' and ')}, ` +
+      `both declared by "${STRAIN_EQUIVALENCE_TAG}" with ADD VALUE IF NOT EXISTS`,
+    `${STRAIN_EQUIVALENCE_TAG}.sql parses to exactly ` +
+      `[${STRAIN_EQUIVALENCE_OPERATIONS.map(describeAddValueOperation).join('; ')}] and nothing else executable`,
+    `the clone's public.strain_type reads exactly ${STRAIN_TYPE_EXPECTED_ORDER.join(', ')}`,
+    'so 0018 is a proven no-op against this clone: the whole pending stack goes through the one gated ' +
+      'drizzle-kit migrate unchanged, and the ledger is reconciled through 0019 afterwards',
+  ]
+}
+
 /* ========================================================== carried data === */
 
 /**

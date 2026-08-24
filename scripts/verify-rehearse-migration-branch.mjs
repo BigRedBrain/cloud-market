@@ -46,7 +46,11 @@ import {
   REDACTED,
   REHEARSAL_BRANCH_PREFIX,
   REQUIRED_PROBES,
+  STRAIN_EQUIVALENCE_OPERATIONS,
+  STRAIN_EQUIVALENCE_TAG,
   STRAIN_LEANING_VALUES,
+  STRAIN_TYPE_EXPECTED_ORDER,
+  STRAIN_TYPE_ORDER_QUERY,
   assertMigrationCommand,
   buildObservedKeys,
   buildPendingInventory,
@@ -57,8 +61,10 @@ import {
   createMigrationGate,
   decodeDigestRows,
   derivePendingStack,
+  describeAddValueOperation,
   describeCarriedEvidence,
   describeOriginSafely,
+  describeStrainLeaningEquivalence,
   digestFieldSql,
   encodeDigestField,
   encodeDigestRow,
@@ -74,16 +80,20 @@ import {
   evaluateHealthIdentity,
   evaluateMediaBackfill,
   evaluateProbeOutcomes,
+  evaluateStrainLeaningEquivalence,
   extractDeclaredObjects,
   interpretBranchFlag,
   isNonImageKind,
   migrationHash,
+  normalizeCatalogEnumOrder,
   objectKey,
+  parseAddValueScript,
   reconcileLedger,
   redactSecrets,
   rehearsalBranchName,
   resolveCleanupTarget,
   resolveHealthOrigin,
+  tokenizeMigrationSql,
   withProbeTransaction,
 } from './rehearse-migration-branch-core.mjs'
 import {
@@ -2348,6 +2358,432 @@ section('[22] The runner names itself from its own module URL, so recovery instr
   check(
     'nothing in the runner still names the runner by a quoted relative path',
     !/['"`]scripts\/rehearse-migration-branch\.mjs['"`]/.test(runnerSource),
+  )
+}
+
+/* ===== 23. THE ONE 0018 EQUIVALENCE EXCEPTION, AND EVERY WAY IT REFUSES === */
+section('[23] Pre-existing 0018 values reconcile only when every condition is independently proven')
+
+{
+  /*
+   * WHAT THIS SECTION IS ABOUT, AND WHAT IT IS NOT.
+   *
+   * Section [5] proves the general rule and keeps proving it: an object that
+   * exists while its migration is unrecorded is blocking drift, never evidence.
+   * Nothing here weakens that. What is added is one narrowly scoped, fully
+   * proved reconciliation — the confirmed `strain_type.hybrid_i` /
+   * `strain_type.hybrid_s` state — and the point of the section is the refusals:
+   * every neighbouring state, differing by one label, one position, one object,
+   * one ledger row, one statement, or one unread catalog answer, must still
+   * block.
+   *
+   * The accepted fixture is deliberately not a fixture at all: it is the
+   * committed 0018 file, the real declared-object inventory, and the real drift
+   * evaluation of a clone carrying exactly those two values.
+   */
+  const source0018 = sources[STRAIN_EQUIVALENCE_TAG]
+  const strainKeys = STRAIN_LEANING_VALUES.map((value) => objectKey.enumValue('strain_type', value))
+  const preExisting = inventory.filter((object) => strainKeys.includes(object.key))
+  const unrelated = inventory.find((object) => object.key === objectKey.table('marketplace_access'))
+  const orderedRows = STRAIN_TYPE_EXPECTED_ORDER.map((label) => ({ label }))
+  const rowsOf = (...labels) => labels.map((label) => ({ label }))
+
+  const accepted = () => ({
+    recordedTags: [...RECORDED_TAGS],
+    pendingTags: [...PENDING_TAGS],
+    driftPresent: preExisting,
+    source: source0018,
+    strainTypeRows: orderedRows,
+  })
+  const evaluate = (over = {}) => evaluateStrainLeaningEquivalence({ ...accepted(), ...over })
+  const refuses = (over, fragment) => {
+    const result = evaluate(over)
+    return (
+      result.equivalent === false &&
+      result.problems.length > 0 &&
+      (fragment === undefined || has(result.problems, fragment))
+    )
+  }
+
+  /** One `ALTER TYPE … ADD VALUE …` statement, varied one property at a time. */
+  const alterStatement = ({
+    type = '"public"."strain_type"',
+    guard = 'IF NOT EXISTS ',
+    value = 'hybrid_i',
+    tail = "BEFORE 'cbd'",
+  } = {}) => `ALTER TYPE ${type}\nADD VALUE ${guard}'${value}'${tail === '' ? '' : ` ${tail}`};`
+  const pair = (first, second) => `${first}\n--> statement-breakpoint\n${second}`
+  const secondStatement = alterStatement({ value: 'hybrid_s' })
+
+  /* ---- the accepted state, and the fact that it is the real one --------- */
+  const proven = evaluate()
+  check(
+    'the exact accepted equivalence state is accepted',
+    proven.equivalent === true && proven.problems.length === 0,
+    proven.problems.join('; '),
+  )
+  check(
+    'all five proofs are established independently, and all five are required',
+    Object.keys(proven.proofs).length === 5 && Object.values(proven.proofs).every((proved) => proved === true),
+  )
+  check(
+    'the accepted state is built from the committed 0018 and the real declared inventory',
+    source0018 === repoFile('drizzle/0018_strain_leaning_types.sql') &&
+      preExisting.length === 2 &&
+      preExisting.every((object) => object.tag === STRAIN_EQUIVALENCE_TAG && object.conflictKind === 'silent'),
+  )
+  check(
+    'the exception is scoped to 0018 and to no other migration',
+    STRAIN_EQUIVALENCE_TAG === '0018_strain_leaning_types' && PENDING_TAGS.includes(STRAIN_EQUIVALENCE_TAG),
+  )
+  check(
+    'the required enum sequence is the complete six, in that order',
+    STRAIN_TYPE_EXPECTED_ORDER.join(',') === 'indica,sativa,hybrid,hybrid_i,hybrid_s,cbd',
+  )
+  check(
+    'the permitted 0018 semantics are exactly two idempotent BEFORE-cbd additions',
+    STRAIN_EQUIVALENCE_OPERATIONS.length === 2 &&
+      STRAIN_EQUIVALENCE_OPERATIONS.every(
+        (operation) =>
+          operation.schema === 'public' &&
+          operation.type === 'strain_type' &&
+          operation.ifNotExists === true &&
+          operation.position === 'before' &&
+          operation.anchor === 'cbd',
+      ) &&
+      STRAIN_EQUIVALENCE_OPERATIONS[0].value === 'hybrid_i' &&
+      STRAIN_EQUIVALENCE_OPERATIONS[1].value === 'hybrid_s',
+  )
+  check(
+    'an operation is described as the statement it stands for, so a refusal can name it',
+    describeAddValueOperation(STRAIN_EQUIVALENCE_OPERATIONS[0]) ===
+      "ALTER TYPE public.strain_type ADD VALUE IF NOT EXISTS 'hybrid_i' BEFORE 'cbd'",
+  )
+  check(
+    'the exception describes what it proved only when it actually proved it',
+    describeStrainLeaningEquivalence(proven).length === 5 &&
+      describeStrainLeaningEquivalence(evaluate({ strainTypeRows: null })).length === 0 &&
+      describeStrainLeaningEquivalence(undefined).length === 0,
+  )
+
+  /* ---- the general rule still reports it, and still calls it drift ------ */
+  const drifted = evaluateDrift({
+    inventory,
+    recordedTags: RECORDED_TAGS,
+    observedKeys: observe({ enumValues: STRAIN_LEANING_VALUES.map((value) => ({ type: 'strain_type', value })) }).keys,
+  })
+  check(
+    'the real drift evaluation of this state still reports both objects',
+    drifted.problems.length === 2 && drifted.present.length === 2,
+  )
+  check(
+    'and still says they are drift that is never evidence a migration was applied',
+    has(drifted.problems, 'never evidence') && has(drifted.problems, 'is NOT recorded in the ledger'),
+  )
+  check('the exception accepts exactly that drift set, and nothing wider', evaluate({ driftPresent: drifted.present }).equivalent === true)
+
+  /* ---- the pre-existing set must be exactly the two -------------------- */
+  check('only hybrid_i pre-existing refuses', refuses({ driftPresent: [preExisting[0]] }, 'complete'))
+  check('only hybrid_s pre-existing refuses', refuses({ driftPresent: [preExisting[1]] }, 'complete'))
+  check('no pre-existing object at all refuses', refuses({ driftPresent: [] }, 'empty'))
+  check('a third pre-existing pending object refuses', refuses({ driftPresent: [...preExisting, unrelated] }))
+  check('unrelated pending drift on its own refuses', refuses({ driftPresent: [unrelated] }))
+  check('a pre-existing object with no usable key refuses', refuses({ driftPresent: [{ kind: 'enumValue' }] }, 'without a usable key'))
+  check(
+    'a pre-existing value that is not declared idempotently refuses',
+    refuses({ driftPresent: [{ ...preExisting[0], conflictKind: 'hard' }, preExisting[1]] }, 'idempotent'),
+  )
+  check(
+    'a pre-existing value attributed to another migration refuses',
+    refuses({ driftPresent: [{ ...preExisting[0], tag: '0016_yummy_tattoo' }, preExisting[1]] }, 'idempotent'),
+  )
+  check('no inventory of pre-existing objects at all refuses', refuses({ driftPresent: null }, 'cannot bound what drifted'))
+
+  /* ---- the ledger must be exactly 0000 … 0015 -------------------------- */
+  check('a ledger short of 0015 refuses', refuses({ recordedTags: RECORDED_TAGS.slice(0, 15) }, 'only to a ledger of exactly'))
+  check('a ledger already carrying a pending migration refuses', refuses({ recordedTags: [...RECORDED_TAGS, '0016_yummy_tattoo'] }))
+  check(
+    'a ledger holding the right tags in the wrong order refuses',
+    refuses({ recordedTags: [...RECORDED_TAGS].reverse() }),
+  )
+  check('missing ledger evidence refuses', refuses({ recordedTags: undefined }, 'No ledger evidence'))
+  check('a null ledger refuses', refuses({ recordedTags: null }, 'No ledger evidence'))
+
+  /* ---- the pending stack must be exactly 0016 … 0019 ------------------- */
+  check(
+    'a pending stack missing 0018 refuses',
+    refuses({ pendingTags: PENDING_TAGS.filter((tag) => tag !== STRAIN_EQUIVALENCE_TAG) }, 'pending stack of exactly'),
+  )
+  check('a pending stack in the wrong order refuses', refuses({ pendingTags: [...PENDING_TAGS].reverse() }))
+  check('an extra pending migration refuses', refuses({ pendingTags: [...PENDING_TAGS, '0020_invented'] }))
+  check('missing pending evidence refuses', refuses({ pendingTags: undefined }, 'No pending-stack evidence'))
+
+  /* ---- the catalog must prove the complete ordered sequence ------------- */
+  check(
+    'the enum in the wrong order refuses even though the set is right',
+    refuses({ strainTypeRows: rowsOf('indica', 'sativa', 'hybrid', 'hybrid_s', 'hybrid_i', 'cbd') }, 'in that order'),
+  )
+  check('hybrid_i missing from the enum refuses', refuses({ strainTypeRows: rowsOf('indica', 'sativa', 'hybrid', 'hybrid_s', 'cbd') }))
+  check('hybrid_s missing from the enum refuses', refuses({ strainTypeRows: rowsOf('indica', 'sativa', 'hybrid', 'hybrid_i', 'cbd') }))
+  check(
+    'an extra enum value refuses',
+    refuses({ strainTypeRows: rowsOf('indica', 'sativa', 'hybrid', 'hybrid_i', 'hybrid_s', 'hybrid_x', 'cbd') }),
+  )
+  check('the anchor value missing from the enum refuses', refuses({ strainTypeRows: rowsOf('indica', 'sativa', 'hybrid', 'hybrid_i', 'hybrid_s') }))
+  check('a null catalog observation refuses', refuses({ strainTypeRows: null }, 'missing catalog observation is a refusal'))
+  check('a missing catalog observation refuses', refuses({ strainTypeRows: undefined }, 'missing catalog observation is a refusal'))
+  check('an empty catalog answer refuses', refuses({ strainTypeRows: [] }, 'no public.strain_type values at all'))
+  check('a catalog row carrying no usable label refuses', refuses({ strainTypeRows: [{ label: null }] }, 'malformed'))
+  check('a catalog row that is neither a labelled row nor a label refuses', refuses({ strainTypeRows: [1, 2, 3] }, 'malformed'))
+  check(
+    'the normalizer reads either row shape and invents neither',
+    normalizeCatalogEnumOrder(orderedRows).labels.join(',') === STRAIN_TYPE_EXPECTED_ORDER.join(',') &&
+      normalizeCatalogEnumOrder([...STRAIN_TYPE_EXPECTED_ORDER]).labels.join(',') === STRAIN_TYPE_EXPECTED_ORDER.join(',') &&
+      normalizeCatalogEnumOrder(null).labels === null,
+  )
+
+  /* ---- the repository's 0018 must PARSE to the two intended operations -- */
+  const parsedReal = parseAddValueScript(source0018)
+  check(
+    'the committed 0018 parses to exactly the two intended operations',
+    parsedReal.operations?.length === 2 &&
+      parsedReal.operations.every((operation, index) =>
+        JSON.stringify(operation) === JSON.stringify(STRAIN_EQUIVALENCE_OPERATIONS[index]),
+      ),
+    JSON.stringify(parsedReal),
+  )
+  check(
+    'a changed type name refuses',
+    refuses({ source: pair(alterStatement({ type: '"public"."strain_kind"' }), secondStatement) }, 'no longer carries exactly'),
+  )
+  check(
+    'a changed schema refuses',
+    refuses({ source: pair(alterStatement({ type: '"private"."strain_type"' }), secondStatement) }, 'no longer carries exactly'),
+  )
+  check('a changed enum label refuses', refuses({ source: pair(alterStatement({ value: 'hybrid_x' }), secondStatement) }, 'no longer carries exactly'))
+  check(
+    'a changed BEFORE anchor refuses',
+    refuses({ source: pair(alterStatement({ tail: "BEFORE 'hybrid'" }), secondStatement) }, 'no longer carries exactly'),
+  )
+  check(
+    'AFTER where BEFORE was refuses',
+    refuses({ source: pair(alterStatement({ tail: "AFTER 'hybrid'" }), secondStatement) }, 'no longer carries exactly'),
+  )
+  check('a dropped anchor refuses', refuses({ source: pair(alterStatement({ tail: '' }), secondStatement) }, 'no longer carries exactly'))
+  check(
+    'reversed statement order refuses',
+    refuses({ source: pair(secondStatement, alterStatement()) }, 'no longer carries exactly'),
+  )
+  check(
+    'a dropped IF NOT EXISTS refuses, because the statements would no longer be no-ops',
+    refuses({ source: pair(alterStatement({ guard: '' }), secondStatement) }, 'no longer carries exactly'),
+  )
+  check('only one of the two statements refuses', refuses({ source: alterStatement() }, 'no longer carries exactly'))
+  check('a source that is missing entirely refuses', refuses({ source: undefined }, 'No SQL text was supplied'))
+  check('a source that is not a string refuses', refuses({ source: 42 }, 'No SQL text was supplied'))
+  check(
+    'an unquoted type name refuses, because the parser and the drift inventory must read the same file',
+    parseAddValueScript(
+      pair(
+        alterStatement({ type: 'public.strain_type' }),
+        alterStatement({ type: 'public.strain_type', value: 'hybrid_s' }),
+      ),
+    ).operations?.length === 2 &&
+      refuses(
+        {
+          source: pair(
+            alterStatement({ type: 'public.strain_type' }),
+            alterStatement({ type: 'public.strain_type', value: 'hybrid_s' }),
+          ),
+        },
+        'must agree exactly',
+      ),
+  )
+  check(
+    'a quoted identifier in another case is another identifier, and refuses',
+    refuses({ source: pair(alterStatement({ type: '"PUBLIC"."STRAIN_TYPE"' }), secondStatement) }, 'no longer carries exactly'),
+  )
+
+  /* ---- extra executable SQL, and the substring test that would miss it -- */
+  const withDrop = `${source0018}\n--> statement-breakpoint\nDROP TABLE "users";`
+  check(
+    'an extra executable statement refuses even though the file still contains the committed text verbatim',
+    withDrop.includes(source0018) && refuses({ source: withDrop }, 'cannot be proved equivalent'),
+  )
+  check('an appended SELECT refuses', refuses({ source: `${source0018}\nSELECT 1;` }, 'cannot be proved equivalent'))
+  check(
+    'a tail after the anchor refuses',
+    refuses({ source: pair(alterStatement({ tail: "BEFORE 'cbd' CASCADE" }), secondStatement) }, 'cannot be proved equivalent'),
+  )
+
+  /* ---- comments and whitespace, inert only because they are recognised -- */
+  const commented =
+    '/* the two leaning values, and nothing else */\n\n' +
+    'ALTER TYPE   "public"."strain_type"   -- the enum this migration widens\n' +
+    "  ADD VALUE IF NOT EXISTS 'hybrid_i'   BEFORE 'cbd' ;\n" +
+    '--> statement-breakpoint\n' +
+    "/* and the second */ ALTER TYPE \"public\".\"strain_type\" ADD VALUE IF NOT EXISTS 'hybrid_s' BEFORE 'cbd';\n" +
+    '-- trailing commentary\n'
+  check('comments and whitespace that cannot change execution are inert', evaluate({ source: commented }).equivalent === true)
+  check(
+    'the statement-breakpoint marker is a comment, not a statement',
+    parseAddValueScript(pair(alterStatement(), secondStatement)).operations?.length === 2,
+  )
+  check('an empty trailing statement is not an executable one', evaluate({ source: `${source0018}\n;\n` }).equivalent === true)
+
+  const dashedLabel = pair(alterStatement({ value: 'hy--brid_i' }), secondStatement)
+  const parsedDashed = parseAddValueScript(dashedLabel)
+  check(
+    'a "--" inside a string literal is data, not a comment — and the changed label is refused',
+    parsedDashed.operations?.length === 2 &&
+      parsedDashed.operations[0].value === 'hy--brid_i' &&
+      refuses({ source: dashedLabel }, 'no longer carries exactly'),
+  )
+  const blockInLabel = pair(alterStatement({ value: 'hybrid/*x*/_i' }), secondStatement)
+  check(
+    'a block-comment marker inside a string literal is data too',
+    parseAddValueScript(blockInLabel).operations?.[0]?.value === 'hybrid/*x*/_i' && refuses({ source: blockInLabel }),
+  )
+  check(
+    'nested block comments are read the way PostgreSQL reads them',
+    parseAddValueScript(`/* a /* nested */ comment */ ${alterStatement()}`).operations?.length === 1,
+  )
+
+  /* ---- anything the parser cannot prove ------------------------------- */
+  const unreadable = (sql) => {
+    const parsed = parseAddValueScript(sql)
+    return parsed.operations === null && parsed.problems.length > 0
+  }
+  check(
+    'an unterminated string literal refuses',
+    unreadable(`ALTER TYPE "public"."strain_type" ADD VALUE IF NOT EXISTS 'hybrid_i`) &&
+      has(tokenizeMigrationSql(`ADD VALUE 'x`).problems, 'string literal is never closed'),
+  )
+  check(
+    'an unterminated quoted identifier refuses',
+    unreadable('ALTER TYPE "public"."strain_type ADD VALUE IF NOT EXISTS \'hybrid_i\' BEFORE \'cbd\';') &&
+      has(tokenizeMigrationSql('ALTER TYPE "public').problems, 'quoted identifier is never closed'),
+  )
+  check(
+    'an unterminated block comment refuses',
+    unreadable(`/* unclosed ${alterStatement()}`) &&
+      has(tokenizeMigrationSql('/* unclosed').problems, 'block comment is never closed'),
+  )
+  check('a dollar-quoted body refuses', unreadable('DO $$ BEGIN END $$;'))
+  check('an E-string escape refuses', unreadable(`ALTER TYPE "public"."strain_type" ADD VALUE IF NOT EXISTS E'hybrid_i' BEFORE 'cbd';`))
+  check('a parenthesised form refuses', unreadable(`ALTER TYPE "public"."strain_type" ADD VALUE IF NOT EXISTS ('hybrid_i') BEFORE 'cbd';`))
+  check('a file with no executable statement refuses', unreadable('-- nothing at all\n') && unreadable(''))
+  check('a non-string source refuses at the tokenizer', tokenizeMigrationSql(null).statements === null && unreadable(42))
+  check(
+    'a statement this grammar cannot name yields NO operations, never the ones it understood',
+    unreadable(`${alterStatement()}\nCREATE TABLE "ghost" ;`),
+  )
+
+  /* ---- the wiring: proved before the gate can possibly exist ----------- */
+  check(
+    'the runner proves equivalence inside the drift branch, not somewhere of its own',
+    runnerSource.indexOf('const drift = evaluateDrift({') < runnerSource.indexOf('evaluateStrainLeaningEquivalence({') &&
+      runnerSource.indexOf('evaluateStrainLeaningEquivalence({') > 0,
+  )
+  check(
+    'the equivalence is proved BEFORE the migration gate is even constructed',
+    runnerSource.indexOf('evaluateStrainLeaningEquivalence({') < runnerSource.indexOf('createMigrationGate('),
+  )
+  check(
+    'and before the one gate.clear() that makes the command reachable',
+    runnerSource.indexOf('evaluateStrainLeaningEquivalence({') < runnerSource.indexOf('gate.clear()') &&
+      countOf(runnerSource, 'gate.clear()') === 1,
+  )
+  check(
+    'there is exactly one equivalence call site, fed the run\'s own evidence',
+    countOf(runnerSource, 'evaluateStrainLeaningEquivalence(') === 1 &&
+      runnerSource.includes('pendingTags: pending.pendingTags,') &&
+      runnerSource.includes('driftPresent: drift.present,') &&
+      runnerSource.includes('source: snapshot.sources[STRAIN_EQUIVALENCE_TAG],'),
+  )
+  check(
+    'the ordered enum is read straight from the clone, once, by the core query',
+    countOf(runnerSource, 'query(STRAIN_TYPE_ORDER_QUERY)') === 1 &&
+      runnerSource.includes('strainTypeRows: await query(STRAIN_TYPE_ORDER_QUERY),'),
+  )
+  check(
+    'anything short of proven equivalence still stops the run as blocking drift',
+    /if \(equivalence\.equivalent !== true\) \{\s*\n\s*stop\(/.test(runnerSource) &&
+      countOf(runnerSource, 'BLOCKING DRIFT') === 1 &&
+      runnerSource.includes('...drift.problems,') &&
+      runnerSource.includes('...equivalence.problems,'),
+  )
+  check(
+    'the migrate path is still one gated npx drizzle-kit migrate for the whole stack',
+    countOf(runnerSource, "gate.run('npx', ['drizzle-kit', 'migrate']") === 1 &&
+      countOf(runnerSource, 'execFileSync(') === 1 &&
+      runnerSource.includes("for (const banned of ['step'") &&
+      !runnerSource.includes('statement-breakpoint'),
+  )
+  check(
+    'the exception writes no ledger row and adds no repair statement to either file',
+    [runnerSource, coreSource].every(
+      (source) =>
+        !/insert\s+into\s+(?:"?drizzle"?\.)?"?__drizzle_migrations/i.test(source) &&
+        !/update\s+(?:"?drizzle"?\.)?"?__drizzle_migrations/i.test(source) &&
+        !/delete\s+from\s+(?:"?drizzle"?\.)?"?__drizzle_migrations/i.test(source),
+    ),
+  )
+
+  const exceptionSource = coreSource.slice(
+    coreSource.indexOf('export const STRAIN_EQUIVALENCE_TAG'),
+    coreSource.indexOf('/* ========================================================== carried data === */'),
+  )
+  check(
+    'the exception is a decision and nothing else: it cannot run, clear, or invoke anything',
+    exceptionSource.length > 0 &&
+      !exceptionSource.includes('createMigrationGate') &&
+      !exceptionSource.includes('gate.clear') &&
+      !exceptionSource.includes('gate.run') &&
+      !exceptionSource.includes('assertMigrationCommand'),
+  )
+
+  const driftSource = coreSource.slice(
+    coreSource.indexOf('export function evaluateDrift'),
+    coreSource.indexOf('/** Post-migration:'),
+  )
+  check(
+    'evaluateDrift itself knows nothing about the exception, so the general rule is unchanged',
+    driftSource.length > 0 &&
+      !driftSource.includes('STRAIN') &&
+      !driftSource.includes('quivalen') &&
+      driftSource.includes('never evidence that the migration was applied'),
+  )
+  check(
+    'the catalog question is a read-only, ordered one about a single type',
+    STRAIN_TYPE_ORDER_QUERY.startsWith('select ') &&
+      STRAIN_TYPE_ORDER_QUERY.includes('order by e.enumsortorder asc') &&
+      STRAIN_TYPE_ORDER_QUERY.includes("n.nspname = 'public' and t.typname = 'strain_type'") &&
+      !/\b(insert|update|delete|alter|create|drop|truncate)\b/i.test(STRAIN_TYPE_ORDER_QUERY),
+  )
+  check(
+    'the post-migration reconciliation through 0019 and every probe are untouched',
+    runnerSource.includes('reconcileLedger({ migrations, rows: afterLedger, expectedTags: ALL_TAGS })') &&
+      runnerSource.includes('evaluateApplied({ inventory, dropped, observedKeys: afterObserved.keys })') &&
+      runnerSource.includes('await runProbes(pool)') &&
+      REQUIRED_PROBES.length === 14 &&
+      ALL_TAGS[ALL_TAGS.length - 1] === '0019_demonic_rockslide',
+  )
+  check(
+    'no refusal in this section ever reports equivalence, whatever it was handed',
+    [
+      { driftPresent: [] },
+      { driftPresent: null },
+      { recordedTags: undefined },
+      { pendingTags: undefined },
+      { strainTypeRows: null },
+      { source: undefined },
+      { source: `${source0018}\nSELECT 1;` },
+      { strainTypeRows: rowsOf('indica', 'sativa', 'hybrid', 'hybrid_s', 'hybrid_i', 'cbd') },
+    ].every((over) => {
+      const result = evaluate(over)
+      return result.equivalent === false && result.problems.length > 0
+    }),
   )
 }
 

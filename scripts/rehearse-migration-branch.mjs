@@ -40,7 +40,15 @@
  *      exists while 0018 is unrecorded, that is a schema and a ledger
  *      disagreeing, and `ADD VALUE IF NOT EXISTS` is exactly the statement that
  *      would paper over it. The run stops before any migration command exists in
- *      the process.
+ *      the process. There is exactly ONE exception, and it proves itself before
+ *      the gate exists: a clone whose ledger is exactly 0000 … 0015, whose
+ *      pending stack is exactly the four, whose COMPLETE pre-existing set is
+ *      `strain_type.hybrid_i` and `strain_type.hybrid_s` and nothing else, whose
+ *      repository 0018 still PARSES to exactly the two intended
+ *      `ADD VALUE IF NOT EXISTS … BEFORE 'cbd'` operations, and whose live
+ *      `public.strain_type` already reads exactly indica, sativa, hybrid,
+ *      hybrid_i, hybrid_s, cbd. All five are independently proved or the run
+ *      stops; nothing is repaired, skipped, or written to the ledger either way.
  *
  *   4. A PROBE THAT DID NOT RUN IS A FAILED PROBE. The previous version printed
  *      "SKIPPED — needs at least one redemption" and went on to report PASS.
@@ -123,6 +131,8 @@ import {
   PRODUCTION_HEALTH_URL,
   RECORDED_TAGS,
   REQUIRED_PROBES,
+  STRAIN_EQUIVALENCE_TAG,
+  STRAIN_TYPE_ORDER_QUERY,
   buildObservedKeys,
   buildPendingInventory,
   buildRepositoryMigrations,
@@ -131,6 +141,7 @@ import {
   createMigrationGate,
   derivePendingStack,
   describeCarriedEvidence,
+  describeStrainLeaningEquivalence,
   evaluateApplied,
   evaluateBranchTopology,
   evaluateCarriedData,
@@ -142,6 +153,7 @@ import {
   evaluateHealthIdentity,
   evaluateMediaBackfill,
   evaluateProbeOutcomes,
+  evaluateStrainLeaningEquivalence,
   reconcileLedger,
   redactSecrets,
   rehearsalBranchName,
@@ -1032,17 +1044,51 @@ async function main() {
       })
       note(`${drift.checked} declared objects checked across ${PENDING_TAGS.length} unrecorded migrations`)
       if (drift.problems.length > 0) {
-        stop(
-          'BLOCKING DRIFT — the clone already carries objects the pending stack declares. NO migration ' +
-            'command has run, and none will:',
-          [
-            ...drift.problems,
-            'A pre-existing object is a schema and a ledger disagreeing. It is never evidence that a ' +
-              'migration was applied, and it is never something to migrate over.',
-          ],
-        )
+        /*
+         * THE ONE EXCEPTION, PROVED HERE — BEFORE THE GATE EXISTS AT ALL.
+         *
+         * Drift is still blocking; nothing above this line changed. What is
+         * added is a single, fully proved reconciliation for ONE confirmed
+         * state: 0018's two idempotent enum values already present, on a clone
+         * whose ledger is exactly 0000 … 0015, whose pending stack is exactly
+         * the four, whose complete pre-existing set is those two values and
+         * nothing else, whose repository 0018 still PARSES to exactly the two
+         * intended ADD VALUE IF NOT EXISTS … BEFORE 'cbd' operations, and whose
+         * live enum already reads the exact six values in order — read here by a
+         * direct catalog query against the disposable clone, ordered by the
+         * enum's own sort order.
+         *
+         * All five are established before this block can fall through, and this
+         * block is many statements above `createMigrationGate`, so the migration
+         * command does not exist in this process while the question is open.
+         * Anything else — a third pre-existing object, one of the two missing, a
+         * value out of order, an edited 0018, an unreadable catalog answer —
+         * lands in the same stop() the general rule always used.
+         */
+        const equivalence = evaluateStrainLeaningEquivalence({
+          recordedTags: reconciliation.recordedTags,
+          pendingTags: pending.pendingTags,
+          driftPresent: drift.present,
+          source: snapshot.sources[STRAIN_EQUIVALENCE_TAG],
+          strainTypeRows: await query(STRAIN_TYPE_ORDER_QUERY),
+        })
+        if (equivalence.equivalent !== true) {
+          stop(
+            'BLOCKING DRIFT — the clone already carries objects the pending stack declares. NO migration ' +
+              'command has run, and none will:',
+            [
+              ...drift.problems,
+              ...equivalence.problems,
+              'A pre-existing object is a schema and a ledger disagreeing. It is never evidence that a ' +
+                'migration was applied, and it is never something to migrate over.',
+            ],
+          )
+        }
+        note(`${drift.present.length} pre-existing object(s) — the ${STRAIN_EQUIVALENCE_TAG} equivalence exception applies`)
+        for (const line of describeStrainLeaningEquivalence(equivalence)) ok(line)
+      } else {
+        ok('no declared object of the pending stack exists yet')
       }
-      ok('no declared object of the pending stack exists yet')
 
       before = await readDataSignature(query)
       note(`carried rows — ${CARRIED_TABLES.map((table) => `${table} ${before.counts[table]}`).join(', ')}`)
@@ -1055,7 +1101,9 @@ async function main() {
       /*
        * The gate opens HERE and nowhere else: after the ledger reconciled, after
        * the pending stack was derived, and after the drift inventory came back
-       * empty. Everything above this line runs with the command unavailable.
+       * either empty or proved — by the five independent proofs of the 0018
+       * equivalence exception — to be exactly the reconcilable state and nothing
+       * wider. Everything above this line runs with the command unavailable.
        */
       gate.clear()
 
