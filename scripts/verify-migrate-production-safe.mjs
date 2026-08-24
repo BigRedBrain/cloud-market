@@ -20,8 +20,9 @@
  * WHY EVERY ONE OF THESE EXISTS
  *
  * The runner's entire value is what it refuses. It refuses to migrate without an
- * exact authorization naming both the reviewed commit and the restore branch; it
- * refuses a restore branch whose metadata is merely not-contradictory; it
+ * exact authorization naming both the frozen migration release base and the
+ * restore branch; it refuses a restore branch whose metadata is merely
+ * not-contradictory; it
  * refuses a ledger it cannot reconcile row by row; it refuses to build a
  * migration command before every proof has landed. A refusal that is only
  * reachable by pointing the script at production is a refusal nobody has ever
@@ -33,6 +34,17 @@
  * removed, so that prose describing a capability can never be mistaken for the
  * capability and a future edit that moves the child-process import upwards fails
  * here.
+ *
+ * SOURCE INSPECTION IS LINE-ENDING INDEPENDENT. Every structural comparison
+ * below reads source text through `normalizeSourceText`, which rewrites CRLF and
+ * lone CR to LF in memory and nowhere else — no file is rewritten, and the
+ * runner's runtime SQL strings are untouched. Without it, a checkout made with
+ * `core.autocrlf=true` reads a multi-line template literal out of the file as
+ * `\r\n`-separated text while the module this verifier imports holds the
+ * `\n`-separated string the parser produced from the same bytes, and the
+ * SQL-literal assertion fails on a difference nobody wrote. The assertion itself
+ * is unchanged and unweakened: section 18 proves that a genuinely added
+ * statement is still caught in LF, CRLF, and lone-CR source alike.
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -98,7 +110,7 @@ import {
  * the fact. A section deleted by a careless merge would otherwise reduce the
  * coverage silently and still print a green summary.
  */
-export const EXPECTED_CHECKS = 158
+export const EXPECTED_CHECKS = 166
 
 let pass = 0
 let fail = 0
@@ -119,8 +131,26 @@ const refused = (result) => (result?.problems ?? []).length > 0
 
 const repoFile = (relative) => readFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url))).toString()
 
-const runnerSource = repoFile('scripts/migrate-production-safe.mjs')
-const verifierSource = repoFile('scripts/verify-migrate-production-safe.mjs')
+/**
+ * THE ONE CANONICAL TRANSFORM FOR SOURCE INSPECTION.
+ *
+ * CRLF and lone CR become LF, in memory, for text that is about to be compared
+ * structurally. It exists so that "what the file says" and "what the JavaScript
+ * parser made of the file" are the same text: a template literal's line
+ * terminators are normalized to LF by the language itself, so a CRLF checkout
+ * otherwise reads a declared statement as different from the string the runner
+ * actually holds. Nothing is written back, and it is never applied to a value
+ * this process compares as data rather than as source.
+ */
+const normalizeSourceText = (text) => String(text).replace(/\r\n?/g, '\n')
+
+/*
+ * Normalized at the moment they are read, so every downstream inspection —
+ * codeOnly(), sqlLiteralsOf(), offsets, dominance, token counts, and the raw
+ * `runnerSource.includes(...)` claims — sees one canonical form of the file.
+ */
+const runnerSource = normalizeSourceText(repoFile('scripts/migrate-production-safe.mjs'))
+const verifierSource = normalizeSourceText(repoFile('scripts/verify-migrate-production-safe.mjs'))
 
 /**
  * The source with comments and string literals removed.
@@ -130,7 +160,7 @@ const verifierSource = repoFile('scripts/verify-migrate-production-safe.mjs')
  * or to break — a check about where the child-process module is loaded.
  */
 const codeOnly = (source) =>
-  source
+  normalizeSourceText(source)
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .replace(/^[ \t]*\/\/.*$/gm, ' ')
     .replace(/'(?:[^'\n\\]|\\.)*'/g, "''")
@@ -179,10 +209,10 @@ const importsOf = (source) =>
 console.log('Production migration runner — hermetic verification')
 
 /* ============================================ 1. THE ROLLOUT, HARD-CODED (8) */
-section('[1] One rollout, hard-coded: commit, project, production, health, restore')
+section('[1] One rollout, hard-coded: migration release base, project, production, health, restore')
 
 check(
-  'the reviewed commit is the full 40-character sha, written out',
+  'the frozen migration release base — the reviewed migration artifact identity — is the full 40-character sha, written out',
   ROLLOUT_COMMIT === 'c211e69184bcf3425a3a913564cf6ffa8eb7bc38' && /^[0-9a-f]{40}$/.test(ROLLOUT_COMMIT),
   ROLLOUT_COMMIT,
 )
@@ -844,7 +874,9 @@ const ALLOWED_SQL = new Set([
 const SQL_SHAPED =
   /^\s*(select|insert|update|delete|create|alter|drop|truncate|begin|start|commit|rollback|grant|revoke|set)\b[\s(]/i
 const sqlLiteralsOf = (source) => {
-  const body = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^[ \t]*\/\/.*$/gm, ' ')
+  const body = normalizeSourceText(source)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/^[ \t]*\/\/.*$/gm, ' ')
   return [
     ...[...body.matchAll(/'((?:[^'\n\\]|\\.)*)'/g)].map((m) => m[1]),
     ...[...body.matchAll(/`((?:[^`\\]|\\[\s\S])*)`/g)].map((m) => m[1]),
@@ -1008,6 +1040,85 @@ check(
   'importing the runner runs nothing: main() is behind an entry-point guard',
   /if \(process\.argv\[1\] && import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href\)/.test(runnerSource) &&
     countOf(runnerCode, 'main()') === 2,
+)
+
+/* ============ 18. SOURCE INSPECTION IS LINE-ENDING INDEPENDENT (8) ========== */
+section('[18] LF, CRLF, and lone CR are inspected as the same source — and nothing is let through')
+
+/**
+ * Three spellings of one file, differing only in how their lines end.
+ *
+ * The SQL here is a multi-line template literal on purpose: that is the exact
+ * shape the runner declares its production statements in, and the exact shape a
+ * CRLF checkout makes read differently from the string the parser produced.
+ */
+const LINE_ENDING_FIXTURE = [
+  'const PRODUCTION_READ_ONLY_SQL = Object.freeze({',
+  '  ledgerRows: `select id, hash, created_at from drizzle.__drizzle_migrations',
+  '                 order by id asc`,',
+  '})',
+  'const plain = `not a statement at all`',
+].join('\n')
+const asCrlf = (text) => text.replace(/\n/g, '\r\n')
+const asLoneCr = (text) => text.replace(/\n/g, '\r')
+
+check(
+  'an LF source is already canonical: normalizing it changes nothing',
+  normalizeSourceText(LINE_ENDING_FIXTURE) === LINE_ENDING_FIXTURE,
+)
+check(
+  'the equivalent CRLF source normalizes to exactly the LF source',
+  asCrlf(LINE_ENDING_FIXTURE) !== LINE_ENDING_FIXTURE &&
+    normalizeSourceText(asCrlf(LINE_ENDING_FIXTURE)) === LINE_ENDING_FIXTURE,
+)
+check(
+  'the equivalent lone-CR source normalizes to exactly the LF source',
+  asLoneCr(LINE_ENDING_FIXTURE) !== LINE_ENDING_FIXTURE &&
+    normalizeSourceText(asLoneCr(LINE_ENDING_FIXTURE)) === LINE_ENDING_FIXTURE,
+)
+check(
+  'sqlLiteralsOf classifies LF, CRLF, and lone-CR source identically',
+  (() => {
+    const classify = (text) => sqlLiteralsOf(text).join(' | ')
+    return (
+      sqlLiteralsOf(LINE_ENDING_FIXTURE).length === 1 &&
+      classify(LINE_ENDING_FIXTURE) === classify(asCrlf(LINE_ENDING_FIXTURE)) &&
+      classify(LINE_ENDING_FIXTURE) === classify(asLoneCr(LINE_ENDING_FIXTURE))
+    )
+  })(),
+  sqlLiteralsOf(LINE_ENDING_FIXTURE).join(' | '),
+)
+
+/**
+ * NORMALIZATION MUST NOT BE AN EXEMPTION.
+ *
+ * Each of these appends one statement the runner does not declare, in all three
+ * line endings, and requires it to come back out as a stray literal every time.
+ * If normalization ever started swallowing writes instead of line endings, these
+ * are what fail — the assertion in section 14 keeps its full strength here.
+ */
+const withAddedLiteral = (statement) => `${runnerSource}\nconst added = \`${statement}\`\n`
+const strayFrom = (source) => sqlLiteralsOf(source).filter((text) => !ALLOWED_SQL.has(text))
+const detectsAddedStatement = (statement) =>
+  [withAddedLiteral(statement), asCrlf(withAddedLiteral(statement)), asLoneCr(withAddedLiteral(statement))].every(
+    (source) => strayFrom(source).join(' | ') === statement,
+  )
+
+check(
+  'a genuinely added INSERT statement is still detected as a stray literal, in all three line endings',
+  detectsAddedStatement('insert into drizzle.__drizzle_migrations (id, hash)\n  values (99, 0)'),
+)
+check(
+  'a genuinely added UPDATE statement is still detected as a stray literal, in all three line endings',
+  detectsAddedStatement('update public.products\n  set slug = slug'),
+)
+check(
+  'a genuinely added DELETE statement is still detected as a stray literal, in all three line endings',
+  detectsAddedStatement('delete from drizzle.__drizzle_migrations\n  where id = 1'),
+)
+check(
+  'a genuinely added DDL statement is still detected as a stray literal, in all three line endings',
+  detectsAddedStatement('create index idx_never_reviewed\n  on public.products (slug)'),
 )
 
 /* ================================================================ summary = */

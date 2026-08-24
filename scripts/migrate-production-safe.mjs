@@ -17,8 +17,9 @@
  * constructed, and there is no code path from a preflight to a write.
  *
  * WHAT THIS IS SCOPED TO. This file is not a general migration tool. It is
- * hard-coded to one rollout — one commit, one Neon project, one production
- * branch, one restore branch, one health URL, one pending stack — and every one
+ * hard-coded to one rollout — one frozen migration release base, one Neon
+ * project, one production branch, one restore branch, one health URL, one
+ * pending stack — and every one
  * of those values is a constant that a wrong answer must fail against rather
  * than a parameter a caller may supply. When this rollout is done, this script
  * has no further use; the next one gets its own constants, reviewed again.
@@ -121,17 +122,27 @@ import {
 /* ================================================== the rollout, hard-coded = */
 
 /**
- * THE COMMIT THIS TOOLING WAS REVIEWED AT, IN FULL.
+ * THE FROZEN MIGRATION RELEASE BASE, IN FULL.
+ *
+ * This is the reviewed migration artifact identity: the commit whose migration
+ * journal and migration files are the ones this rollout is authorized to apply,
+ * and to which that authorization is bound.
+ *
+ * It is NOT the commit that contains this runner, and NOT the commit at which
+ * this tooling was reviewed. The tooling has been revised since, and saying so
+ * here matters: a constant that quietly meant "wherever these scripts are now"
+ * would name a different rollout every time the scripts changed, while the
+ * migration set it authorizes stayed exactly where it was.
  *
  * Written out to forty characters because the authorization value below embeds
  * it, and a short SHA is exactly the kind of thing that gets copied out of a
  * terminal, ages, and later names a different commit. This script runs no git
  * command — it is not permitted to — so the commit is not something it reads
  * from the working tree. It is the identity an operator must type back,
- * unabbreviated, to say which reviewed rollout they are executing. What the
- * working tree actually contains is proved separately and far more strictly:
- * every migration file is hashed and reconciled against the production ledger,
- * and re-read byte-for-byte after the migration.
+ * unabbreviated, to say which reviewed migration release they are executing.
+ * What the working tree actually contains is proved separately and far more
+ * strictly: every migration file is hashed and reconciled against the production
+ * ledger, and re-read byte-for-byte after the migration.
  */
 export const ROLLOUT_COMMIT = 'c211e69184bcf3425a3a913564cf6ffa8eb7bc38'
 
@@ -165,9 +176,10 @@ export const AUTHORIZATION_FLAG = '--i-authorize-production-migration'
 /**
  * ONE VALUE, NAMING BOTH FACTS AT ONCE.
  *
- * The commit says WHICH reviewed change is being applied; the restore branch id
- * says the way back exists and the operator knows its name. Binding them into a
- * single string means neither can be supplied without the other, and it makes
+ * The commit is the frozen migration release base: it says WHICH reviewed
+ * migration artifacts are being applied. The restore branch id says the way back
+ * exists and the operator knows its name. Binding them into a single string
+ * means neither can be supplied without the other, and it makes
  * the authorization impossible to produce by accident: nothing in a shell
  * history, a CI template, or a copy-pasted command yields this string unless
  * someone assembled it deliberately for this rollout.
@@ -856,7 +868,7 @@ async function main() {
       stop('The pending stack is not the reviewed one:', [...inventoryProblems, ...shape.problems])
     }
     ok(`${migrations.length} migrations, ${ALL_TAGS[0]} … ${ALL_TAGS[ALL_TAGS.length - 1]}, journal and files snapshotted`)
-    note(`rollout commit (authorization identity): ${ROLLOUT_COMMIT}`)
+    note(`migration release base (reviewed migration artifact identity): ${ROLLOUT_COMMIT}`)
     note(`pending stack: ${PENDING_TAGS.join(', ')}`)
     note(
       `${inventory.length} declared objects, ${dropped.length} of them dropped again by the stack, ` +
