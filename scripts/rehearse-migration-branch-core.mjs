@@ -1737,6 +1737,19 @@ export function evaluateProbeOutcomes(results, required = REQUIRED_PROBES) {
  * Repeated in full at the moment of deletion rather than inherited from the
  * create path, because this is also the manual recovery entry point and a
  * mistyped id there is not recoverable.
+ *
+ * THE FLAGS MUST BE PROVED FALSE, NOT MERELY OBSERVED NOT-TRUE. This used to ask
+ * only whether either flag was strictly equal to `true`, which is a test for
+ * "the control plane said yes" and therefore treats every other answer —
+ * omitted, `null`, `"false"`, `0`, an object, a listing that carried no flags at
+ * all — as permission to delete. That is exactly backwards for a call that
+ * destroys a database: the branch this tooling is allowed to delete is one whose
+ * metadata positively states it is neither the default nor the primary branch.
+ *
+ * `interpretBranchFlag` is the strict reading already used to admit the clone in
+ * the first place (`evaluateCloneMetadata`), so the same three-way answer —
+ * set / clear / ambiguous — decides both ends of the branch's life rather than a
+ * second, weaker rule being invented here.
  */
 export function evaluateDeletionGuard({ target, parentId, expectedName }) {
   const problems = []
@@ -1747,8 +1760,18 @@ export function evaluateDeletionGuard({ target, parentId, expectedName }) {
   if (typeof parentId === 'string' && target.id === parentId) {
     problems.push('REFUSING to delete the production parent branch.')
   }
-  if (target.default === true || target.primary === true) {
-    problems.push(`REFUSING: branch ${target.id} is marked default/primary.`)
+  for (const flag of ['default', 'primary']) {
+    const state = interpretBranchFlag(target[flag])
+    if (state === 'set') {
+      problems.push(`REFUSING: branch ${target.id} is marked default/primary ("${flag}": true).`)
+    } else if (state === 'ambiguous') {
+      problems.push(
+        `REFUSING: branch ${target.id} does not explicitly report "${flag}": false — it reports ` +
+          `${String(target[flag])}. Deletion is permitted only on metadata that proves the branch is ` +
+          'neither default nor primary; an omitted, null, or non-boolean flag is unproven, and this ' +
+          'tooling does not delete a database on an inferred negative.',
+      )
+    }
   }
   if (typeof target.name !== 'string' || !target.name.startsWith(REHEARSAL_BRANCH_PREFIX)) {
     problems.push(

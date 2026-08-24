@@ -75,6 +75,7 @@ import {
   evaluateMediaBackfill,
   evaluateProbeOutcomes,
   extractDeclaredObjects,
+  interpretBranchFlag,
   isNonImageKind,
   migrationHash,
   objectKey,
@@ -2055,6 +2056,298 @@ section('[20] Every path is derived from the module, so the launch directory can
       !coreSource.includes('REPO_ROOT') &&
       !coreSource.includes('JOURNAL_PATH') &&
       !coreSource.includes('migrationPath'),
+  )
+}
+
+/* ============ 21. DELETION FAILS CLOSED ON DEFAULT/PRIMARY METADATA ======= */
+section('[21] Deletion is permitted only on metadata that PROVES the branch is neither default nor primary')
+
+{
+  /*
+   * THE BUG THIS CLOSES.
+   *
+   * The guard asked `target.default === true || target.primary === true`, which
+   * is a test for "the control plane said yes". Every other answer — the flag
+   * omitted from the listing, `null`, the STRING "false", `0`, an object — fell
+   * through as permission, and the call on the other side of that permission
+   * deletes a Neon branch. The safety-critical reading is the opposite one:
+   * deletion requires both flags to be literally `false`, and anything else is
+   * unproven and therefore refused.
+   *
+   * `interpretBranchFlag` is the same strict reading that admits the clone at
+   * creation time, so there is one definition of "provably not production"
+   * rather than two that can drift apart.
+   */
+  const name = `${REHEARSAL_BRANCH_PREFIX}0016-0019-1770000000123`
+  const deletable = { id: 'br-clone', name, default: false, primary: false }
+  const guard = (over) =>
+    evaluateDeletionGuard({ target: { ...deletable, ...over }, parentId: 'br-prod', expectedName: name })
+  const unproven = (over, flag) => {
+    const { problems } = guard(over)
+    return problems.length > 0 && has(problems, `does not explicitly report "${flag}": false`)
+  }
+
+  check('explicit false/false is metadata that permits deletion', guard({}).problems.length === 0)
+  check(
+    'and it is the ONLY shape that does — a proven negative, both flags, literally false',
+    guard({}).problems.length === 0 &&
+      guard({ default: undefined }).problems.length === 1 &&
+      guard({ primary: undefined }).problems.length === 1,
+  )
+  check('a branch reporting default: true may never be deleted', has(guard({ default: true }).problems, 'marked default/primary'))
+  check('a branch reporting primary: true may never be deleted', has(guard({ primary: true }).problems, 'marked default/primary'))
+  check('a branch reporting both flags true is refused once for each', guard({ default: true, primary: true }).problems.length === 2)
+
+  check(
+    'a listing that omits "default" entirely is refused, not read as false',
+    evaluateDeletionGuard({ target: { id: 'br-clone', name, primary: false }, parentId: 'br-prod', expectedName: name })
+      .problems.length === 1,
+  )
+  check(
+    'a listing that omits "primary" entirely is refused too',
+    has(
+      evaluateDeletionGuard({ target: { id: 'br-clone', name, default: false }, parentId: 'br-prod', expectedName: name })
+        .problems,
+      'does not explicitly report "primary": false',
+    ),
+  )
+  check(
+    'metadata carrying no flags at all is refused twice over, once per flag',
+    evaluateDeletionGuard({ target: { id: 'br-clone', name }, parentId: 'br-prod', expectedName: name }).problems.length === 2,
+  )
+
+  check('an explicitly undefined flag is not a false', unproven({ default: undefined }, 'default') && unproven({ primary: undefined }, 'primary'))
+  check('a null flag is not a false', unproven({ default: null }, 'default') && unproven({ primary: null }, 'primary'))
+  check('the STRING "false" is not a false', unproven({ default: 'false' }, 'default') && unproven({ primary: 'false' }, 'primary'))
+  check('the string "true" is unproven rather than merely not-true', unproven({ default: 'true' }, 'default'))
+  check('the empty string is not a false', unproven({ default: '' }, 'default'))
+  check('the number 0 is not a false', unproven({ default: 0 }, 'default') && unproven({ primary: 0 }, 'primary'))
+  check('the number 1 is not a false either', unproven({ primary: 1 }, 'primary'))
+  check('NaN is not a false', unproven({ default: NaN }, 'default'))
+  check('an object or an array in a flag is refused', unproven({ default: {} }, 'default') && unproven({ primary: [] }, 'primary'))
+  check('a boxed Boolean object is not a primitive false', unproven({ default: Object(false) }, 'default'))
+  check(
+    'no truthiness is consulted anywhere: every non-boolean is refused whatever it coerces to',
+    [undefined, null, '', 'false', 'true', 0, 1, NaN, {}, [], Object(false)].every(
+      (value) => guard({ default: value }).problems.length > 0 && guard({ primary: value }).problems.length > 0,
+    ),
+  )
+  check(
+    'the refusal names the flag it could not prove, so an operator knows what to look at',
+    has(guard({ default: null }).problems, '"default": false') && has(guard({ primary: null }).problems, '"primary": false'),
+  )
+  check('the refusal reports the value it was actually given', has(guard({ default: null }).problems, 'it reports null'))
+  check(
+    'an unproven flag refuses on its own, even when the id, the name and the parent are all correct',
+    guard({ default: undefined }).problems.length === 1 && has(guard({ default: undefined }).problems, 'REFUSING'),
+  )
+
+  /* The reading itself, and the fact that both ends of the branch's life share it. */
+  check('only a literal true reads as set', interpretBranchFlag(true) === 'set')
+  check('only a literal false reads as clear', interpretBranchFlag(false) === 'clear')
+  check(
+    'everything else reads as ambiguous rather than as either',
+    [undefined, null, '', 'false', 'true', 0, 1, NaN, {}, [], Object(false)].every(
+      (value) => interpretBranchFlag(value) === 'ambiguous',
+    ),
+  )
+  check('the deletion guard uses that reading rather than a second, weaker one', coreSource.includes('interpretBranchFlag(target[flag])'))
+  check('the clone admission at creation time uses the same reading', coreSource.includes('interpretBranchFlag(clone[flag])'))
+  check(
+    'the old "not literally true is good enough" test is gone',
+    !coreSource.includes('target.default === true || target.primary === true'),
+  )
+
+  /*
+   * THE SAME GUARD ON ALL THREE ROADS TO A DELETE: ordinary cleanup, orphan
+   * recovery by the generated name, and the manual `--cleanup` entry point.
+   */
+  const parentBranch = { id: 'br-prod', name: 'production', default: true, primary: true }
+  const flagless = { id: 'br-clone', name, parent_id: 'br-prod' }
+  const lister = (branches) => async () => branches
+  const noWait = async () => {}
+  const confirmWith = (input) =>
+    confirmCleanupTarget({ parentId: 'br-prod', attempts: CLEANUP_LIST_ATTEMPTS, wait: noWait, ...input })
+
+  {
+    const ordinary = await confirmWith({
+      cloneId: 'br-clone',
+      branchName: name,
+      listBranches: lister([parentBranch, { ...flagless, default: false, primary: false }]),
+    })
+    check(
+      'ordinary cleanup of a fully-attested clone still identifies it',
+      ordinary.status === CLEANUP_RESOLUTION.IDENTIFIED && ordinary.target.id === 'br-clone',
+    )
+
+    const incomplete = await confirmWith({
+      cloneId: 'br-clone',
+      branchName: name,
+      listBranches: lister([parentBranch, flagless]),
+    })
+    check(
+      'ordinary cleanup of a clone whose flags the listing omitted deletes nothing',
+      incomplete.status === CLEANUP_RESOLUTION.AMBIGUOUS &&
+        incomplete.target === null &&
+        has(incomplete.problems, 'does not explicitly report "default": false'),
+    )
+  }
+  {
+    /* The orphan road: no id at all, recovered by the exact generated name. */
+    const recovered = await confirmWith({
+      cloneId: null,
+      branchName: name,
+      listBranches: lister([parentBranch, flagless]),
+    })
+    check(
+      'a recovered exact-name candidate with incomplete flag metadata is refused, not nominated',
+      recovered.status === CLEANUP_RESOLUTION.AMBIGUOUS &&
+        recovered.target === null &&
+        has(recovered.problems, 'does not explicitly report'),
+    )
+    const nulled = await confirmWith({
+      cloneId: null,
+      branchName: name,
+      listBranches: lister([parentBranch, { ...flagless, default: null, primary: false }]),
+    })
+    check(
+      'a recovered candidate reporting a null flag is refused as unproven',
+      nulled.status === CLEANUP_RESOLUTION.AMBIGUOUS && has(nulled.problems, 'does not explicitly report "default": false'),
+    )
+    const attested = await confirmWith({
+      cloneId: null,
+      branchName: name,
+      listBranches: lister([parentBranch, { ...flagless, default: false, primary: false }]),
+    })
+    check(
+      'a recovered candidate that DOES attest both flags is still recoverable',
+      attested.status === CLEANUP_RESOLUTION.IDENTIFIED && attested.matchedBy === 'name',
+    )
+  }
+  {
+    /* The manual road: `--cleanup=<id>`, which has an id and no generated name. */
+    const manual = await confirmWith({
+      cloneId: 'br-clone',
+      branchName: undefined,
+      listBranches: lister([parentBranch, flagless]),
+    })
+    check(
+      'manual --cleanup recovery refuses a branch whose flags are not proved false',
+      manual.status === CLEANUP_RESOLUTION.AMBIGUOUS && manual.target === null,
+    )
+    const manualAttested = await confirmWith({
+      cloneId: 'br-clone',
+      branchName: undefined,
+      listBranches: lister([parentBranch, { ...flagless, default: false, primary: false }]),
+    })
+    check(
+      'manual --cleanup recovery of an attested clone still works',
+      manualAttested.status === CLEANUP_RESOLUTION.IDENTIFIED && manualAttested.matchedBy === 'id',
+    )
+  }
+  check(
+    'no candidate is ever returned as deletable without the guard having seen it first',
+    coreSource.includes('const guard = evaluateDeletionGuard({ target: candidate, parentId, expectedName: branchName })'),
+  )
+  check(
+    'and the runner guards again at the moment of deletion, after resolution',
+    runnerSource.includes('const { problems } = evaluateDeletionGuard({ target, parentId, expectedName: branchName })') &&
+      runnerSource.indexOf('evaluateDeletionGuard(') < runnerSource.indexOf("{ method: 'DELETE' }"),
+  )
+}
+
+/* ========== 22. THE RUNNER NAMES ITSELF BY MODULE PATH, NOT BY CWD ======== */
+section('[22] The runner names itself from its own module URL, so recovery instructions work from anywhere')
+
+{
+  /*
+   * WHY A RELATIVE SELF WAS A REAL DEFECT.
+   *
+   * `SELF` is printed in exactly two places, and both are instructions an
+   * operator is meant to act on immediately: the "NEON_API_KEY is not set" usage
+   * line, and — far more importantly — the manual recovery command printed when
+   * a rehearsal branch could NOT be deleted, i.e. when a byte-for-byte copy of
+   * production may still be sitting in Neon. `scripts/rehearse-migration-branch.mjs`
+   * is a valid command only from the repository root; run from `scripts/`, from
+   * a sibling checkout, or from a CI step with a different working directory, it
+   * names a file that is not there.
+   *
+   * The fix is the same one already applied to REPO_ROOT: a path derived from
+   * `import.meta.url`, which is a property of the module and not of the shell.
+   */
+  const derivedRoot = fileURLToPath(new URL('../', import.meta.url))
+  const selfUrl = new URL('./rehearse-migration-branch.mjs', import.meta.url)
+  const derivedSelf = fileURLToPath(selfUrl)
+
+  check('the runner derives SELF from its own module URL', runnerSource.includes('const SELF = fileURLToPath(import.meta.url)'))
+  check(
+    'the relative literal that assumed a launch directory is gone',
+    !runnerSource.includes("SELF = 'scripts/rehearse-migration-branch.mjs'") && !/const SELF = ['"`]/.test(runnerSource),
+  )
+  check(
+    'SELF is not overridable by a flag, an argument, or a variable',
+    !/SELF\s*=\s*[^\n]*(?:flag\(|process\.argv|process\.env)/.test(runnerSource),
+  )
+  check(
+    'SELF consults no working directory, here or anywhere else in the runner',
+    !runnerSource.includes('process.cwd()') && !/SELF\s*=\s*[^\n]*cwd/i.test(runnerSource),
+  )
+  check('the derivation yields an absolute path', /^(?:[a-zA-Z]:[\\/]|\/)/.test(derivedSelf))
+  check(
+    'and never a relative one, which is what made the old value directory-dependent',
+    !/^\.\.?[\\/]/.test(derivedSelf) &&
+      !derivedSelf.startsWith('scripts') &&
+      !/^(?:[a-zA-Z]:[\\/]|\/)/.test('scripts/rehearse-migration-branch.mjs'),
+  )
+  check('the path it derives IS the runner, byte for byte', readFileSync(derivedSelf).toString() === runnerSource)
+  check(
+    'the runner sits under the same derived repository root the migrations are read from',
+    selfUrl.href === new URL('scripts/rehearse-migration-branch.mjs', new URL('../', import.meta.url)).href &&
+      derivedSelf.startsWith(derivedRoot),
+  )
+
+  /*
+   * THE PROPERTY, EXERCISED RATHER THAN DESCRIBED.
+   *
+   * The derivation is re-run from three different working directories — the
+   * repository root, `scripts/`, and wherever this process was actually started
+   * — and must produce one identical absolute path. The original directory is
+   * restored in a `finally`, and nothing is written anywhere.
+   */
+  let derivations = []
+  const originalCwd = process.cwd()
+  try {
+    for (const directory of [derivedRoot, `${derivedRoot}scripts`, originalCwd]) {
+      process.chdir(directory)
+      derivations.push(fileURLToPath(new URL('./rehearse-migration-branch.mjs', import.meta.url)))
+    }
+  } catch {
+    derivations = []
+  } finally {
+    process.chdir(originalCwd)
+  }
+  check(
+    'the same derivation from three different working directories yields one identical path',
+    derivations.length === 3 && new Set(derivations).size === 1 && derivations[0] === derivedSelf,
+  )
+  check('and the process was left in the directory it started in', process.cwd() === originalCwd)
+
+  check(
+    'the manual recovery instruction interpolates that module-derived path',
+    /Remove it by hand: node "\$\{SELF\}" --cleanup=/.test(runnerSource),
+  )
+  check(
+    'the recovery instruction is not a relative command that only works from the repository root',
+    !/Remove it by hand: node scripts\//.test(runnerSource) && !/Remove it by hand: node \$\{SELF\}/.test(runnerSource),
+  )
+  check('the usage line an operator is given names the runner the same way', countOf(runnerSource, 'requireApiKey(SELF)') === 2)
+  check(
+    'the manual --cleanup entry point is told the same path as the full run',
+    /async function cleanupOnly\([\s\S]*?requireApiKey\(SELF\)/.test(runnerSource),
+  )
+  check(
+    'nothing in the runner still names the runner by a quoted relative path',
+    !/['"`]scripts\/rehearse-migration-branch\.mjs['"`]/.test(runnerSource),
   )
 }
 

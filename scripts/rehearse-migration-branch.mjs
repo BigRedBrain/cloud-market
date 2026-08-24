@@ -79,9 +79,14 @@
  *   - claim more about the carried data than it compared
  *   - depend on the directory it was launched from: the repository root is
  *     derived from `import.meta.url`, the journal and migration files are read
- *     by absolute path, and the one migrate child process is given that root as
- *     its `cwd`
- *   - leave a branch, a row, an open transaction, or a connection behind, or
+ *     by absolute path, the one migrate child process is given that root as
+ *     its `cwd`, and the path this script names itself by — the one an operator
+ *     is told to re-run for manual cleanup — is this module's own absolute path
+ *   - delete a branch whose `default`/`primary` metadata does not explicitly say
+ *     `false`: an omitted, null, or non-boolean flag is unproven, and unproven
+ *     refuses, on ordinary cleanup, on orphan recovery by name, and on manual
+ *     `--cleanup` alike
+ *   - silently treat uncertain cleanup as success, or
  *     report a branch "absent" because one listing did not mention it
  *
  * IMPORT SAFETY. `verify-migration-target.mjs` is imported for its pure
@@ -146,7 +151,26 @@ import {
 
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
-const SELF = 'scripts/rehearse-migration-branch.mjs'
+/*
+ * THIS FILE, BY ITS OWN LOCATION — NOT BY A GUESS ABOUT THE SHELL'S.
+ *
+ * `SELF` names the runner in the two places an operator is expected to act on:
+ * the "NEON_API_KEY is not set" usage line, and the manual recovery command
+ * printed when a rehearsal branch could not be deleted. It used to be a relative
+ * literal naming this file inside the scripts folder, which is a correct command
+ * only from the repository root. Launched from the scripts folder itself, from a
+ * sibling checkout, or from anywhere else, the instruction handed to someone who
+ * has just been told a copy of production may still be sitting in Neon pointed
+ * at a file that is not there — and the whole value of that message is that it
+ * can be pasted and run immediately.
+ *
+ * `import.meta.url` is a fact about the module, known before any I/O and
+ * unchanged by the directory the process was started in. There is deliberately
+ * no override flag and no working-directory fallback: the runner that must be
+ * re-run is this one, and nothing about where it was launched can change which
+ * file that is.
+ */
+const SELF = fileURLToPath(import.meta.url)
 
 const flag = (name) => {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`))
@@ -731,8 +755,13 @@ async function runProbes(pool) {
  * production nobody has been told to look for.
  *
  * Whatever is identified still goes through `evaluateDeletionGuard`, which is
- * what refuses the production parent, a default or primary branch, a branch that
- * is not named `rehearsal-*`, and a branch whose name is not the expected one.
+ * what refuses the production parent, a default or primary branch, a branch
+ * whose `default`/`primary` metadata does not explicitly say `false`, a branch
+ * that is not named `rehearsal-*`, and a branch whose name is not the expected
+ * one. The flags are required to be proved false rather than merely observed
+ * not-true, so a listing that carried no flags at all is a refusal — on every
+ * path, including the orphan recovery above and the manual `--cleanup` entry
+ * point below.
  */
 async function deleteBranch(apiKey, projectId, { cloneId, branchName, parentId }) {
   const resolution = await confirmCleanupTarget({
@@ -1195,7 +1224,11 @@ async function main() {
     } catch (error) {
       console.error(`    WARNING: the rehearsal branch was not deleted — ${redact(error.message)}`)
       console.error(`    Look for a branch named exactly "${branchName}" in project ${project.id}.`)
-      console.error(`    Remove it by hand: node ${SELF} --cleanup=${cloneId ?? '<its branch id>'}`)
+      /*
+       * The absolute path of THIS file, quoted, so the command works from
+       * whatever directory the operator happens to be standing in.
+       */
+      console.error(`    Remove it by hand: node "${SELF}" --cleanup=${cloneId ?? '<its branch id>'}`)
       exitCode = 1
     }
   }
