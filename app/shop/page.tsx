@@ -7,7 +7,7 @@ import { CatalogFilters, CategoryChips } from '@/components/catalog/catalog-filt
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
 import { getBagCount } from '@/lib/bag/core'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { getCurrentUser, requireMarketplaceAccess } from '@/lib/auth/dal'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import {
@@ -61,11 +61,24 @@ export function parseCatalogSearchParams(params: Record<string, string | string[
   }
 }
 
+/**
+ * The menu — private. Membership is required to see that a catalogue exists at
+ * all, so the guard runs before anything is read and before anything renders.
+ */
 export default async function ShopPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
+  /*
+   * FIRST STATEMENT, DELIBERATELY. Every read below this line is private
+   * catalogue data; none of it may be fetched for a non-member, not even to be
+   * discarded before render. Anonymous is redirected to sign-in and an
+   * authenticated non-member gets 403 — both are thrown from here, so nothing
+   * after this point runs for either.
+   */
+  await requireMarketplaceAccess()
+
   const bagViewer = await getCurrentUser()
   const bagCount = await getBagCount(bagViewer?.id ?? null)
 
@@ -84,7 +97,14 @@ export default async function ShopPage({
 
   return (
     <>
-      <SiteNav bagCount={bagCount} />
+      {/*
+       * The literal is safe here and only here: reaching this line means
+       * `requireMarketplaceAccess()` above returned rather than threw, so entry
+       * is already an established fact of this render. It is NOT inferred from
+       * users.role, users.status, the membership scope or anything a client
+       * sent — the authoritative guard is the only reason this renders.
+       */}
+      <SiteNav bagCount={bagCount} marketplaceEntry="granted" />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-10 sm:px-6">
         <header className="mb-8 flex flex-col gap-3">

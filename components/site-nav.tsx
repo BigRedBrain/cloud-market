@@ -28,8 +28,43 @@ import { cn } from '@/lib/utils'
  * that only exists as colour tells a colour-blind shopper nothing.
  */
 
+/**
+ * MARKETPLACE ENTRY IS TOLD TO THIS COMPONENT, NEVER WORKED OUT BY IT.
+ *
+ * The nav is a client component. It has no session, no database and no way to
+ * be trusted about membership, so it resolves nothing: no DAL import, no
+ * `lib/marketplace/access` import, no reading of a role, a status or a scope
+ * off anything handed to it. A server page that has already made the decision
+ * passes the result in, and this component only chooses a link out of it.
+ *
+ * IT FAILS CLOSED. The prop is optional for compatibility with the call sites
+ * that have not been wired yet (`/bag`, `/checkout/review`, `/design`,
+ * `/orders/[number]`), and every one of those unwired cases — omitted,
+ * `undefined`, or any value this build does not recognise — points at `/gate`.
+ * Only the exact literal `'granted'` produces a `/shop` link, which is why the
+ * test below is a strict equality against the grant rather than a check for the
+ * denial: a new prop value added later lands in the safe branch by default,
+ * instead of leaking the catalogue link until someone remembers to update this.
+ *
+ * A NAV LINK IS NOT A GATE EITHER WAY. Pointing at `/shop` does not admit
+ * anyone; `/shop` runs `requireMarketplaceAccess()` for itself. This exists so
+ * a non-member is offered the door they can actually open.
+ */
+export type MarketplaceEntry = 'granted' | 'denied'
+
+/** The marketplace link for a member: the catalogue, under its ordinary label. */
+const MARKETPLACE_GRANTED_LINK = { href: '/shop', label: 'Shop' } as const
+
+/** Everyone else — denied, anonymous, unwired caller — is sent to the gate. */
+const MARKETPLACE_GATE_LINK = { href: '/gate', label: 'Request access' } as const
+
+/** Strict grant test. Anything that is not the literal grant resolves to /gate. */
+function marketplaceLink(entry: MarketplaceEntry | undefined) {
+  return entry === 'granted' ? MARKETPLACE_GRANTED_LINK : MARKETPLACE_GATE_LINK
+}
+
+/** The links that are public regardless of membership. */
 const LINKS = [
-  { href: '/shop', label: 'Shop' },
   { href: '/deals', label: 'Deals' },
   { href: '/delivery', label: 'Delivery' },
   { href: '/about', label: 'About' },
@@ -37,11 +72,18 @@ const LINKS = [
 
 type SiteNavProps = {
   bagCount?: number
+  /**
+   * The membership decision already made on the server. Optional, and its
+   * default is the denial — omitting it can never widen access.
+   */
+  marketplaceEntry?: MarketplaceEntry
 }
 
-export function SiteNav({ bagCount = 0 }: SiteNavProps) {
+export function SiteNav({ bagCount = 0, marketplaceEntry = 'denied' }: SiteNavProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
+
+  const links = [marketplaceLink(marketplaceEntry), ...LINKS]
 
   useEffect(() => {
     if (!open) return
@@ -108,7 +150,7 @@ export function SiteNav({ bagCount = 0 }: SiteNavProps) {
 
         <nav aria-label="Main" className="hidden md:block">
           <ul className="flex items-center gap-1">
-            {LINKS.map((link) => (
+            {links.map((link) => (
               <li key={link.href}>
                 <a
                   href={link.href}
@@ -171,7 +213,7 @@ export function SiteNav({ bagCount = 0 }: SiteNavProps) {
       >
         <nav aria-label="Main, mobile">
           <ul className="flex flex-col p-2">
-            {LINKS.map((link) => (
+            {links.map((link) => (
               <li key={link.href}>
                 <a
                   href={link.href}

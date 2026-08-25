@@ -13,7 +13,7 @@ import { SmokeBackground } from '@/components/brand/smoke-background'
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
 import { getBagCount } from '@/lib/bag/core'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { getCurrentUser, getMarketplaceAccess } from '@/lib/auth/dal'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -28,7 +28,20 @@ import { Card } from '@/components/ui/card'
  *
  * Featured products and categories come from the live catalogue — the same
  * queries the shop uses, so the homepage cannot drift out of sync with what is
- * actually purchasable.
+ * actually purchasable. They are also the only private thing on this page, and
+ * they are read only for a member — see the branch in the body.
+ *
+ * THIS PAGE IS PUBLIC AND STAYS PUBLIC. It calls the non-redirecting probe,
+ * `getMarketplaceAccess()`, and never `requireMarketplaceAccess()`: a signed-out
+ * visitor gets the hero, the delivery facts and the compliance panel, which is
+ * what a private marketplace's front door is for. Guarding this route would
+ * bounce every prospective member off the one page that tells them what
+ * CloudMarket is.
+ *
+ * THE PROBE IS NOT WHAT PROTECTS THE CATALOGUE. `/shop`, `/shop/[category]` and
+ * `/product/[slug]` each run `requireMarketplaceAccess()` for themselves before
+ * they read anything. The branch here decides what this page renders and what
+ * the nav links to; it is not the boundary, and nothing downstream trusts it.
  */
 
 
@@ -37,11 +50,36 @@ export default async function Home() {
   const bagViewer = await getCurrentUser()
   const bagCount = await getBagCount(bagViewer?.id ?? null)
 
-  const [featured, categories, heroCampaign] = await Promise.all([
-    listFeaturedProducts(3),
-    listCategoriesWithCounts(),
-    getLiveCampaign('hero'),
-  ])
+  /*
+   * The real membership decision, from the database — not `users.role`, not
+   * `users.status`, not a session flag. Anonymous visitors resolve to a
+   * `not_signed_in` denial inside the probe, so there is no separate
+   * signed-out case to get wrong here.
+   */
+  const marketplace = await getMarketplaceAccess()
+
+  /* CMS marketing copy. Public: it is the same words a denied visitor sees. */
+  const heroCampaign = await getLiveCampaign('hero')
+
+  /*
+   * PRIVATE CATALOGUE READS LIVE INSIDE THE GRANTED BRANCH AND NOWHERE ELSE.
+   *
+   * Not fetched-then-hidden. A denied or anonymous visitor's request never
+   * issues these queries at all, so product names, prices and category counts
+   * cannot leak through a payload, a cache entry or a timing difference.
+   */
+  let catalogue: {
+    featured: Awaited<ReturnType<typeof listFeaturedProducts>>
+    categories: Awaited<ReturnType<typeof listCategoriesWithCounts>>
+  } | null = null
+
+  if (marketplace.granted) {
+    const [featured, categories] = await Promise.all([
+      listFeaturedProducts(3),
+      listCategoriesWithCounts(),
+    ])
+    catalogue = { featured, categories }
+  }
 
   /*
    * CMS content with a built-in fallback.
@@ -60,7 +98,15 @@ export default async function Home() {
 
   return (
     <>
-      <SiteNav bagCount={bagCount} />
+      {/*
+       * The decision is passed through, not re-derived. `granted` is the only
+       * value that produces a `/shop` link; every denial, including the
+       * anonymous one, points the nav at `/gate`.
+       */}
+      <SiteNav
+        bagCount={bagCount}
+        marketplaceEntry={marketplace.granted ? 'granted' : 'denied'}
+      />
 
       <main className="flex flex-1 flex-col">
         {/* ---- Hero ---------------------------------------------------- */}
@@ -122,54 +168,93 @@ export default async function Home() {
           ))}
         </section>
 
-        {/* ---- Featured ------------------------------------------------ */}
-        <section className="mx-auto w-full max-w-7xl px-4 py-16 sm:px-6">
-          <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <p className="font-mono text-xs tracking-[0.2em] text-ember uppercase">
-                This week
-              </p>
-              <h2 className="mt-1 font-display text-4xl tracking-tight text-white uppercase">
-                Featured drops
-              </h2>
-            </div>
-            <Link href="/shop">
-              <Button variant="ghost">See the whole menu →</Button>
-            </Link>
-          </div>
-
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {featured.map((product) => (
-              <ProductCard key={product.id} product={product} />
-            ))}
-          </div>
-        </section>
-
-        {/* ---- Categories ---------------------------------------------- */}
-        <section className="border-y-2 border-ink bg-ink-800">
-          <div className="mx-auto w-full max-w-7xl px-4 py-16 sm:px-6">
-            <h2 className="mb-8 font-display text-4xl tracking-tight text-white uppercase">
-              Shop by category
-            </h2>
-
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-              {categories.map((category) => (
-                <Link
-                  key={category.slug}
-                  href={`/shop/${category.slug}` as Route}
-                  className="panel-sm group flex flex-col justify-between gap-6 rounded-md bg-ink-900 p-4 transition-transform duration-150 hover:-translate-x-0.5 hover:-translate-y-0.5"
-                >
-                  <span className="font-display text-lg leading-none tracking-tight text-white uppercase">
-                    {category.name}
-                  </span>
-                  <span className="font-mono text-xs text-smoke">
-                    {category.productCount} item{category.productCount === 1 ? '' : 's'}
-                  </span>
+        {/*
+         * ---- Featured + categories, members only --------------------------
+         *
+         * `catalogue` is non-null only in the granted branch above, so this
+         * whole block is unreachable for a non-member and there is no second
+         * membership test here to fall out of step with the first.
+         */}
+        {catalogue ? (
+          <>
+            {/* ---- Featured ------------------------------------------------ */}
+            <section className="mx-auto w-full max-w-7xl px-4 py-16 sm:px-6">
+              <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <p className="font-mono text-xs tracking-[0.2em] text-ember uppercase">
+                    This week
+                  </p>
+                  <h2 className="mt-1 font-display text-4xl tracking-tight text-white uppercase">
+                    Featured drops
+                  </h2>
+                </div>
+                <Link href="/shop">
+                  <Button variant="ghost">See the whole menu →</Button>
                 </Link>
-              ))}
-            </div>
-          </div>
-        </section>
+              </div>
+
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                {catalogue.featured.map((product) => (
+                  <ProductCard key={product.id} product={product} />
+                ))}
+              </div>
+            </section>
+
+            {/* ---- Categories ---------------------------------------------- */}
+            <section className="border-y-2 border-ink bg-ink-800">
+              <div className="mx-auto w-full max-w-7xl px-4 py-16 sm:px-6">
+                <h2 className="mb-8 font-display text-4xl tracking-tight text-white uppercase">
+                  Shop by category
+                </h2>
+
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                  {catalogue.categories.map((category) => (
+                    <Link
+                      key={category.slug}
+                      href={`/shop/${category.slug}` as Route}
+                      className="panel-sm group flex flex-col justify-between gap-6 rounded-md bg-ink-900 p-4 transition-transform duration-150 hover:-translate-x-0.5 hover:-translate-y-0.5"
+                    >
+                      <span className="font-display text-lg leading-none tracking-tight text-white uppercase">
+                        {category.name}
+                      </span>
+                      <span className="font-mono text-xs text-smoke">
+                        {category.productCount} item
+                        {category.productCount === 1 ? '' : 's'}
+                      </span>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            </section>
+          </>
+        ) : (
+          /*
+           * ---- Non-member: the way in, not the menu ------------------------
+           *
+           * Static copy only — no product names, no counts, nothing read from
+           * the catalogue. It replaces the members' sections so the page keeps
+           * its rhythm and a visitor is handed the one route that can act on
+           * their request.
+           */
+          <section className="mx-auto w-full max-w-7xl px-4 py-16 sm:px-6">
+            <Card className="flex flex-col items-start gap-4 p-6">
+              <p className="font-mono text-xs tracking-[0.2em] text-ember uppercase">
+                Members only
+              </p>
+              <h2 className="font-display text-4xl tracking-tight text-white uppercase">
+                The menu is behind the gate
+              </h2>
+              <p className="max-w-lg leading-relaxed text-smoke">
+                Products, prices and vendor inventory stay behind approved
+                membership. Apply as a shopper or a vendor, or redeem an invite
+                code.
+              </p>
+              <Link href="/gate">
+                <Button variant="outline">Request access</Button>
+              </Link>
+            </Card>
+          </section>
+        )}
 
         {/* ---- Delivery area + trust ----------------------------------- */}
         <section className="mx-auto grid w-full max-w-7xl gap-5 px-4 py-16 sm:px-6 lg:grid-cols-2">
