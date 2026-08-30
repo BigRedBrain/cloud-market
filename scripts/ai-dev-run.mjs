@@ -56,6 +56,33 @@ const FORBIDDEN_ROOTS = [
   'node_modules',
 ];
 
+function printHelp() {
+  console.log(`
+CloudMarket AI Development Runner
+=================================
+
+Usage:
+  node scripts/ai-dev-run.mjs "<development task>"
+  node scripts/ai-dev-run.mjs --run-workers "<development task>"
+  node scripts/ai-dev-run.mjs --approve-high-risk --run-workers "<development task>"
+  node scripts/ai-dev-run.mjs --help
+
+Options:
+  --run-workers
+      Explicitly allow planned AI workers to execute.
+
+  --approve-high-risk
+      Explicitly approve planner-classified high-risk execution.
+
+  --help, -h
+      Show this help and exit without planning or creating worktrees.
+
+Safety:
+  Help mode performs no AI planning, worker execution,
+  commits, pushes, merges, deployments, or database actions.
+`);
+}
+
 function git(args, cwd) {
   return execFileSync(
     'git',
@@ -74,6 +101,7 @@ function parseArgs() {
 
   let approveHighRisk = false;
   let runWorkers = false;
+  let showHelp = false;
 
   const taskParts = [];
 
@@ -84,6 +112,14 @@ function parseArgs() {
   ) {
     const arg =
       args[index];
+
+    if (
+      arg === '--help' ||
+      arg === '-h'
+    ) {
+      showHelp = true;
+      continue;
+    }
 
     if (
       arg ===
@@ -109,6 +145,15 @@ function parseArgs() {
       .join(' ')
       .trim();
 
+  if (showHelp) {
+    return {
+      task,
+      approveHighRisk,
+      runWorkers,
+      showHelp,
+    };
+  }
+
   if (!task) {
     throw new Error(
       'A development task is required.',
@@ -119,6 +164,7 @@ function parseArgs() {
   task,
   approveHighRisk,
   runWorkers,
+  showHelp,
 };
 }
 
@@ -1076,8 +1122,14 @@ async function main() {
     task,
     approveHighRisk,
     runWorkers,
+    showHelp,
   } =
     parseArgs();
+
+  if (showHelp) {
+    printHelp();
+    return;
+  }
 
   const repoRoot =
     getRepoRoot();
