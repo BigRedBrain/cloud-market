@@ -1622,6 +1622,16 @@ createWorkerWorktrees({
   workers,
 });
 
+writeSessionManifest({
+  repoRoot,
+  task,
+  plan,
+  sessionId,
+  taskSlug,
+  worktreeRoot,
+  workers,
+});
+
 console.log('');
 console.log(
   'WORKTREES CREATED',
