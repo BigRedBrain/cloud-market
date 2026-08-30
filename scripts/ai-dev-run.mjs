@@ -24,6 +24,8 @@
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
+  writeFileSync,
 } from 'node:fs';
 
 import {
@@ -1166,6 +1168,150 @@ async function runParallelWorkers({
 
   return true;
 }
+
+function getSessionManifestPath(
+  worktreeRoot,
+) {
+  return join(
+    worktreeRoot,
+    'ai-session-manifest.json',
+  );
+}
+
+function writeSessionManifest({
+  repoRoot,
+  task,
+  plan,
+  sessionId,
+  taskSlug,
+  worktreeRoot,
+  workers,
+}) {
+  const manifestPath =
+    getSessionManifestPath(
+      worktreeRoot,
+    );
+
+  if (existsSync(manifestPath)) {
+    throw new Error(
+      'Session manifest already exists. Refusing to overwrite it.',
+    );
+  }
+
+  const now =
+    new Date().toISOString();
+
+  const manifest = {
+    manifestVersion: 1,
+
+    sessionId,
+    task,
+    taskSlug,
+
+    status:
+      'worktrees-created',
+
+    createdAt:
+      now,
+
+    updatedAt:
+      now,
+
+    baseRef:
+      BASE_REF,
+
+    baseCommit:
+      git(
+        [
+          'rev-parse',
+          BASE_REF,
+        ],
+        repoRoot,
+      ),
+
+    worktreeRoot,
+
+    workers:
+      workers.map(
+        (worker) => ({
+          role:
+            worker.role,
+
+          branch:
+            worker.branch,
+
+          path:
+            worker.path,
+        }),
+      ),
+
+    plan,
+  };
+
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      manifest,
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  console.log('');
+  console.log(
+    'SESSION MANIFEST CREATED',
+  );
+
+  console.log(
+    `  ${manifestPath}`,
+  );
+}
+
+function updateSessionManifestStatus(
+  worktreeRoot,
+  status,
+) {
+  const manifestPath =
+    getSessionManifestPath(
+      worktreeRoot,
+    );
+
+  if (!existsSync(manifestPath)) {
+    throw new Error(
+      'Session manifest is missing. Refusing to update session status.',
+    );
+  }
+
+  const manifest =
+    JSON.parse(
+      readFileSync(
+        manifestPath,
+        'utf8',
+      ),
+    );
+
+  manifest.status =
+    status;
+
+  manifest.updatedAt =
+    new Date().toISOString();
+
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      manifest,
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  console.log(
+    `Session manifest status: ${status}`,
+  );
+}
+
 async function main() {
   const {
     task,
@@ -1263,6 +1409,7 @@ async function main() {
     );
 const {
   sessionId,
+  taskSlug,
   worktreeRoot,
   workers,
 } =
@@ -1514,6 +1661,10 @@ const workerExecutionPassed =
 if (
   !workerExecutionPassed
 ) {
+  updateSessionManifestStatus(
+    worktreeRoot,
+    'worker-audit-failed',
+  );
   console.log('');
   console.log(
     'EXECUTION STOPPED FOR INSPECTION',
@@ -1530,6 +1681,11 @@ if (
 console.log('');
 console.log(
   '=================================',
+);
+
+updateSessionManifestStatus(
+  worktreeRoot,
+  'workers-audited',
 );
 
 console.log(
