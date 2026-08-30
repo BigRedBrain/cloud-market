@@ -24,6 +24,10 @@ import {
 } from 'node:child_process';
 
 import {
+  createHash,
+} from 'node:crypto';
+
+import {
   pathToFileURL,
 } from 'node:url';
 
@@ -983,6 +987,22 @@ function verifyCombinedTree({
   return diffStat;
 }
 
+function sha256File(
+  filePath,
+) {
+  return createHash(
+    'sha256',
+  )
+    .update(
+      readFileSync(
+        filePath,
+      ),
+    )
+    .digest(
+      'hex',
+    );
+}
+
 function updateManifestPrepared({
   manifestPath,
   manifest,
@@ -1028,6 +1048,17 @@ function updateManifestPrepared({
 
           operation:
             change.operation,
+
+          sha256:
+            change.operation ===
+            'copy'
+              ? sha256File(
+                  join(
+                    integrationPath,
+                    change.path,
+                  ),
+                )
+              : null,
         }),
       ),
   };
