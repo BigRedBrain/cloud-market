@@ -102,6 +102,7 @@ function parseArgs() {
   let approveHighRisk = false;
   let runWorkers = false;
   let showHelp = false;
+  let integrateSessionId = null;
 
   const taskParts = [];
 
@@ -112,6 +113,24 @@ function parseArgs() {
   ) {
     const arg =
       args[index];
+
+    if (arg === '--integrate') {
+      const candidate =
+        args[index + 1]?.trim();
+
+      if (
+        !candidate ||
+        !/^\d{14}$/.test(candidate)
+      ) {
+        throw new Error(
+          '--integrate requires a 14-digit session ID.',
+        );
+      }
+
+      integrateSessionId = candidate;
+      index += 1;
+      continue;
+    }
 
     if (
       arg === '--help' ||
@@ -151,6 +170,35 @@ function parseArgs() {
       approveHighRisk,
       runWorkers,
       showHelp,
+      integrateSessionId,
+    };
+  }
+
+  if (integrateSessionId) {
+    if (runWorkers) {
+      throw new Error(
+        'Integration mode cannot be combined with --run-workers.',
+      );
+    }
+
+    if (approveHighRisk) {
+      throw new Error(
+        'Integration mode cannot be combined with --approve-high-risk.',
+      );
+    }
+
+    if (task) {
+      throw new Error(
+        'Integration mode accepts only --integrate <session-id>.',
+      );
+    }
+
+    return {
+      task,
+      approveHighRisk,
+      runWorkers,
+      showHelp,
+      integrateSessionId,
     };
   }
 
@@ -164,8 +212,9 @@ function parseArgs() {
   task,
   approveHighRisk,
   runWorkers,
-  showHelp,
-};
+      showHelp,
+      integrateSessionId,
+    };
 }
 
 function getRepoRoot() {
@@ -1123,11 +1172,45 @@ async function main() {
     approveHighRisk,
     runWorkers,
     showHelp,
+    integrateSessionId,
   } =
     parseArgs();
 
   if (showHelp) {
     printHelp();
+    return;
+  }
+
+  if (integrateSessionId) {
+    console.log('');
+    console.log(
+      'CONTROLLED INTEGRATION MODE',
+    );
+    console.log(
+      '===========================',
+    );
+    console.log(
+      `Session: ${integrateSessionId}`,
+    );
+    console.log('');
+    console.log(
+      'Integration CLI gate: PASS',
+    );
+    console.log(
+      'Planner execution: DISABLED',
+    );
+    console.log(
+      'Worker execution: DISABLED',
+    );
+    console.log('');
+    console.log(
+      'Integration engine is not enabled yet.',
+    );
+    console.log(
+      'No files, commits, pushes, merges, deployments, or database actions occurred.',
+    );
+
+    process.exitCode = 4;
     return;
   }
 
