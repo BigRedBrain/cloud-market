@@ -40,6 +40,10 @@ import {
 } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  runControlledIntegration,
+} from './ai-integrate.mjs';
+
 
 const BASE_REF =
   process.env.AI_DEV_BASE_REF?.trim() ||
@@ -1328,35 +1332,14 @@ async function main() {
   }
 
   if (integrateSessionId) {
-    console.log('');
-    console.log(
-      'CONTROLLED INTEGRATION MODE',
-    );
-    console.log(
-      '===========================',
-    );
-    console.log(
-      `Session: ${integrateSessionId}`,
-    );
-    console.log('');
-    console.log(
-      'Integration CLI gate: PASS',
-    );
-    console.log(
-      'Planner execution: DISABLED',
-    );
-    console.log(
-      'Worker execution: DISABLED',
-    );
-    console.log('');
-    console.log(
-      'Integration engine is not enabled yet.',
-    );
-    console.log(
-      'No files, commits, pushes, merges, deployments, or database actions occurred.',
-    );
+    runControlledIntegration({
+      repoRoot:
+        getRepoRoot(),
 
-    process.exitCode = 4;
+      sessionId:
+        integrateSessionId,
+    });
+
     return;
   }
 
