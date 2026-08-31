@@ -64,6 +64,11 @@ import {
   listSessions,
 } from './ai-list-sessions.mjs';
 
+import {
+  checkSessionCleanup,
+  executeSessionCleanup,
+} from './ai-cleanup-session.mjs';
+
 
 const BASE_REF =
   process.env.AI_DEV_BASE_REF?.trim() ||
@@ -134,6 +139,8 @@ function parseArgs() {
   let openPrSessionId = null;
   let statusSessionId = null;
   let listSessionsRequested = false;
+  let cleanupCheckSessionId = null;
+  let cleanupSessionId = null;
 
   const taskParts = [];
 
@@ -250,6 +257,46 @@ function parseArgs() {
       continue;
     }
 
+    if (arg === '--cleanup-check') {
+      const candidate =
+        args[index + 1]?.trim();
+
+      if (
+        !candidate ||
+        !/^d{14}$/.test(candidate)
+      ) {
+        throw new Error(
+          '--cleanup-check requires a 14-digit session ID.',
+        );
+      }
+
+      cleanupCheckSessionId =
+        candidate;
+
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--cleanup') {
+      const candidate =
+        args[index + 1]?.trim();
+
+      if (
+        !candidate ||
+        !/^d{14}$/.test(candidate)
+      ) {
+        throw new Error(
+          '--cleanup requires a 14-digit session ID.',
+        );
+      }
+
+      cleanupSessionId =
+        candidate;
+
+      index += 1;
+      continue;
+    }
+
     if (
       arg === '--help' ||
       arg === '-h'
@@ -287,6 +334,47 @@ function parseArgs() {
     taskParts
       .join(' ')
       .trim();
+
+  if (
+    cleanupCheckSessionId ||
+    cleanupSessionId
+  ) {
+    if (
+      (
+        cleanupCheckSessionId &&
+        cleanupSessionId
+      ) ||
+      integrateSessionId ||
+      commitIntegrationSessionId ||
+      pushIntegrationSessionId ||
+      openPrSessionId ||
+      statusSessionId ||
+      listSessionsRequested ||
+      runWorkers ||
+      approveHighRisk ||
+      showHelp ||
+      task
+    ) {
+      throw new Error(
+        'Cleanup mode cannot be combined with any other runner mode, option, or task text.',
+      );
+    }
+
+    return {
+      task,
+      approveHighRisk,
+      runWorkers,
+      showHelp,
+      integrateSessionId,
+      commitIntegrationSessionId,
+      pushIntegrationSessionId,
+      openPrSessionId,
+      statusSessionId,
+      listSessionsRequested,
+      cleanupCheckSessionId,
+      cleanupSessionId,
+    };
+  }
 
   if (showHelp) {
     return {
@@ -1655,6 +1743,8 @@ async function main() {
     openPrSessionId,
     statusSessionId,
     listSessionsRequested,
+    cleanupCheckSessionId,
+    cleanupSessionId,
   } =
     parseArgs();
 
@@ -1727,6 +1817,30 @@ async function main() {
     listSessions({
       repoRoot:
         getRepoRoot(),
+    });
+
+    return;
+  }
+
+  if (cleanupCheckSessionId) {
+    checkSessionCleanup({
+      repoRoot:
+        getRepoRoot(),
+
+      sessionId:
+        cleanupCheckSessionId,
+    });
+
+    return;
+  }
+
+  if (cleanupSessionId) {
+    executeSessionCleanup({
+      repoRoot:
+        getRepoRoot(),
+
+      sessionId:
+        cleanupSessionId,
     });
 
     return;
