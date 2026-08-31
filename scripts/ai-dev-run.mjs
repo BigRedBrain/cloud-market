@@ -56,6 +56,10 @@ import {
   runOpenPr,
 } from './ai-open-pr.mjs';
 
+import {
+  showSessionStatus,
+} from './ai-session-status.mjs';
+
 
 const BASE_REF =
   process.env.AI_DEV_BASE_REF?.trim() ||
@@ -124,6 +128,7 @@ function parseArgs() {
   let commitIntegrationSessionId = null;
   let pushIntegrationSessionId = null;
   let openPrSessionId = null;
+  let statusSessionId = null;
 
   const taskParts = [];
 
@@ -213,6 +218,26 @@ function parseArgs() {
       continue;
     }
 
+    if (arg === '--status') {
+      const candidate =
+        args[index + 1]?.trim();
+
+      if (
+        !candidate ||
+        !/^\d{14}$/.test(candidate)
+      ) {
+        throw new Error(
+          '--status requires a 14-digit session ID.',
+        );
+      }
+
+      statusSessionId =
+        candidate;
+
+      index += 1;
+      continue;
+    }
+
     if (
       arg === '--help' ||
       arg === '-h'
@@ -261,6 +286,7 @@ function parseArgs() {
       commitIntegrationSessionId,
       pushIntegrationSessionId,
       openPrSessionId,
+      statusSessionId,
     };
   }
 
@@ -310,6 +336,7 @@ function parseArgs() {
       commitIntegrationSessionId,
       pushIntegrationSessionId,
       openPrSessionId,
+      statusSessionId,
     };
   }
 
@@ -353,6 +380,7 @@ function parseArgs() {
       commitIntegrationSessionId,
       pushIntegrationSessionId,
       openPrSessionId,
+      statusSessionId,
     };
   }
 
@@ -390,6 +418,7 @@ function parseArgs() {
       commitIntegrationSessionId,
       pushIntegrationSessionId,
       openPrSessionId,
+      statusSessionId,
     };
   }
 
@@ -421,6 +450,35 @@ function parseArgs() {
       commitIntegrationSessionId,
       pushIntegrationSessionId,
       openPrSessionId,
+      statusSessionId,
+    };
+  }
+
+  if (statusSessionId) {
+    if (
+      integrateSessionId ||
+      commitIntegrationSessionId ||
+      pushIntegrationSessionId ||
+      openPrSessionId ||
+      runWorkers ||
+      approveHighRisk ||
+      task
+    ) {
+      throw new Error(
+        'Status mode accepts only --status <session-id>.',
+      );
+    }
+
+    return {
+      task,
+      approveHighRisk,
+      runWorkers,
+      showHelp,
+      integrateSessionId,
+      commitIntegrationSessionId,
+      pushIntegrationSessionId,
+      openPrSessionId,
+      statusSessionId,
     };
   }
 
@@ -439,6 +497,7 @@ function parseArgs() {
       commitIntegrationSessionId,
       pushIntegrationSessionId,
       openPrSessionId,
+      statusSessionId,
     };
 }
 
@@ -1545,6 +1604,7 @@ async function main() {
     commitIntegrationSessionId,
     pushIntegrationSessionId,
     openPrSessionId,
+    statusSessionId,
   } =
     parseArgs();
 
@@ -1596,6 +1656,18 @@ async function main() {
 
       sessionId:
         openPrSessionId,
+    });
+
+    return;
+  }
+
+  if (statusSessionId) {
+    showSessionStatus({
+      repoRoot:
+        getRepoRoot(),
+
+      sessionId:
+        statusSessionId,
     });
 
     return;
