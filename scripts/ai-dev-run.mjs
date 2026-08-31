@@ -212,6 +212,12 @@ function parseArgs() {
       continue;
     }
 
+    if (arg.startsWith('--')) {
+      throw new Error(
+        `Unknown option: ${arg}`,
+      );
+    }
+
     taskParts.push(arg);
   }
 
