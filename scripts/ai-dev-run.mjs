@@ -96,6 +96,18 @@ Usage:
   node scripts/ai-dev-run.mjs "<development task>"
   node scripts/ai-dev-run.mjs --run-workers "<development task>"
   node scripts/ai-dev-run.mjs --approve-high-risk --run-workers "<development task>"
+
+  node scripts/ai-dev-run.mjs --integrate <14-digit-session-id>
+  node scripts/ai-dev-run.mjs --commit-integration <14-digit-session-id>
+  node scripts/ai-dev-run.mjs --push-integration <14-digit-session-id>
+  node scripts/ai-dev-run.mjs --open-pr <14-digit-session-id>
+
+  node scripts/ai-dev-run.mjs --status <14-digit-session-id>
+  node scripts/ai-dev-run.mjs --list-sessions
+
+  node scripts/ai-dev-run.mjs --cleanup-check <14-digit-session-id>
+  node scripts/ai-dev-run.mjs --cleanup <14-digit-session-id>
+
   node scripts/ai-dev-run.mjs --help
 
 Options:
@@ -105,15 +117,65 @@ Options:
   --approve-high-risk
       Explicitly approve planner-classified high-risk execution.
 
+  --integrate <session-id>
+      Prepare an isolated integration worktree from an audited worker session.
+      Does not commit, push, merge, deploy, or run database actions.
+
+  --commit-integration <session-id>
+      Create the human-approved integration commit after verification.
+      Does not push, merge, deploy, or run database actions.
+
+  --push-integration <session-id>
+      Push the exact approved integration commit to its recorded AI branch.
+      Does not force-push or merge.
+
+  --open-pr <session-id>
+      Open a pull request from the approved AI integration branch to main.
+      Does not merge the pull request.
+
+  --status <session-id>
+      Show manifest, worktree, remote, and pull-request state.
+      Read-only.
+
+  --list-sessions
+      List recorded AI development sessions and their manifest status.
+      Read-only.
+
+  --cleanup-check <session-id>
+      Verify that a completed session is safe to clean up.
+      Read-only; removes nothing.
+
+  --cleanup <session-id>
+      Human-approved local cleanup of a verified completed session.
+      Removes only recorded local session worktrees and local AI branches.
+      Does not delete remote branches or change pull requests.
+
   --help, -h
       Show this help and exit without planning or creating worktrees.
 
+Controlled lifecycle:
+  task
+    -> workers
+    -> integration
+    -> commit
+    -> push
+    -> pull request
+    -> CI / human review
+    -> MANUAL MERGE
+    -> cleanup
+
 Safety:
-  Help mode performs no AI planning, worker execution,
-  commits, pushes, merges, deployments, or database actions.
+  Unknown options are rejected.
+  Session stage transitions fail closed.
+  Integration files are SHA-256 verified before commit.
+  No automatic merge to main is implemented.
+  No force-push is performed.
+  Cleanup does not delete remote branches or modify pull requests.
+  Integration, commit, push, PR, status, and cleanup stages do not run
+  database migrations or local deployments.
+  Remote pushes or pull requests may trigger configured CI/CD services.
 `);
 }
-
 function git(args, cwd) {
   return execFileSync(
     'git',
