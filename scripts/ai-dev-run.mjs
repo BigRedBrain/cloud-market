@@ -263,7 +263,7 @@ function parseArgs() {
 
       if (
         !candidate ||
-        !/^d{14}$/.test(candidate)
+        !/^\d{14}$/.test(candidate)
       ) {
         throw new Error(
           '--cleanup-check requires a 14-digit session ID.',
@@ -283,7 +283,7 @@ function parseArgs() {
 
       if (
         !candidate ||
-        !/^d{14}$/.test(candidate)
+        !/^\d{14}$/.test(candidate)
       ) {
         throw new Error(
           '--cleanup requires a 14-digit session ID.',
