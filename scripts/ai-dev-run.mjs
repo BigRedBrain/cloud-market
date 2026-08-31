@@ -60,6 +60,10 @@ import {
   showSessionStatus,
 } from './ai-session-status.mjs';
 
+import {
+  listSessions,
+} from './ai-list-sessions.mjs';
+
 
 const BASE_REF =
   process.env.AI_DEV_BASE_REF?.trim() ||
@@ -129,6 +133,7 @@ function parseArgs() {
   let pushIntegrationSessionId = null;
   let openPrSessionId = null;
   let statusSessionId = null;
+  let listSessionsRequested = false;
 
   const taskParts = [];
 
@@ -238,6 +243,13 @@ function parseArgs() {
       continue;
     }
 
+    if (arg === '--list-sessions') {
+      listSessionsRequested =
+        true;
+
+      continue;
+    }
+
     if (
       arg === '--help' ||
       arg === '-h'
@@ -287,6 +299,7 @@ function parseArgs() {
       pushIntegrationSessionId,
       openPrSessionId,
       statusSessionId,
+      listSessionsRequested,
     };
   }
 
@@ -337,6 +350,7 @@ function parseArgs() {
       pushIntegrationSessionId,
       openPrSessionId,
       statusSessionId,
+      listSessionsRequested,
     };
   }
 
@@ -381,6 +395,7 @@ function parseArgs() {
       pushIntegrationSessionId,
       openPrSessionId,
       statusSessionId,
+      listSessionsRequested,
     };
   }
 
@@ -419,6 +434,7 @@ function parseArgs() {
       pushIntegrationSessionId,
       openPrSessionId,
       statusSessionId,
+      listSessionsRequested,
     };
   }
 
@@ -451,6 +467,7 @@ function parseArgs() {
       pushIntegrationSessionId,
       openPrSessionId,
       statusSessionId,
+      listSessionsRequested,
     };
   }
 
@@ -479,6 +496,37 @@ function parseArgs() {
       pushIntegrationSessionId,
       openPrSessionId,
       statusSessionId,
+      listSessionsRequested,
+    };
+  }
+
+  if (listSessionsRequested) {
+    if (
+      integrateSessionId ||
+      commitIntegrationSessionId ||
+      pushIntegrationSessionId ||
+      openPrSessionId ||
+      statusSessionId ||
+      runWorkers ||
+      approveHighRisk ||
+      task
+    ) {
+      throw new Error(
+        'List sessions mode accepts only --list-sessions.',
+      );
+    }
+
+    return {
+      task,
+      approveHighRisk,
+      runWorkers,
+      showHelp,
+      integrateSessionId,
+      commitIntegrationSessionId,
+      pushIntegrationSessionId,
+      openPrSessionId,
+      statusSessionId,
+      listSessionsRequested,
     };
   }
 
@@ -498,6 +546,7 @@ function parseArgs() {
       pushIntegrationSessionId,
       openPrSessionId,
       statusSessionId,
+      listSessionsRequested,
     };
 }
 
@@ -1605,6 +1654,7 @@ async function main() {
     pushIntegrationSessionId,
     openPrSessionId,
     statusSessionId,
+    listSessionsRequested,
   } =
     parseArgs();
 
@@ -1668,6 +1718,15 @@ async function main() {
 
       sessionId:
         statusSessionId,
+    });
+
+    return;
+  }
+
+  if (listSessionsRequested) {
+    listSessions({
+      repoRoot:
+        getRepoRoot(),
     });
 
     return;
