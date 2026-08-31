@@ -9,6 +9,7 @@ import {
   lstatSync,
   readFileSync,
   readdirSync,
+  writeFileSync,
 } from 'node:fs';
 
 import {
@@ -1152,28 +1153,675 @@ export function checkSessionCleanup({
   };
 }
 
+
+function commonGitDir(
+  worktreePath,
+) {
+  const value =
+    commandText(
+      'git',
+      [
+        'rev-parse',
+        '--git-common-dir',
+      ],
+      worktreePath,
+    );
+
+  return isAbsolute(value)
+    ? resolve(value)
+    : resolve(
+        worktreePath,
+        value,
+      );
+}
+
+function getSessionRepositoryRoot(
+  manifest,
+) {
+  const integrationPath =
+    manifest.integration?.path;
+
+  if (!integrationPath) {
+    throw new Error(
+      'Integration worktree path is missing.',
+    );
+  }
+
+  const commonDir =
+    commonGitDir(
+      integrationPath,
+    );
+
+  const repositoryRoot =
+    resolve(
+      commonDir,
+      '..',
+    );
+
+  const topLevel =
+    commandText(
+      'git',
+      [
+        'rev-parse',
+        '--show-toplevel',
+      ],
+      repositoryRoot,
+    );
+
+  if (
+    !samePath(
+      topLevel,
+      repositoryRoot,
+    )
+  ) {
+    throw new Error(
+      'Could not safely resolve the parent repository for cleanup.',
+    );
+  }
+
+  const expectedCommonDir =
+    commonGitDir(
+      integrationPath,
+    );
+
+  for (
+    const worker
+    of manifest.workers ?? []
+  ) {
+    const workerCommonDir =
+      commonGitDir(
+        worker.path,
+      );
+
+    if (
+      !samePath(
+        workerCommonDir,
+        expectedCommonDir,
+      )
+    ) {
+      throw new Error(
+        `${worker.role} worker belongs to a different Git repository.`,
+      );
+    }
+  }
+
+  return repositoryRoot;
+}
+
+function localBranchExists(
+  repositoryRoot,
+  branch,
+) {
+  try {
+    execFileSync(
+      'git',
+      [
+        'show-ref',
+        '--verify',
+        '--quiet',
+        `refs/heads/${branch}`,
+      ],
+      {
+        cwd:
+          repositoryRoot,
+
+        stdio: [
+          'ignore',
+          'ignore',
+          'ignore',
+        ],
+      },
+    );
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validateCleanupBranches({
+  manifest,
+  sessionId,
+  repositoryRoot,
+}) {
+  const branches = [];
+
+  for (
+    const worker
+    of manifest.workers ?? []
+  ) {
+    const branch =
+      worker.branch;
+
+    if (
+      typeof branch !== 'string' ||
+      !branch.startsWith('ai/') ||
+      !branch.includes(sessionId) ||
+      !branch.endsWith(
+        `-${worker.role}`,
+      )
+    ) {
+      throw new Error(
+        `Unsafe worker branch name for cleanup: ${branch}`,
+      );
+    }
+
+    branches.push(branch);
+  }
+
+  const integrationBranch =
+    manifest.integration
+      ?.branch;
+
+  if (
+    integrationBranch !==
+    `ai/integrate-${sessionId}`
+  ) {
+    throw new Error(
+      'Integration branch does not match the exact cleanup naming convention.',
+    );
+  }
+
+  branches.push(
+    integrationBranch,
+  );
+
+  if (
+    new Set(branches).size !==
+    branches.length
+  ) {
+    throw new Error(
+      'Duplicate cleanup branches detected.',
+    );
+  }
+
+  const currentBranch =
+    commandText(
+      'git',
+      [
+        'branch',
+        '--show-current',
+      ],
+      repositoryRoot,
+    );
+
+  if (
+    branches.includes(
+      currentBranch,
+    )
+  ) {
+    throw new Error(
+      `Cleanup target branch is currently checked out in the parent repository: ${currentBranch}`,
+    );
+  }
+
+  for (
+    const branch
+    of branches
+  ) {
+    if (
+      !localBranchExists(
+        repositoryRoot,
+        branch,
+      )
+    ) {
+      throw new Error(
+        `Recorded local cleanup branch is missing: ${branch}`,
+      );
+    }
+  }
+
+  return branches;
+}
+
+function removeRecordedWorktree({
+  repositoryRoot,
+  worktreePath,
+  label,
+}) {
+  execFileSync(
+    'git',
+    [
+      'worktree',
+      'remove',
+      '--force',
+      worktreePath,
+    ],
+    {
+      cwd:
+        repositoryRoot,
+
+      stdio:
+        'inherit',
+    },
+  );
+
+  if (
+    existsSync(
+      worktreePath,
+    )
+  ) {
+    throw new Error(
+      `${label} worktree still exists after Git removal.`,
+    );
+  }
+}
+
+function deleteRecordedBranch({
+  repositoryRoot,
+  branch,
+}) {
+  execFileSync(
+    'git',
+    [
+      'branch',
+      '-D',
+      branch,
+    ],
+    {
+      cwd:
+        repositoryRoot,
+
+      stdio:
+        'inherit',
+    },
+  );
+
+  if (
+    localBranchExists(
+      repositoryRoot,
+      branch,
+    )
+  ) {
+    throw new Error(
+      `Local branch still exists after deletion: ${branch}`,
+    );
+  }
+}
+
+function writeCleanupState({
+  manifestPath,
+  manifest,
+  cleanup,
+}) {
+  manifest.cleanup =
+    cleanup;
+
+  manifest.updatedAt =
+    new Date()
+      .toISOString();
+
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      manifest,
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+}
+
+export function executeSessionCleanup({
+  repoRoot,
+  sessionId,
+}) {
+  console.log('');
+  console.log(
+    'HUMAN-APPROVED SESSION CLEANUP',
+  );
+  console.log(
+    '==============================',
+  );
+  console.log(
+    `Session: ${sessionId}`,
+  );
+  console.log('');
+
+  // Mandatory full preflight immediately
+  // before any destructive operation.
+  const checked =
+    checkSessionCleanup({
+      repoRoot,
+      sessionId,
+    });
+
+  const {
+    manifest,
+    manifestPath,
+    sessionRoot,
+    livePr,
+  } = checked;
+
+  const repositoryRoot =
+    getSessionRepositoryRoot(
+      manifest,
+    );
+
+  const branches =
+    validateCleanupBranches({
+      manifest,
+      sessionId,
+      repositoryRoot,
+    });
+
+  console.log('');
+  console.log(
+    'DESTRUCTIVE CLEANUP PLAN',
+  );
+  console.log(
+    '========================',
+  );
+
+  for (
+    const worker
+    of manifest.workers
+  ) {
+    console.log(
+      `Remove worktree: ${worker.path}`,
+    );
+  }
+
+  console.log(
+    `Remove worktree: ${manifest.integration.path}`,
+  );
+
+  for (
+    const branch
+    of branches
+  ) {
+    console.log(
+      `Delete local branch: ${branch}`,
+    );
+  }
+
+  console.log('');
+  console.log(
+    'Remote branches will NOT be deleted.',
+  );
+  console.log(
+    'GitHub pull requests will NOT be changed.',
+  );
+  console.log(
+    'No merge, deployment, migration, or database command will run.',
+  );
+  console.log('');
+
+  const removedWorktrees = [];
+  const deletedBranches = [];
+
+  const cleanup =
+    {
+      status:
+        'in-progress',
+
+      startedAt:
+        new Date()
+          .toISOString(),
+
+      completedAt:
+        null,
+
+      pullRequest:
+        {
+          number:
+            livePr.number,
+
+          state:
+            livePr.state,
+        },
+
+      remoteBranchDeleted:
+        false,
+
+      pullRequestChanged:
+        false,
+
+      removedWorktrees,
+
+      deletedBranches,
+    };
+
+  // Record the attempt before deletion.
+  writeCleanupState({
+    manifestPath,
+    manifest,
+    cleanup,
+  });
+
+  try {
+    for (
+      const worker
+      of manifest.workers
+    ) {
+      removeRecordedWorktree({
+        repositoryRoot,
+        worktreePath:
+          worker.path,
+
+        label:
+          worker.role,
+      });
+
+      removedWorktrees.push({
+        role:
+          worker.role,
+
+        path:
+          worker.path,
+      });
+
+      writeCleanupState({
+        manifestPath,
+        manifest,
+        cleanup,
+      });
+    }
+
+    removeRecordedWorktree({
+      repositoryRoot,
+      worktreePath:
+        manifest.integration.path,
+
+      label:
+        'integration',
+    });
+
+    removedWorktrees.push({
+      role:
+        'integration',
+
+      path:
+        manifest.integration.path,
+    });
+
+    writeCleanupState({
+      manifestPath,
+      manifest,
+      cleanup,
+    });
+
+    // Remove stale administrative worktree
+    // metadata, if any.
+    execFileSync(
+      'git',
+      [
+        'worktree',
+        'prune',
+      ],
+      {
+        cwd:
+          repositoryRoot,
+
+        stdio:
+          'inherit',
+      },
+    );
+
+    for (
+      const branch
+      of branches
+    ) {
+      deleteRecordedBranch({
+        repositoryRoot,
+        branch,
+      });
+
+      deletedBranches.push(
+        branch,
+      );
+
+      writeCleanupState({
+        manifestPath,
+        manifest,
+        cleanup,
+      });
+    }
+
+    const remaining =
+      readdirSync(
+        sessionRoot,
+        {
+          withFileTypes: true,
+        },
+      )
+        .map(
+          (entry) =>
+            entry.name,
+        )
+        .filter(
+          (name) =>
+            name !==
+            'ai-session-manifest.json',
+        );
+
+    if (
+      remaining.length
+    ) {
+      throw new Error(
+        `Unexpected content remains after cleanup: ${remaining.join(', ')}`,
+      );
+    }
+
+    cleanup.status =
+      'complete';
+
+    cleanup.completedAt =
+      new Date()
+        .toISOString();
+
+    manifest.status =
+      'cleaned';
+
+    writeCleanupState({
+      manifestPath,
+      manifest,
+      cleanup,
+    });
+  } catch (error) {
+    cleanup.status =
+      'failed';
+
+    cleanup.failedAt =
+      new Date()
+        .toISOString();
+
+    cleanup.error =
+      error?.message ??
+      String(error);
+
+    try {
+      writeCleanupState({
+        manifestPath,
+        manifest,
+        cleanup,
+      });
+    } catch {
+      // Preserve the original cleanup error.
+    }
+
+    throw error;
+  }
+
+  console.log('');
+  console.log(
+    'SESSION CLEANUP COMPLETE',
+  );
+  console.log(
+    '========================',
+  );
+  console.log(
+    `Session: ${sessionId}`,
+  );
+  console.log(
+    `Worktrees removed: ${removedWorktrees.length}`,
+  );
+  console.log(
+    `Local branches deleted: ${deletedBranches.length}`,
+  );
+  console.log(
+    'Manifest status: cleaned',
+  );
+
+  console.log('');
+  console.log(
+    'No remote branch was deleted.',
+  );
+  console.log(
+    'No pull request was changed.',
+  );
+  console.log(
+    'No merge, deployment, migration, or database command was executed.',
+  );
+
+  return {
+    sessionRoot,
+    manifestPath,
+    removedWorktrees,
+    deletedBranches,
+  };
+}
+
 async function runCli() {
   const args =
     process.argv.slice(2);
 
   if (
     args.length !== 2 ||
-    args[0] !== '--check' ||
+    (
+      args[0] !== '--check' &&
+      args[0] !== '--execute'
+    ) ||
     !/^\d{14}$/.test(
       args[1] ?? '',
     )
   ) {
     throw new Error(
-      'Usage: node scripts/ai-cleanup-session.mjs --check <14-digit-session-id>',
+      'Usage: node scripts/ai-cleanup-session.mjs <--check|--execute> <14-digit-session-id>',
     );
   }
 
-  checkSessionCleanup({
-    repoRoot:
-      getRepoRoot(),
+  const repoRoot =
+    getRepoRoot();
 
-    sessionId:
-      args[1],
+  const sessionId =
+    args[1];
+
+  if (
+    args[0] ===
+    '--check'
+  ) {
+    checkSessionCleanup({
+      repoRoot,
+      sessionId,
+    });
+
+    return;
+  }
+
+  executeSessionCleanup({
+    repoRoot,
+    sessionId,
   });
 }
 
@@ -1192,7 +1840,7 @@ if (directInvocation) {
     (error) => {
       console.error('');
       console.error(
-        'Session cleanup preflight failed:',
+        'Session cleanup failed:',
       );
       console.error(
         error?.message ??
