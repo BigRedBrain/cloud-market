@@ -52,6 +52,10 @@ import {
   runPushIntegration,
 } from './ai-push-integration.mjs';
 
+import {
+  runOpenPr,
+} from './ai-open-pr.mjs';
+
 
 const BASE_REF =
   process.env.AI_DEV_BASE_REF?.trim() ||
@@ -119,6 +123,7 @@ function parseArgs() {
   let integrateSessionId = null;
   let commitIntegrationSessionId = null;
   let pushIntegrationSessionId = null;
+  let openPrSessionId = null;
 
   const taskParts = [];
 
@@ -188,6 +193,26 @@ function parseArgs() {
       continue;
     }
 
+    if (arg === '--open-pr') {
+      const candidate =
+        args[index + 1]?.trim();
+
+      if (
+        !candidate ||
+        !/^\d{14}$/.test(candidate)
+      ) {
+        throw new Error(
+          '--open-pr requires a 14-digit session ID.',
+        );
+      }
+
+      openPrSessionId =
+        candidate;
+
+      index += 1;
+      continue;
+    }
+
     if (
       arg === '--help' ||
       arg === '-h'
@@ -235,6 +260,7 @@ function parseArgs() {
       integrateSessionId,
       commitIntegrationSessionId,
       pushIntegrationSessionId,
+      openPrSessionId,
     };
   }
 
@@ -248,6 +274,12 @@ function parseArgs() {
     if (pushIntegrationSessionId) {
       throw new Error(
         '--integrate cannot be combined with --push-integration.',
+      );
+    }
+
+    if (openPrSessionId) {
+      throw new Error(
+        '--integrate cannot be combined with --open-pr.',
       );
     }
 
@@ -277,6 +309,7 @@ function parseArgs() {
       integrateSessionId,
       commitIntegrationSessionId,
       pushIntegrationSessionId,
+      openPrSessionId,
     };
   }
 
@@ -284,6 +317,12 @@ function parseArgs() {
     if (pushIntegrationSessionId) {
       throw new Error(
         '--commit-integration cannot be combined with --push-integration.',
+      );
+    }
+
+    if (openPrSessionId) {
+      throw new Error(
+        '--commit-integration cannot be combined with --open-pr.',
       );
     }
 
@@ -313,10 +352,17 @@ function parseArgs() {
       integrateSessionId,
       commitIntegrationSessionId,
       pushIntegrationSessionId,
+      openPrSessionId,
     };
   }
 
   if (pushIntegrationSessionId) {
+    if (openPrSessionId) {
+      throw new Error(
+        '--push-integration cannot be combined with --open-pr.',
+      );
+    }
+
     if (runWorkers) {
       throw new Error(
         'Push integration mode cannot be combined with --run-workers.',
@@ -343,6 +389,38 @@ function parseArgs() {
       integrateSessionId,
       commitIntegrationSessionId,
       pushIntegrationSessionId,
+      openPrSessionId,
+    };
+  }
+
+  if (openPrSessionId) {
+    if (runWorkers) {
+      throw new Error(
+        'Open PR mode cannot be combined with --run-workers.',
+      );
+    }
+
+    if (approveHighRisk) {
+      throw new Error(
+        'Open PR mode cannot be combined with --approve-high-risk.',
+      );
+    }
+
+    if (task) {
+      throw new Error(
+        'Open PR mode accepts only --open-pr <session-id>.',
+      );
+    }
+
+    return {
+      task,
+      approveHighRisk,
+      runWorkers,
+      showHelp,
+      integrateSessionId,
+      commitIntegrationSessionId,
+      pushIntegrationSessionId,
+      openPrSessionId,
     };
   }
 
@@ -360,6 +438,7 @@ function parseArgs() {
       integrateSessionId,
       commitIntegrationSessionId,
       pushIntegrationSessionId,
+      openPrSessionId,
     };
 }
 
@@ -1465,6 +1544,7 @@ async function main() {
     integrateSessionId,
     commitIntegrationSessionId,
     pushIntegrationSessionId,
+    openPrSessionId,
   } =
     parseArgs();
 
@@ -1504,6 +1584,18 @@ async function main() {
 
       sessionId:
         pushIntegrationSessionId,
+    });
+
+    return;
+  }
+
+  if (openPrSessionId) {
+    runOpenPr({
+      repoRoot:
+        getRepoRoot(),
+
+      sessionId:
+        openPrSessionId,
     });
 
     return;
