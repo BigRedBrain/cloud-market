@@ -44,6 +44,10 @@ import {
   runControlledIntegration,
 } from './ai-integrate.mjs';
 
+import {
+  runCommitIntegration,
+} from './ai-commit-integration.mjs';
+
 
 const BASE_REF =
   process.env.AI_DEV_BASE_REF?.trim() ||
@@ -109,6 +113,7 @@ function parseArgs() {
   let runWorkers = false;
   let showHelp = false;
   let integrateSessionId = null;
+  let commitIntegrationSessionId = null;
 
   const taskParts = [];
 
@@ -134,6 +139,26 @@ function parseArgs() {
       }
 
       integrateSessionId = candidate;
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--commit-integration') {
+      const candidate =
+        args[index + 1]?.trim();
+
+      if (
+        !candidate ||
+        !/^\d{14}$/.test(candidate)
+      ) {
+        throw new Error(
+          '--commit-integration requires a 14-digit session ID.',
+        );
+      }
+
+      commitIntegrationSessionId =
+        candidate;
+
       index += 1;
       continue;
     }
@@ -177,10 +202,17 @@ function parseArgs() {
       runWorkers,
       showHelp,
       integrateSessionId,
+      commitIntegrationSessionId,
     };
   }
 
   if (integrateSessionId) {
+    if (commitIntegrationSessionId) {
+      throw new Error(
+        '--integrate cannot be combined with --commit-integration.',
+      );
+    }
+
     if (runWorkers) {
       throw new Error(
         'Integration mode cannot be combined with --run-workers.',
@@ -205,6 +237,36 @@ function parseArgs() {
       runWorkers,
       showHelp,
       integrateSessionId,
+      commitIntegrationSessionId,
+    };
+  }
+
+  if (commitIntegrationSessionId) {
+    if (runWorkers) {
+      throw new Error(
+        'Commit integration mode cannot be combined with --run-workers.',
+      );
+    }
+
+    if (approveHighRisk) {
+      throw new Error(
+        'Commit integration mode cannot be combined with --approve-high-risk.',
+      );
+    }
+
+    if (task) {
+      throw new Error(
+        'Commit integration mode accepts only --commit-integration <session-id>.',
+      );
+    }
+
+    return {
+      task,
+      approveHighRisk,
+      runWorkers,
+      showHelp,
+      integrateSessionId,
+      commitIntegrationSessionId,
     };
   }
 
@@ -220,6 +282,7 @@ function parseArgs() {
   runWorkers,
       showHelp,
       integrateSessionId,
+      commitIntegrationSessionId,
     };
 }
 
@@ -1323,6 +1386,7 @@ async function main() {
     runWorkers,
     showHelp,
     integrateSessionId,
+    commitIntegrationSessionId,
   } =
     parseArgs();
 
@@ -1338,6 +1402,18 @@ async function main() {
 
       sessionId:
         integrateSessionId,
+    });
+
+    return;
+  }
+
+  if (commitIntegrationSessionId) {
+    runCommitIntegration({
+      repoRoot:
+        getRepoRoot(),
+
+      sessionId:
+        commitIntegrationSessionId,
     });
 
     return;
