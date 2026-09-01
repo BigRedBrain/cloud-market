@@ -111,6 +111,11 @@ IMPORTANT OWNERSHIP RULES:
 - sharedFiles will be handled later during integration.
 - readOnlyContextPaths may overlap freely.
 - Prefer narrow existing directories and files from the repository inventory.
+- Existing directory ownership MUST end with "/".
+- Existing file ownership MUST NOT end with "/".
+- Never grant a worker broad ownership of a brand-new directory.
+- For a brand-new directory, enumerate every exact new file path the worker may create.
+- Do not represent a new directory as an extensionless writable path.
 - Do not invent paths when an existing path clearly applies.
 - A worker may have no implementation work; if so, give it an objective
   explaining that it should only inspect/validate its area and leave

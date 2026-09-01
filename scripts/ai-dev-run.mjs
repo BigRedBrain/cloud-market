@@ -871,7 +871,56 @@ function pathsOverlap(left, right) {
   );
 }
 
-function validatePlan(plan) {
+function getBasePathType(repoRoot, path) {
+  const output =
+    git(
+      [
+        'ls-tree',
+        BASE_REF,
+        '--',
+        `:(literal)${path}`,
+      ],
+      repoRoot,
+    );
+
+  if (!output) {
+    return null;
+  }
+
+  const lines =
+    output
+      .split(/\r?\n/)
+      .filter(Boolean);
+
+  if (lines.length !== 1) {
+    throw new Error(
+      `Expected exactly one Git tree result for writable path ` +
+      `"${path}" on ${BASE_REF}.`,
+    );
+  }
+
+  const match =
+    lines[0].match(
+      /^\d+\s+(blob|tree|commit)\s+[0-9a-f]+\t/,
+    );
+
+  if (!match) {
+    throw new Error(
+      `Could not classify writable path "${path}" ` +
+      `on ${BASE_REF}.`,
+    );
+  }
+
+  if (match[1] === 'commit') {
+    throw new Error(
+      `Writable ownership may not target a Git submodule: ${path}`,
+    );
+  }
+
+  return match[1];
+}
+
+function validatePlan(plan, repoRoot) {
   if (
     !plan ||
     typeof plan !== 'object'
@@ -934,6 +983,65 @@ function validatePlan(plan) {
           rawPath,
           `${role}.ownedPaths`,
         );
+
+      const directoryMarked =
+        /[\\/]$/.test(
+          rawPath.trim(),
+        );
+
+      const basePathType =
+        getBasePathType(
+          repoRoot,
+          path,
+        );
+
+      if (
+        basePathType === 'tree' &&
+        !directoryMarked
+      ) {
+        throw new Error(
+          `${role} writable path "${rawPath}" is an existing ` +
+          `directory on ${BASE_REF} but is missing the required ` +
+          `trailing "/".`,
+        );
+      }
+
+      if (
+        basePathType === 'blob' &&
+        directoryMarked
+      ) {
+        throw new Error(
+          `${role} writable path "${rawPath}" is an existing ` +
+          `file on ${BASE_REF} and may not end with "/".`,
+        );
+      }
+
+      if (
+        basePathType === null &&
+        directoryMarked
+      ) {
+        throw new Error(
+          `${role} requested broad ownership of new directory ` +
+          `"${rawPath}". New directories may not be granted as ` +
+          `writable roots. Enumerate the exact new files instead.`,
+        );
+      }
+
+      const baseName =
+        path
+          .split('/')
+          .at(-1);
+
+      if (
+        basePathType === null &&
+        !baseName.includes('.')
+      ) {
+        throw new Error(
+          `${role} requested ambiguous new writable path ` +
+          `"${rawPath}". New writable paths that do not exist ` +
+          `on ${BASE_REF} must be explicit file paths.`,
+        );
+      }
 
       for (
         const existing
@@ -1954,6 +2062,7 @@ async function main() {
   const plan =
     validatePlan(
       getPlan(task),
+      repoRoot,
     );
 const {
   sessionId,
