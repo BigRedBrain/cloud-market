@@ -1554,10 +1554,11 @@ function launchClaudeWorker({
       }
 
       const helperScript =
-        resolve(
-          repoRoot,
-          'scripts',
-          'ai-dev-claude-worker.mjs',
+        fileURLToPath(
+          new URL(
+            './ai-dev-claude-worker.mjs',
+            import.meta.url,
+          ),
         );
 
       if (
