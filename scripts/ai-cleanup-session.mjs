@@ -135,6 +135,79 @@ function normalizeGitPath(
   return normalized;
 }
 
+function normalizeOwnedPath(value) {
+  const original =
+    String(value).trim();
+
+  const isDirectory =
+    original.endsWith('/') ||
+    original.endsWith('\\');
+
+  const path =
+    normalizeGitPath(
+      original,
+    )
+      .replace(
+        /\/+/g,
+        '/',
+      )
+      .replace(
+        /\/+$/,
+        '',
+      );
+
+  return {
+    path,
+    isDirectory,
+  };
+}
+
+function pathIsOwned(
+  changedPath,
+  ownedPaths,
+) {
+  const changed =
+    normalizeGitPath(
+      changedPath,
+    )
+      .replace(
+        /\/+/g,
+        '/',
+      )
+      .replace(
+        /\/+$/,
+        '',
+      )
+      .toLowerCase();
+
+  return (
+    ownedPaths ?? []
+  ).some(
+    (value) => {
+      const {
+        path,
+        isDirectory,
+      } =
+        normalizeOwnedPath(
+          value,
+        );
+
+      const owned =
+        path.toLowerCase();
+
+      if (isDirectory) {
+        return (
+          changed === owned ||
+          changed.startsWith(
+            `${owned}/`,
+          )
+        );
+      }
+
+      return changed === owned;
+    },
+  );
+}
 function exactSetMatch(
   actual,
   expected,
@@ -546,24 +619,18 @@ function assertWorker({
   }
 
   const ownedPaths =
-    new Set(
-      (
-        manifest.plan
-          ?.[role]
-          ?.ownedPaths ??
-        []
-      ).map(
-        normalizeGitPath,
-      ),
-    );
-
+    manifest.plan
+      ?.[role]
+      ?.ownedPaths ??
+    [];
   for (
     const expectedPath
     of expectedPaths
   ) {
     if (
-      !ownedPaths.has(
+      !pathIsOwned(
         expectedPath,
+        ownedPaths,
       )
     ) {
       throw new Error(

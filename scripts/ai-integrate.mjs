@@ -181,6 +181,23 @@ function pathIsInside(
   );
 }
 
+function normalizeOwnedPath(value) {
+  const original =
+    String(value).trim();
+
+  const isDirectory =
+    original.endsWith('/') ||
+    original.endsWith('\\');
+
+  return {
+    path:
+      normalizeRepoPath(
+        original,
+      ),
+    isDirectory,
+  };
+}
+
 function pathIsOwned(
   changedPath,
   ownedPaths,
@@ -188,27 +205,36 @@ function pathIsOwned(
   const changed =
     normalizeRepoPath(
       changedPath,
-    );
+    ).toLowerCase();
 
   return (
     ownedPaths ?? []
   ).some(
     (value) => {
-      const owned =
-        normalizeRepoPath(
+      const {
+        path,
+        isDirectory,
+      } =
+        normalizeOwnedPath(
           value,
         );
 
-      return (
-        changed === owned ||
-        changed.startsWith(
-          `${owned}/`,
-        )
-      );
+      const owned =
+        path.toLowerCase();
+
+      if (isDirectory) {
+        return (
+          changed === owned ||
+          changed.startsWith(
+            `${owned}/`,
+          )
+        );
+      }
+
+      return changed === owned;
     },
   );
 }
-
 function findSessionManifest({
   repoRoot,
   sessionId,
