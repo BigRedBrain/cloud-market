@@ -106,9 +106,14 @@ IMPORTANT OWNERSHIP RULES:
 
 - Workers will execute simultaneously in separate Git worktrees.
 - No writable file should be assigned to more than one worker.
-- If multiple workers need to modify the same file, put that file in
-  sharedFiles instead.
-- sharedFiles will be handled later during integration.
+- sharedFiles MUST always be an empty array because the controlled integration
+  and commit pipeline does not support shared/integration-only files.
+- Every writable file MUST have exactly one worker owner.
+- If multiple lanes need the same file, assign exactly one lane as the writer
+  and give the other lanes read-only context for that file.
+- If no single worker can safely own every required writable file, set
+  parallelizable=false and explain the conflict in blockedReason.
+- Do not defer required edits to sharedFiles.
 - readOnlyContextPaths may overlap freely.
 - Prefer narrow existing directories and files from the repository inventory.
 - Existing directory ownership MUST end with "/".
@@ -263,6 +268,26 @@ function validatePlan(plan) {
     throw new Error(
       'Planner returned parallelizable=false ' +
       'without explaining why.',
+    );
+  }
+
+  if (
+    !Array.isArray(
+      plan.sharedFiles,
+    )
+  ) {
+    throw new Error(
+      'Planner omitted sharedFiles.',
+    );
+  }
+
+  if (
+    plan.sharedFiles.length > 0
+  ) {
+    throw new Error(
+      'Controlled development requires sharedFiles to be empty. ' +
+      'Assign each writable file to exactly one worker or set ' +
+      'parallelizable=false with a blockedReason.',
     );
   }
 

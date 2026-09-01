@@ -951,6 +951,26 @@ function validatePlan(plan, repoRoot) {
     );
   }
 
+  if (
+    !Array.isArray(
+      plan.sharedFiles,
+    )
+  ) {
+    throw new Error(
+      'Planner omitted sharedFiles.',
+    );
+  }
+
+  if (
+    plan.sharedFiles.length > 0
+  ) {
+    throw new Error(
+      'Controlled runner refuses plans containing ' +
+      'shared/integration-only files. Assign each writable ' +
+      'file to exactly one worker or block the plan.',
+    );
+  }
+
   const ownership = [];
 
   for (const role of ROLES) {
