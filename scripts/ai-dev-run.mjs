@@ -94,6 +94,7 @@ CloudMarket AI Development Runner
 
 Usage:
   node scripts/ai-dev-run.mjs "<development task>"
+  node scripts/ai-dev-run.mjs --preflight-only "<development task>"
   node scripts/ai-dev-run.mjs --run-workers "<development task>"
   node scripts/ai-dev-run.mjs --approve-high-risk --run-workers "<development task>"
 
@@ -111,6 +112,9 @@ Usage:
   node scripts/ai-dev-run.mjs --help
 
 Options:
+  --preflight-only
+      Run planner and runner validation without creating a session or worktrees.
+      Does not launch workers, edit files, commit, push, merge, deploy, or run database actions.
   --run-workers
       Explicitly allow planned AI workers to execute.
 
@@ -194,6 +198,7 @@ function parseArgs() {
 
   let approveHighRisk = false;
   let runWorkers = false;
+  let preflightOnly = false;
   let showHelp = false;
   let integrateSessionId = null;
   let commitIntegrationSessionId = null;
@@ -382,6 +387,13 @@ function parseArgs() {
       runWorkers = true;
       continue;
     }
+    if (
+      arg ===
+      '--preflight-only'
+    ) {
+      preflightOnly = true;
+      continue;
+    }
 
     if (arg.startsWith('--')) {
       throw new Error(
@@ -396,6 +408,26 @@ function parseArgs() {
     taskParts
       .join(' ')
       .trim();
+  if (
+    preflightOnly &&
+    (
+      integrateSessionId ||
+      commitIntegrationSessionId ||
+      pushIntegrationSessionId ||
+      openPrSessionId ||
+      statusSessionId ||
+      listSessionsRequested ||
+      cleanupCheckSessionId ||
+      cleanupSessionId ||
+      runWorkers ||
+      approveHighRisk ||
+      showHelp
+    )
+  ) {
+    throw new Error(
+      '--preflight-only accepts only development task text.',
+    );
+  }
 
   if (
     cleanupCheckSessionId ||
@@ -690,6 +722,7 @@ function parseArgs() {
   task,
   approveHighRisk,
   runWorkers,
+  preflightOnly,
       showHelp,
       integrateSessionId,
       commitIntegrationSessionId,
@@ -1926,6 +1959,7 @@ async function main() {
     task,
     approveHighRisk,
     runWorkers,
+    preflightOnly,
     showHelp,
     integrateSessionId,
     commitIntegrationSessionId,
@@ -2084,6 +2118,94 @@ async function main() {
       getPlan(task),
       repoRoot,
     );
+  if (preflightOnly) {
+    console.log('');
+    console.log(
+      'RUNNER PREFLIGHT ONLY',
+    );
+
+    console.log(
+      '=====================',
+    );
+
+    console.log('');
+    console.log(
+      JSON.stringify(
+        plan,
+        null,
+        2,
+      ),
+    );
+
+    if (!plan.parallelizable) {
+      console.log('');
+      console.log(
+        'RUNNER PREFLIGHT: BLOCKED',
+      );
+
+      console.log(
+        plan.blockedReason ||
+        'Planner determined the task is not safely parallelizable.',
+      );
+
+      console.log('');
+      console.log(
+        'No session or worktrees were created.',
+      );
+
+      console.log(
+        'No Claude workers were launched.',
+      );
+
+      console.log(
+        'No database actions occurred.',
+      );
+
+      console.log(
+        'No commits, pushes, merges, or deployments occurred.',
+      );
+
+      process.exitCode = 4;
+      return;
+    }
+
+    console.log('');
+    console.log(
+      'RUNNER PREFLIGHT: PASS',
+    );
+
+    console.log(
+      `Risk: ${plan.riskLevel}`,
+    );
+
+    console.log(
+      `Parallelizable: ${plan.parallelizable}`,
+    );
+
+    console.log('');
+    console.log(
+      'No session or worktrees were created.',
+    );
+
+    console.log(
+      'No Claude workers were launched.',
+    );
+
+    console.log(
+      'No files were edited by AI.',
+    );
+
+    console.log(
+      'No database actions occurred.',
+    );
+
+    console.log(
+      'No commits, pushes, merges, or deployments occurred.',
+    );
+
+    return;
+  }
+
 const {
   sessionId,
   taskSlug,
