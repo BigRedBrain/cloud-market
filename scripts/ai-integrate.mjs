@@ -1458,6 +1458,20 @@ export function runControlledReaudit({
       sessionId,
     });
 
+  if (
+    manifest.auditSnapshotVersion !==
+      1 ||
+    manifest.auditSnapshotAlgorithm !==
+      'sha256' ||
+    !Array.isArray(
+      manifest.auditSnapshot,
+    )
+  ) {
+    throw new Error(
+      'Session has no supported worker audit snapshot. Re-audit refused.',
+    );
+  }
+
   const currentHead =
     git(
       [
