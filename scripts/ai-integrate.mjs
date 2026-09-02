@@ -32,6 +32,7 @@ import {
 } from 'node:crypto';
 
 import {
+  fileURLToPath,
   pathToFileURL,
 } from 'node:url';
 
@@ -1171,6 +1172,425 @@ function updateManifestPrepared({
       2,
     ) + '\n',
     'utf8',
+  );
+}
+
+function runStandaloneWorkerAudits({
+  repoRoot,
+  manifest,
+}) {
+  const auditorPath =
+    join(
+      dirname(
+        fileURLToPath(
+          import.meta.url,
+        ),
+      ),
+      'ai-dev-diff-audit.mjs',
+    );
+
+  if (
+    !existsSync(
+      auditorPath,
+    )
+  ) {
+    throw new Error(
+      'Standalone worker diff auditor is missing.',
+    );
+  }
+
+  for (
+    const worker
+    of manifest.workers
+  ) {
+    const ownedPaths =
+      manifest.plan?.[
+        worker.role
+      ]?.ownedPaths;
+
+    if (
+      !Array.isArray(
+        ownedPaths,
+      )
+    ) {
+      throw new Error(
+        `Missing ownedPaths for ${worker.role}.`,
+      );
+    }
+
+    console.log('');
+    console.log(
+      `Re-auditing ${worker.role} lane...`,
+    );
+
+    if (
+      ownedPaths.length === 0
+    ) {
+      const status =
+        git(
+          [
+            'status',
+            '--porcelain',
+            '--untracked-files=all',
+          ],
+          worker.path,
+        );
+
+      if (status) {
+        throw new Error(
+          `${worker.role} has changes but owns no writable paths. Previous audit snapshot was not modified.`,
+        );
+      }
+
+      console.log(
+        '  PASS - no writable paths and no changes.',
+      );
+
+      continue;
+    }
+
+    const args = [
+      auditorPath,
+      '--worktree',
+      worker.path,
+      '--role',
+      worker.role,
+    ];
+
+    for (
+      const ownedPath
+      of ownedPaths
+    ) {
+      args.push(
+        '--allow',
+        ownedPath,
+      );
+    }
+
+    try {
+      const stdout =
+        execFileSync(
+          process.execPath,
+          args,
+          {
+            cwd:
+              repoRoot,
+
+            encoding:
+              'utf8',
+
+            stdio: [
+              'ignore',
+              'pipe',
+              'pipe',
+            ],
+          },
+        );
+
+      if (stdout) {
+        process.stdout.write(
+          stdout,
+        );
+      }
+    } catch (error) {
+      const stdout =
+        error?.stdout
+          ? String(
+              error.stdout,
+            )
+          : '';
+
+      const stderr =
+        error?.stderr
+          ? String(
+              error.stderr,
+            )
+          : '';
+
+      if (stdout) {
+        process.stdout.write(
+          stdout,
+        );
+      }
+
+      if (stderr) {
+        process.stderr.write(
+          stderr,
+        );
+      }
+
+      throw new Error(
+        `${worker.role} worker re-audit failed. Previous audit snapshot was not modified.`,
+      );
+    }
+  }
+
+  console.log('');
+  console.log(
+    'ALL WORKER RE-AUDITS PASSED',
+  );
+}
+
+function replaceWorkerAuditSnapshot({
+  manifestPath,
+  manifest,
+  auditSnapshot,
+}) {
+  const claimed =
+    new Map();
+
+  for (
+    const entry
+    of auditSnapshot
+  ) {
+    if (
+      claimed.has(
+        entry.path,
+      )
+    ) {
+      throw new Error(
+        `Multiple workers currently change the same path: ${entry.path}. Previous audit snapshot was not modified.`,
+      );
+    }
+
+    claimed.set(
+      entry.path,
+      entry.role,
+    );
+  }
+
+  const now =
+    new Date()
+      .toISOString();
+
+  const previousCount =
+    Number.isInteger(
+      manifest.auditSnapshotReauditCount,
+    )
+      ? manifest.auditSnapshotReauditCount
+      : 0;
+
+  const updatedManifest = {
+    ...manifest,
+
+    auditSnapshotVersion:
+      1,
+
+    auditSnapshotAlgorithm:
+      'sha256',
+
+    auditSnapshotAt:
+      now,
+
+    auditSnapshot:
+      auditSnapshot,
+
+    auditSnapshotReauditAt:
+      now,
+
+    auditSnapshotReauditCount:
+      previousCount + 1,
+
+    status:
+      'workers-audited',
+
+    updatedAt:
+      now,
+  };
+
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      updatedManifest,
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  return auditSnapshot;
+}
+
+export function runControlledReaudit({
+  repoRoot,
+  sessionId,
+}) {
+  requireCleanRepo(
+    repoRoot,
+  );
+
+  const branch =
+    requireSafeBranch(
+      repoRoot,
+    );
+
+  console.log('');
+  console.log(
+    'CONTROLLED WORKER RE-AUDIT MODE',
+  );
+
+  console.log(
+    '===============================',
+  );
+
+  console.log(
+    `Branch: ${branch}`,
+  );
+
+  console.log(
+    `Session: ${sessionId}`,
+  );
+
+  const {
+    sessionsRoot,
+    manifestPath,
+  } =
+    findSessionManifest({
+      repoRoot,
+      sessionId,
+    });
+
+  const manifest =
+    validateManifest({
+      repoRoot,
+      sessionsRoot,
+      manifestPath,
+      sessionId,
+    });
+
+  const currentHead =
+    git(
+      [
+        'rev-parse',
+        'HEAD',
+      ],
+      repoRoot,
+    );
+
+  if (
+    currentHead !==
+    manifest.baseCommit
+  ) {
+    throw new Error(
+      `Target repository HEAD changed after this session was created. Session base: ${manifest.baseCommit}. Current HEAD: ${currentHead}. Re-audit refused.`,
+    );
+  }
+
+  const integrationPath =
+    join(
+      manifest.worktreeRoot,
+      'integration',
+    );
+
+  const integrationBranch =
+    `ai/integrate-${manifest.sessionId}`;
+
+  if (
+    existsSync(
+      integrationPath,
+    ) ||
+    branchExists(
+      repoRoot,
+      integrationBranch,
+    )
+  ) {
+    throw new Error(
+      'An integration worktree or integration branch already exists for this session. Re-audit refused.',
+    );
+  }
+
+  console.log('');
+  console.log(
+    'SESSION MANIFEST: PASS',
+  );
+
+  console.log(
+    `Base commit: ${manifest.baseCommit}`,
+  );
+
+  /*
+   * Capture exact contents before ownership audits.
+   * If anything changes while audits run, no replacement
+   * snapshot is written.
+   */
+  const snapshotBefore =
+    collectWorkerAuditSnapshot(
+      manifest.workers,
+    );
+
+  runStandaloneWorkerAudits({
+    repoRoot,
+    manifest,
+  });
+
+  const snapshotAfter =
+    collectWorkerAuditSnapshot(
+      manifest.workers,
+    );
+
+  if (
+    JSON.stringify(
+      snapshotBefore,
+    ) !==
+    JSON.stringify(
+      snapshotAfter,
+    )
+  ) {
+    throw new Error(
+      'Worker contents changed while re-audit was running. Previous audit snapshot was not modified.',
+    );
+  }
+
+  /*
+   * Nothing above this point mutates the manifest.
+   * Any validation, ownership-audit, or concurrent-content
+   * failure leaves the previous snapshot exactly intact.
+   */
+  const auditSnapshot =
+    replaceWorkerAuditSnapshot({
+      manifestPath,
+      manifest,
+      auditSnapshot:
+        snapshotAfter,
+    });
+
+  console.log('');
+  console.log(
+    'WORKER AUDIT SNAPSHOT REPLACED',
+  );
+
+  console.log(
+    `Pinned ${auditSnapshot.length} current audited change(s) with SHA-256.`,
+  );
+
+  console.log('');
+  console.log(
+    '=================================',
+  );
+
+  console.log(
+    'CONTROLLED RE-AUDIT COMPLETE',
+  );
+
+  console.log(
+    '=================================',
+  );
+
+  console.log('');
+  console.log(
+    'Session remains workers-audited.',
+  );
+
+  console.log(
+    'No Claude workers were launched.',
+  );
+
+  console.log(
+    'No integration worktree was created.',
+  );
+
+  console.log(
+    'No commit, push, merge, deployment, migration, or database action occurred.',
   );
 }
 

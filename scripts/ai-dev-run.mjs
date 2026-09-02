@@ -50,6 +50,7 @@ import {
 import { fileURLToPath } from 'node:url';
 
 import {
+  runControlledReaudit,
   runControlledIntegration,
 } from './ai-integrate.mjs';
 
@@ -107,6 +108,7 @@ Usage:
   node scripts/ai-dev-run.mjs --run-workers "<development task>"
   node scripts/ai-dev-run.mjs --approve-high-risk --run-workers "<development task>"
 
+  node scripts/ai-dev-run.mjs --reaudit <14-digit-session-id>
   node scripts/ai-dev-run.mjs --integrate <14-digit-session-id>
   node scripts/ai-dev-run.mjs --commit-integration <14-digit-session-id>
   node scripts/ai-dev-run.mjs --push-integration <14-digit-session-id>
@@ -129,6 +131,11 @@ Options:
 
   --approve-high-risk
       Explicitly approve planner-classified high-risk execution.
+
+  --reaudit <session-id>
+      Re-run worker ownership audits and replace the SHA-256 audit snapshot.
+      Requires an existing workers-audited session at the current target HEAD.
+      Does not launch workers, integrate, commit, push, merge, deploy, migrate, or run database actions.
 
   --integrate <session-id>
       Prepare an isolated integration worktree from an audited worker session.
@@ -209,6 +216,7 @@ function parseArgs() {
   let runWorkers = false;
   let preflightOnly = false;
   let showHelp = false;
+  let reauditSessionId = null;
   let integrateSessionId = null;
   let commitIntegrationSessionId = null;
   let pushIntegrationSessionId = null;
@@ -227,6 +235,26 @@ function parseArgs() {
   ) {
     const arg =
       args[index];
+
+    if (arg === '--reaudit') {
+      const candidate =
+        args[index + 1]?.trim();
+
+      if (
+        !candidate ||
+        !/^\d{14}$/.test(candidate)
+      ) {
+        throw new Error(
+          '--reaudit requires a 14-digit session ID.',
+        );
+      }
+
+      reauditSessionId =
+        candidate;
+
+      index += 1;
+      continue;
+    }
 
     if (arg === '--integrate') {
       const candidate =
@@ -436,6 +464,45 @@ function parseArgs() {
     throw new Error(
       '--preflight-only accepts only development task text.',
     );
+  }
+
+  if (reauditSessionId) {
+    if (
+      integrateSessionId ||
+      commitIntegrationSessionId ||
+      pushIntegrationSessionId ||
+      openPrSessionId ||
+      statusSessionId ||
+      listSessionsRequested ||
+      cleanupCheckSessionId ||
+      cleanupSessionId ||
+      runWorkers ||
+      preflightOnly ||
+      approveHighRisk ||
+      showHelp ||
+      task
+    ) {
+      throw new Error(
+        'Re-audit mode accepts only --reaudit <session-id>.',
+      );
+    }
+
+    return {
+      task,
+      approveHighRisk,
+      runWorkers,
+      preflightOnly,
+      showHelp,
+      reauditSessionId,
+      integrateSessionId,
+      commitIntegrationSessionId,
+      pushIntegrationSessionId,
+      openPrSessionId,
+      statusSessionId,
+      listSessionsRequested,
+      cleanupCheckSessionId,
+      cleanupSessionId,
+    };
   }
 
   if (
@@ -2072,6 +2139,7 @@ async function main() {
     runWorkers,
     preflightOnly,
     showHelp,
+    reauditSessionId,
     integrateSessionId,
     commitIntegrationSessionId,
     pushIntegrationSessionId,
@@ -2085,6 +2153,18 @@ async function main() {
 
   if (showHelp) {
     printHelp();
+    return;
+  }
+
+  if (reauditSessionId) {
+    runControlledReaudit({
+      repoRoot:
+        getRepoRoot(),
+
+      sessionId:
+        reauditSessionId,
+    });
+
     return;
   }
 
