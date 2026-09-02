@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import {
+  collectWorkerAuditSnapshot,
+} from './ai-dev-audit-snapshot.mjs';
+
+import {
   copyFileSync,
   existsSync,
   lstatSync,
@@ -648,9 +652,79 @@ function readStatusEntries({
   return entries;
 }
 
+function verifyWorkerAuditSnapshot(
+  manifest,
+) {
+  if (
+    manifest.auditSnapshotVersion !==
+    1
+  ) {
+    throw new Error(
+      'Session has no supported worker audit snapshot. Refusing integration.',
+    );
+  }
+
+  if (
+    manifest.auditSnapshotAlgorithm !==
+    'sha256'
+  ) {
+    throw new Error(
+      `Unsupported worker audit snapshot algorithm: ${
+        manifest.auditSnapshotAlgorithm ??
+        'missing'
+      }.`,
+    );
+  }
+
+  if (
+    !Array.isArray(
+      manifest.auditSnapshot,
+    )
+  ) {
+    throw new Error(
+      'Session worker audit snapshot is missing or malformed.',
+    );
+  }
+
+  const currentSnapshot =
+    collectWorkerAuditSnapshot(
+      manifest.workers,
+    );
+
+  const expected =
+    JSON.stringify(
+      manifest.auditSnapshot,
+    );
+
+  const current =
+    JSON.stringify(
+      currentSnapshot,
+    );
+
+  if (
+    current !== expected
+  ) {
+    throw new Error(
+      'Worker contents changed after the recorded ownership audit. ' +
+      'Refusing integration until the worker diffs are explicitly re-audited.',
+    );
+  }
+
+  console.log(
+    'WORKER AUDIT SNAPSHOT: PASS',
+  );
+
+  console.log(
+    `Verified ${currentSnapshot.length} pinned audited change(s).`,
+  );
+}
+
 function collectAuditedChanges(
   manifest,
 ) {
+  verifyWorkerAuditSnapshot(
+    manifest,
+  );
   const changes = [];
   const claimed =
     new Map();

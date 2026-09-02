@@ -1,5 +1,14 @@
 #!/usr/bin/env node
 
+import {
+  readFileSync as readAuditFileSync,
+  writeFileSync as writeAuditFileSync,
+} from 'node:fs';
+
+import {
+  collectWorkerAuditSnapshot,
+} from './ai-dev-audit-snapshot.mjs';
+
 /**
  * CloudMarket AI Development Runner
  *
@@ -1973,6 +1982,89 @@ function updateSessionManifestStatus(
   );
 }
 
+function recordSessionAuditSnapshot(
+  worktreeRoot,
+) {
+  const manifestPath =
+    getSessionManifestPath(
+      worktreeRoot,
+    );
+
+  let manifest;
+
+  try {
+    manifest =
+      JSON.parse(
+        readAuditFileSync(
+          manifestPath,
+          'utf8',
+        ),
+      );
+  } catch (error) {
+    throw new Error(
+      `Could not read session manifest before audit pinning: ${
+        error?.message ??
+        String(error)
+      }`,
+    );
+  }
+
+  if (
+    manifest.status !==
+    'worktrees-created'
+  ) {
+    throw new Error(
+      `Audit snapshot can only be recorded from worktrees-created status. Current status: ${
+        manifest.status ??
+        'unknown'
+      }.`,
+    );
+  }
+
+  const auditSnapshot =
+    collectWorkerAuditSnapshot(
+      manifest.workers,
+    );
+
+  const now =
+    new Date()
+      .toISOString();
+
+  manifest.auditSnapshotVersion =
+    1;
+
+  manifest.auditSnapshotAlgorithm =
+    'sha256';
+
+  manifest.auditSnapshotAt =
+    now;
+
+  manifest.auditSnapshot =
+    auditSnapshot;
+
+  manifest.updatedAt =
+    now;
+
+  writeAuditFileSync(
+    manifestPath,
+    JSON.stringify(
+      manifest,
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  console.log('');
+  console.log(
+    'WORKER AUDIT SNAPSHOT RECORDED',
+  );
+
+  console.log(
+    `Pinned ${auditSnapshot.length} audited change(s) with SHA-256.`,
+  );
+}
+
 async function main() {
   const {
     task,
@@ -2516,6 +2608,10 @@ if (
 console.log('');
 console.log(
   '=================================',
+);
+
+recordSessionAuditSnapshot(
+  worktreeRoot,
 );
 
 updateSessionManifestStatus(
