@@ -72,7 +72,7 @@ import {
 
 const BASE_REF =
   process.env.AI_DEV_BASE_REF?.trim() ||
-  'origin/main';
+  'HEAD';
 
 const ROLES = [
   'frontend',
@@ -791,22 +791,46 @@ function requireSafeBranch(repoRoot) {
   return branch;
 }
 
-function requireBaseRef(repoRoot) {
+function resolveWorkerBase(repoRoot) {
+  let baseCommit;
+
   try {
+    baseCommit =
+      git(
+        [
+          'rev-parse',
+          '--verify',
+          `${BASE_REF}^{commit}`,
+        ],
+        repoRoot,
+      );
+  } catch {
+    throw new Error(
+      `Base ref "${BASE_REF}" does not exist locally.`,
+    );
+  }
+
+  const targetCommit =
     git(
       [
         'rev-parse',
-        '--verify',
-        BASE_REF,
+        'HEAD',
       ],
       repoRoot,
     );
-  } catch {
+
+  if (baseCommit !== targetCommit) {
     throw new Error(
-      `Base ref "${BASE_REF}" does not exist locally.\n` +
-      'Run git fetch origin first.',
+      `Worker base "${BASE_REF}" resolves to ${baseCommit}, but ` +
+      `current target HEAD is ${targetCommit}.\n` +
+      'Refusing to develop from a base that differs from the checked-out target branch.',
     );
   }
+
+  return {
+    baseRef: BASE_REF,
+    baseCommit,
+  };
 }
 
 function normalizePath(
@@ -904,12 +928,12 @@ function pathsOverlap(left, right) {
   );
 }
 
-function getBasePathType(repoRoot, path) {
+function getBasePathType(repoRoot, path, baseCommit) {
   const output =
     git(
       [
         'ls-tree',
-        BASE_REF,
+        baseCommit,
         '--',
         `:(literal)${path}`,
       ],
@@ -953,7 +977,7 @@ function getBasePathType(repoRoot, path) {
   return match[1];
 }
 
-function validatePlan(plan, repoRoot) {
+function validatePlan(plan, repoRoot, baseCommit) {
   if (
     !plan ||
     typeof plan !== 'object'
@@ -1046,6 +1070,7 @@ function validatePlan(plan, repoRoot) {
         getBasePathType(
           repoRoot,
           path,
+          baseCommit,
         );
 
       if (
@@ -1354,6 +1379,7 @@ function preflightWorktrees(
 
 function createWorkerWorktrees({
   repoRoot,
+  baseCommit,
   worktreeRoot,
   workers,
 }) {
@@ -1389,7 +1415,7 @@ function createWorkerWorktrees({
         '-b',
         worker.branch,
         worker.path,
-        BASE_REF,
+        baseCommit,
       ],
       {
         cwd: repoRoot,
@@ -1822,11 +1848,12 @@ function getSessionManifestPath(
 }
 
 function writeSessionManifest({
-  repoRoot,
   task,
   plan,
   sessionId,
   taskSlug,
+  baseRef,
+  baseCommit,
   worktreeRoot,
   workers,
 }) {
@@ -1860,17 +1887,8 @@ function writeSessionManifest({
     updatedAt:
       now,
 
-    baseRef:
-      BASE_REF,
-
-    baseCommit:
-      git(
-        [
-          'rev-parse',
-          BASE_REF,
-        ],
-        repoRoot,
-      ),
+    baseRef,
+    baseCommit,
 
     worktreeRoot,
 
@@ -2083,9 +2101,13 @@ async function main() {
       repoRoot,
     );
 
-  requireBaseRef(
-    repoRoot,
-  );
+  const {
+    baseRef,
+    baseCommit,
+  } =
+    resolveWorkerBase(
+      repoRoot,
+    );
 
   console.log('');
   console.log(
@@ -2101,7 +2123,7 @@ async function main() {
   );
 
   console.log(
-    `Worker base: ${BASE_REF}`,
+    `Worker base: ${baseRef} (${baseCommit})`,
   );
 
   console.log('');
@@ -2118,6 +2140,7 @@ async function main() {
     validatePlan(
       getPlan(task),
       repoRoot,
+      baseCommit,
     );
   if (preflightOnly) {
     console.log('');
@@ -2418,16 +2441,18 @@ if (
 }
 createWorkerWorktrees({
   repoRoot,
+  baseCommit,
   worktreeRoot,
   workers,
 });
 
 writeSessionManifest({
-  repoRoot,
   task,
   plan,
   sessionId,
   taskSlug,
+  baseRef,
+  baseCommit,
   worktreeRoot,
   workers,
 });
