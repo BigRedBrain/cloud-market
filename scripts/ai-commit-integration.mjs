@@ -826,34 +826,64 @@ function verifyStagedTree({
       change.operation ===
       'copy'
     ) {
-      let stagedBytes;
-
-      try {
-        stagedBytes =
-          git(
-            [
-              'show',
-              `:${path}`,
-            ],
-            integrationPath,
-            {
-              encoding: null,
-            },
-          );
-      } catch {
-        throw new Error(
-          `Unable to read staged file: ${path}`,
+      const fullPath =
+        join(
+          integrationPath,
+          path,
         );
-      }
 
-      const stagedHash =
-        sha256Buffer(
-          stagedBytes,
+      const worktreeHash =
+        sha256File(
+          fullPath,
         );
 
       if (
-        stagedHash.toLowerCase() !==
+        worktreeHash.toLowerCase() !==
         change.sha256.toLowerCase()
+      ) {
+        throw new Error(
+          `Prepared file fingerprint changed during staging: ${path}`,
+        );
+      }
+
+      let expectedStagedObject;
+
+      try {
+        expectedStagedObject =
+          git(
+            [
+              'hash-object',
+              `--path=${path}`,
+              fullPath,
+            ],
+            integrationPath,
+          ).trim();
+      } catch {
+        throw new Error(
+          `Unable to compute Git-filtered fingerprint: ${path}`,
+        );
+      }
+
+      let stagedObject;
+
+      try {
+        stagedObject =
+          git(
+            [
+              'rev-parse',
+              `:${path}`,
+            ],
+            integrationPath,
+          ).trim();
+      } catch {
+        throw new Error(
+          `Unable to read staged file identity: ${path}`,
+        );
+      }
+
+      if (
+        stagedObject !==
+        expectedStagedObject
       ) {
         throw new Error(
           `Staged fingerprint mismatch: ${path}`,
