@@ -42,7 +42,7 @@
  *      would paper over it. The run stops before any migration command exists in
  *      the process. There is exactly ONE exception, and it proves itself before
  *      the gate exists: a clone whose ledger is exactly 0000 … 0015, whose
- *      pending stack is exactly the four, whose COMPLETE pre-existing set is
+ *      pending stack is exactly the five, whose COMPLETE pre-existing set is
  *      `strain_type.hybrid_i` and `strain_type.hybrid_s` and nothing else, whose
  *      repository 0018 still PARSES to exactly the two intended
  *      `ADD VALUE IF NOT EXISTS … BEFORE 'cbd'` operations, and whose live
@@ -717,6 +717,75 @@ async function runProbes(pool) {
         probeResults.set(id, { id, status: 'NOT-REACHED', detail })
       }
     }
+
+    /* ---- 0020: notifications — defaults, partial index, owner cascade ---- */
+    const notified = await attempt(client, `insert into users (email) values ($1) returning id`, [probeEmail()])
+
+    if (notified.ok) {
+      const notifiedId = notified.rows[0].id
+
+      /*
+       * A NEW NOTIFICATION IS UNREAD, AND `read_at` MUST HAVE NO DEFAULT. A
+       * `DEFAULT now()` on that column would mark every notification read at the
+       * moment it was created — the schema says it has no default, and this is
+       * where the database is asked whether that survived the migration.
+       */
+      const created = await attempt(
+        client,
+        `insert into notifications (user_id, title) values ($1, 'Rehearsal probe')
+         returning body, read_at, created_at is not null as has_created, updated_at is not null as has_updated`,
+        [notifiedId],
+      )
+      settle(
+        '0020.notification_defaults',
+        created.ok &&
+          created.rows[0]?.body === null &&
+          created.rows[0]?.read_at === null &&
+          created.rows[0]?.has_created === true &&
+          created.rows[0]?.has_updated === true,
+        created.ok ? JSON.stringify(created.rows[0]) : `${created.code} ${created.message}`,
+      )
+
+      /*
+       * THE UNREAD INDEX IS PARTIAL, AND ONLY THE CATALOG CAN SAY SO. The
+       * declared-object inventory matches indexes by NAME, which a plain full
+       * index on `user_id` would satisfy identically — and a full index is a
+       * different migration, maintained for every read row forever. The
+       * predicate is therefore read back from `pg_indexes`. One row, read-only.
+       */
+      const unreadIndex = await attempt(
+        client,
+        `select indexdef from pg_indexes
+          where schemaname = 'public' and indexname = 'notifications_user_unread_idx'`,
+      )
+      const indexdef = unreadIndex.ok ? (unreadIndex.rows[0]?.indexdef ?? '') : ''
+      settle(
+        '0020.notification_unread_partial_index',
+        unreadIndex.ok && /where\s+\(?\s*read_at\s+is\s+null/i.test(indexdef),
+        unreadIndex.ok ? indexdef || '(no index by that name)' : `${unreadIndex.code} ${unreadIndex.message}`,
+      )
+
+      const erased = await attempt(client, `delete from users where id = $1`, [notifiedId])
+      const orphans = erased.ok
+        ? await attempt(client, `select count(*)::int n from notifications where user_id = $1`, [notifiedId])
+        : null
+      settle(
+        '0020.notification_user_cascade',
+        created.ok && erased.ok && orphans?.ok === true && orphans.rows[0]?.n === 0,
+        erased.ok
+          ? `rows left=${orphans?.rows[0]?.n}`
+          : `deleting the fixture user failed: ${erased.code} ${erased.message}`,
+      )
+    } else {
+      const detail = 'the notification probe fixture user could not be created'
+      for (const id of [
+        '0020.notification_defaults',
+        '0020.notification_unread_partial_index',
+        '0020.notification_user_cascade',
+      ]) {
+        probeResults.set(id, { id, status: 'NOT-REACHED', detail })
+      }
+    }
   }
 
   /*
@@ -1051,7 +1120,7 @@ async function main() {
          * added is a single, fully proved reconciliation for ONE confirmed
          * state: 0018's two idempotent enum values already present, on a clone
          * whose ledger is exactly 0000 … 0015, whose pending stack is exactly
-         * the four, whose complete pre-existing set is those two values and
+         * the five, whose complete pre-existing set is those two values and
          * nothing else, whose repository 0018 still PARSES to exactly the two
          * intended ADD VALUE IF NOT EXISTS … BEFORE 'cbd' operations, and whose
          * live enum already reads the exact six values in order — read here by a
@@ -1118,7 +1187,7 @@ async function main() {
            * migrations folder and the journal — relative to its cwd. Inheriting
            * this process's cwd meant the command applied whatever stack the
            * shell happened to be standing in, which is not necessarily the one
-           * the twenty files above were hashed from.
+           * the twenty-one files above were hashed from.
            */
           cwd: REPO_ROOT,
           env: { ...process.env, DATABASE_URL: direct, DATABASE_URL_UNPOOLED: direct },
@@ -1145,10 +1214,10 @@ async function main() {
 
       /* The claim "the journal was not modified" is checked, not asserted. */
       assertRepositoryUnchanged(snapshot)
-      ok('the journal and all 20 migration files are byte-identical to the committed ones')
+      ok('the journal and all 21 migration files are byte-identical to the committed ones')
 
-      /* ---- 10. exact reconciliation, 0000 … 0019 --------------------- */
-      stage('[10] Clone ledger — exact reconciliation against all 20 migrations')
+      /* ---- 10. exact reconciliation, 0000 … 0020 --------------------- */
+      stage('[10] Clone ledger — exact reconciliation against all 21 migrations')
       const afterLedger = await readLedger(query)
       const afterReconciliation = reconcileLedger({ migrations, rows: afterLedger, expectedTags: ALL_TAGS })
       if (afterReconciliation.problems.length > 0) {

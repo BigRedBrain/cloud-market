@@ -221,7 +221,14 @@ function main() {
   const zero19 = migrations.filter((f) => f.startsWith('0019'))
 
   check('exactly one 0019 migration', zero19.length, 1)
-  check('migration history stops at 0019', migrations.length, 20)
+  /*
+   * The count moved from 20 to 21 when 0020_notifications was certified into the
+   * stack. It is pinned rather than derived so that a migration appearing without
+   * anyone deciding it belongs — a stray file, a half-finished generate, a bad
+   * merge — fails here. Adding one is a deliberate edit to this line and to the
+   * pending stack in scripts/rehearse-migration-branch-core.mjs, together.
+   */
+  check('migration history stops at 0020', migrations.length, 21)
 
   const raw = readFileSync(join(drizzleDir, zero19[0]), 'utf8')
 

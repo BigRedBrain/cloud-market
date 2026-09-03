@@ -4,7 +4,7 @@ import { PackageOpen } from 'lucide-react'
 
 import { QuantityStepper, RemoveLineForm } from '@/components/bag/bag-controls'
 import { StartCheckoutForm } from '@/components/orders/checkout-forms'
-import { SiteNav } from '@/components/site-nav'
+import { CustomerSiteNav } from '@/components/customer-site-nav'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -47,7 +47,7 @@ export default async function BagPage({
 
   return (
     <>
-      <SiteNav bagCount={bag.itemCount} />
+      <CustomerSiteNav bagCount={bag.itemCount} />
 
       <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-10 sm:px-6">
         <h1 className="mb-6 font-poster text-3xl tracking-tight text-white uppercase">

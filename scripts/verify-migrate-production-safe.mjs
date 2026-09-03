@@ -6,7 +6,7 @@
  * HERMETIC BY CONSTRUCTION. No network, no Neon, no Postgres, no credential, no
  * environment secret, no migration, no child process, no git, and no file this
  * process writes. The only I/O is READING files out of this repository — the
- * journal, the twenty migration files, and the two scripts themselves — because
+ * journal, the twenty-one migration files, and the two scripts themselves — because
  * the properties being proved are properties OF those files.
  *
  * It imports `migrate-production-safe.mjs` directly. That is safe, and it is
@@ -69,6 +69,7 @@ import {
   evaluateBranchTopology,
   evaluateDrift,
   evaluateStrainLeaningEquivalence,
+  objectKey,
   reconcileLedger,
   redactSecrets,
   withProbeTransaction,
@@ -110,7 +111,7 @@ import {
  * the fact. A section deleted by a careless merge would otherwise reduce the
  * coverage silently and still print a green summary.
  */
-export const EXPECTED_CHECKS = 166
+export const EXPECTED_CHECKS = 167
 
 let pass = 0
 let fail = 0
@@ -512,10 +513,59 @@ check(
 section('[5] The production ledger reconciles exactly through 0015 — not by count')
 
 const journal = JSON.parse(repoFile('drizzle/meta/_journal.json'))
+
+/**
+ * A MISSING MIGRATION FILE ENDS THIS RUN WITH AN INSTRUCTION, NOT A STACK TRACE.
+ *
+ * `ALL_TAGS` is the reviewed stack, and it now names `0020_notifications`. Until
+ * that migration has been GENERATED — by drizzle-kit, from the schema, never by
+ * hand — every assertion below is about a repository that does not exist yet,
+ * and an ENOENT out of `readFileSync` says so in the least useful way available.
+ *
+ * This is a stop, not a skip: nothing about the rollout may be reported as
+ * verified while a migration it is defined against is absent.
+ */
+const readMigrationSource = (tag) => {
+  try {
+    return repoFile(`drizzle/${tag}.sql`)
+  } catch {
+    console.error(
+      `\nSTOPPED: drizzle/${tag}.sql is not in this repository.\n\n` +
+        `  This rollout is certified for ${ALL_TAGS.length} migrations, ${ALL_TAGS[0]} … ` +
+        `${ALL_TAGS[ALL_TAGS.length - 1]}, and one of them has not been generated yet.\n` +
+        '  Drizzle metadata is never written by hand. Run the generation step documented at the top of\n' +
+        '  scripts/verify-notification-schema.ts, commit the result, and run this verifier again.\n\n' +
+        '  NOTHING WAS VERIFIED. No production migration is authorized by this run.',
+    )
+    process.exit(1)
+  }
+}
+
 const sources = {}
-for (const tag of ALL_TAGS) sources[tag] = repoFile(`drizzle/${tag}.sql`)
+for (const tag of ALL_TAGS) sources[tag] = readMigrationSource(tag)
 const repository = buildRepositoryMigrations({ journal, sources })
 const migrations = repository.migrations
+
+/*
+ * A FILE THAT EXISTS BUT IS NOT IN THE JOURNAL IS THE SAME STOP.
+ *
+ * `buildRepositoryMigrations` builds only what the journal declares, so a
+ * generated 0020 whose journal entry was not committed leaves this file with a
+ * migration it cannot hash — and every fixture below would fail on `undefined`
+ * rather than on the thing that is actually wrong. Said plainly, once.
+ */
+if (migrations.length !== ALL_TAGS.length) {
+  console.error(
+    `\nSTOPPED: drizzle/meta/_journal.json declares ${migrations.length} usable migration(s); this rollout ` +
+      `is certified for ${ALL_TAGS.length} (${ALL_TAGS[0]} … ${ALL_TAGS[ALL_TAGS.length - 1]}).\n\n` +
+      (repository.problems.map((p) => `  • ${p}`).join('\n') || '  • the journal and the reviewed stack disagree') +
+      '\n\n  The journal is a GENERATED artifact and is never edited by hand. Run the generation step\n' +
+      '  documented at the top of scripts/verify-notification-schema.ts and commit its full output.\n\n' +
+      '  NOTHING WAS VERIFIED. No production migration is authorized by this run.',
+  )
+  process.exit(1)
+}
+
 const migrationOf = (tag) => migrations.find((m) => m.tag === tag)
 const rowsFor = (tags, mutate = (row) => row) =>
   tags.map((tag, index) => mutate({ id: index + 1, hash: migrationOf(tag).hash, created_at: String(migrationOf(tag).when) }, index))
@@ -523,8 +573,11 @@ const recordedRows = rowsFor(RECORDED_TAGS)
 const reconcile = (rows, expectedTags = RECORDED_TAGS) => reconcileLedger({ migrations, rows, expectedTags })
 
 check(
-  'the committed journal and all 20 files reconcile cleanly',
-  repository.problems.length === 0 && migrations.length === 20,
+  'the committed journal and all 21 files reconcile cleanly, ending at 0020_notifications',
+  repository.problems.length === 0 &&
+    migrations.length === 21 &&
+    ALL_TAGS.length === 21 &&
+    ALL_TAGS[ALL_TAGS.length - 1] === '0020_notifications',
   repository.problems.join('; '),
 )
 check('a production ledger of exactly 0000 … 0015 reconciles', reconcile(recordedRows).problems.length === 0, reconcile(recordedRows).problems.join('; '))
@@ -552,26 +605,32 @@ check(
   refused(reconcile(rowsFor(ALL_TAGS.slice(4, 20)))) && rowsFor(ALL_TAGS.slice(4, 20)).length === RECORDED_TAGS.length,
 )
 
-/* =================================== 6. THE PENDING STACK IS EXACTLY FOUR (5) */
-section('[6] The pending stack is derived from the ledger and required to be the four')
+/* =================================== 6. THE PENDING STACK IS EXACTLY FIVE (5) */
+section('[6] The pending stack is derived from the ledger and required to be the five')
 
 const pendingFrom = (rows) => derivePendingStack({ migrations, rows })
 
 check(
-  'the pending stack derived from a 0000 … 0015 ledger is exactly 0016 … 0019',
+  'the pending stack derived from a 0000 … 0015 ledger is exactly 0016 … 0020',
   pendingFrom(recordedRows).problems.length === 0 &&
     pendingFrom(recordedRows).pendingTags.join(',') === PENDING_TAGS.join(','),
 )
-check('a ledger one migration behind derives five pending and refuses', refused(pendingFrom(recordedRows.slice(0, 15))))
-check('a ledger one migration ahead derives three pending and refuses', refused(pendingFrom(rowsFor([...RECORDED_TAGS, PENDING_TAGS[0]]))))
+check('a ledger one migration behind derives six pending and refuses', refused(pendingFrom(recordedRows.slice(0, 15))))
+check('a ledger one migration ahead derives four pending and refuses', refused(pendingFrom(rowsFor([...RECORDED_TAGS, PENDING_TAGS[0]]))))
 check(
   'an unapplied migration in the middle of history refuses',
   refused(pendingFrom(rowsFor([...RECORDED_TAGS.slice(0, 15), PENDING_TAGS[0]]))),
 )
 check(
-  'the four pending tags are exactly the reviewed ones, in order',
+  'the five pending tags are exactly the reviewed ones, in order',
   PENDING_TAGS.join(',') ===
-    ['0016_yummy_tattoo', '0017_phase_5_private_storefront', '0018_strain_leaning_types', '0019_demonic_rockslide'].join(','),
+    [
+      '0016_yummy_tattoo',
+      '0017_phase_5_private_storefront',
+      '0018_strain_leaning_types',
+      '0019_demonic_rockslide',
+      '0020_notifications',
+    ].join(','),
 )
 
 /* ================== 7. THE COMPLETE PRE-EXISTING DRIFT IS EXACTLY TWO (8) === */
@@ -684,8 +743,8 @@ check(
     equivalence({ driftPresent: null }).equivalent === false,
 )
 
-/* ================== 9. THE DECLARED INVENTORY AND THE POST-SCHEMA (7) ======= */
-section('[9] 75 declared objects, 2 of them dropped again, 73 required to survive')
+/* ================== 9. THE DECLARED INVENTORY AND THE POST-SCHEMA (8) ======= */
+section('[9] 79 declared objects, 2 of them dropped again, 77 required to survive')
 
 const survivingKeys = new Set(
   inventory.filter((object) => !dropped.some((d) => d.key === object.key)).map((object) => object.key),
@@ -700,11 +759,37 @@ check(
 )
 check(
   'the survivor count is the declared count minus the drops',
-  PENDING_DECLARED_OBJECTS === 75 &&
+  PENDING_DECLARED_OBJECTS === 79 &&
     PENDING_DROPPED_OBJECTS === 2 &&
-    PENDING_SURVIVING_OBJECTS === 73 &&
+    PENDING_SURVIVING_OBJECTS === 77 &&
     survivingKeys.size === PENDING_SURVIVING_OBJECTS,
   `${survivingKeys.size}`,
+)
+/*
+ * 0020 IS CERTIFIED BY WHAT IT DECLARES, NOT BY BEING PRESENT. The four objects
+ * are named here so that a regenerated 0020 which renamed an index, lost the
+ * foreign key, or quietly added a column, type, or trigger fails this file
+ * rather than sliding into the rollout on the strength of its filename.
+ */
+check(
+  'the newly certified 0020 declares exactly the notifications table, its foreign key, and its two indexes — and drops nothing',
+  inventory
+    .filter((object) => object.tag === '0020_notifications')
+    .map((object) => object.key)
+    .sort()
+    .join(' + ') ===
+    [
+      objectKey.table('notifications'),
+      objectKey.constraint('notifications_user_id_users_id_fk'),
+      objectKey.index('notifications_user_created_idx'),
+      objectKey.index('notifications_user_unread_idx'),
+    ]
+      .sort()
+      .join(' + ') && dropped.every((object) => object.tag !== '0020_notifications'),
+  inventory
+    .filter((object) => object.tag === '0020_notifications')
+    .map((object) => object.key)
+    .join(' | '),
 )
 check('a stack that declares fewer objects refuses', refused(evaluateInventoryShape({ inventory: inventory.slice(1), dropped })))
 check('a stack that drops a different number of objects refuses', refused(evaluateInventoryShape({ inventory, dropped: [...dropped, dropped[0]] })))
@@ -722,16 +807,16 @@ check(
 )
 
 /* ================================= 10. THE POST-MIGRATION LEDGER (4) ======== */
-section('[10] After migrating: all 20 reconciled, and nothing pending')
+section('[10] After migrating: all 21 reconciled, and nothing pending')
 
 check(
-  'a ledger of all 20 migrations reconciles by order, hash, and timestamp',
+  'a ledger of all 21 migrations reconciles by order, hash, and timestamp',
   reconcile(rowsFor(ALL_TAGS), ALL_TAGS).problems.length === 0,
   reconcile(rowsFor(ALL_TAGS), ALL_TAGS).problems.join('; '),
 )
-check('a ledger one migration short of the stack refuses', refused(reconcile(rowsFor(ALL_TAGS.slice(0, 19)), ALL_TAGS)))
-check('the derived pending stack after all 20 is empty', pendingFrom(rowsFor(ALL_TAGS)).pendingTags.length === 0)
-check('the zero-pending check is real: 19 applied still derives one pending', pendingFrom(rowsFor(ALL_TAGS.slice(0, 19))).pendingTags.length === 1)
+check('a ledger one migration short of the stack refuses', refused(reconcile(rowsFor(ALL_TAGS.slice(0, 20)), ALL_TAGS)))
+check('the derived pending stack after all 21 is empty', pendingFrom(rowsFor(ALL_TAGS)).pendingTags.length === 0)
+check('the zero-pending check is real: 20 applied still derives one pending', pendingFrom(rowsFor(ALL_TAGS.slice(0, 20))).pendingTags.length === 1)
 
 /* ===================== 11. EXACTLY ONE WRITE-CAPABLE INVOCATION (8) ========= */
 section('[11] One gated npx drizzle-kit migrate, and no other write path')

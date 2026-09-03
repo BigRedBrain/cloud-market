@@ -5,9 +5,9 @@
  *
  * HERMETIC BY CONSTRUCTION. No network, no Neon, no Postgres, no credential, no
  * environment variable, no migration, and no production diagnostic. The only I/O
- * is reading files out of this repository — the journal, the twenty migration
- * files, and the rehearsal scripts themselves — because the properties being
- * proved are properties OF those files.
+ * is reading files out of this repository — the journal, the twenty-one
+ * migration files, and the rehearsal scripts themselves — because the properties
+ * being proved are properties OF those files.
  *
  * WHY THIS EXISTS
  *
@@ -125,12 +125,40 @@ console.log('Production-shaped rehearsal — hermetic verification')
 section('[1] The repository migration set, read exactly as drizzle reads it')
 
 const journal = JSON.parse(repoFile('drizzle/meta/_journal.json'))
+
+/**
+ * A MISSING MIGRATION FILE ENDS THIS RUN WITH AN INSTRUCTION, NOT A STACK TRACE.
+ *
+ * `ALL_TAGS` is the reviewed stack, and it now names `0020_notifications`. Until
+ * that migration has been GENERATED — by drizzle-kit, from the schema, never by
+ * hand — every assertion below is about a repository that does not exist yet,
+ * and an ENOENT out of `readFileSync` says so in the least useful way available.
+ *
+ * This is a stop, not a skip: a rehearsal whose stack is incomplete has proved
+ * nothing about the stack it was supposed to rehearse.
+ */
+const readMigrationSource = (tag) => {
+  try {
+    return repoFile(`drizzle/${tag}.sql`)
+  } catch {
+    console.error(
+      `\nSTOPPED: drizzle/${tag}.sql is not in this repository.\n\n` +
+        `  This rehearsal is defined against ${ALL_TAGS.length} migrations, ${ALL_TAGS[0]} … ` +
+        `${ALL_TAGS[ALL_TAGS.length - 1]}, and one of them has not been generated yet.\n` +
+        '  Drizzle metadata is never written by hand. Run the generation step documented at the top of\n' +
+        '  scripts/verify-notification-schema.ts, commit the result, and run this verifier again.\n\n' +
+        '  NOTHING WAS VERIFIED.',
+    )
+    process.exit(1)
+  }
+}
+
 const sources = {}
-for (const tag of ALL_TAGS) sources[tag] = repoFile(`drizzle/${tag}.sql`)
+for (const tag of ALL_TAGS) sources[tag] = readMigrationSource(tag)
 
 const repository = buildRepositoryMigrations({ journal, sources })
 check('the committed journal and files reconcile cleanly', repository.problems.length === 0, repository.problems.join('; '))
-check('all 20 migrations are present', repository.migrations.length === 20)
+check('all 21 migrations are present', repository.migrations.length === 21)
 check(
   '0019_demonic_rockslide is present and treated as part of the stack',
   ALL_TAGS.includes('0019_demonic_rockslide') &&
@@ -138,9 +166,15 @@ check(
     PENDING_TAGS.includes('0019_demonic_rockslide'),
 )
 check(
+  '0020_notifications is present and treated as part of the stack',
+  ALL_TAGS[ALL_TAGS.length - 1] === '0020_notifications' &&
+    repository.migrations.some((m) => m.tag === '0020_notifications') &&
+    PENDING_TAGS.includes('0020_notifications'),
+)
+check(
   'the recorded and pending spans partition the stack',
   RECORDED_TAGS.length === 16 &&
-    PENDING_TAGS.length === 4 &&
+    PENDING_TAGS.length === 5 &&
     [...RECORDED_TAGS, ...PENDING_TAGS].join(',') === ALL_TAGS.join(','),
 )
 check(
@@ -203,8 +237,8 @@ check(
   reconcileLedger({ migrations, rows: ledgerRows(16), expectedTags: RECORDED_TAGS }).problems.length === 0,
 )
 check(
-  'a correct 0000–0019 ledger reconciles after migrating',
-  reconcileLedger({ migrations, rows: ledgerRows(20), expectedTags: ALL_TAGS }).problems.length === 0,
+  'a correct 0000–0020 ledger reconciles after migrating',
+  reconcileLedger({ migrations, rows: ledgerRows(21), expectedTags: ALL_TAGS }).problems.length === 0,
 )
 check(
   'NO ledger at all fails closed',
@@ -308,22 +342,22 @@ check(
   ),
 )
 check(
-  'a post-migration ledger that is still short of 0019 is refused',
-  reconcileLedger({ migrations, rows: ledgerRows(19), expectedTags: ALL_TAGS }).problems.length > 0,
+  'a post-migration ledger that is still short of 0020 is refused',
+  reconcileLedger({ migrations, rows: ledgerRows(20), expectedTags: ALL_TAGS }).problems.length > 0,
 )
 
 /* ==================================================== 3. THE PENDING STACK = */
-section('[3] The pending stack is derived, then required to be exactly the four')
+section('[3] The pending stack is derived, then required to be exactly the five')
 
 {
   const derived = derivePendingStack({ migrations, rows: ledgerRows(16) })
-  check('a 0000–0015 ledger derives exactly the four pending migrations', derived.problems.length === 0)
+  check('a 0000–0015 ledger derives exactly the five pending migrations', derived.problems.length === 0)
   check(
-    'the derived stack is 0016, 0017, 0018, 0019 in order',
+    'the derived stack is 0016, 0017, 0018, 0019, 0020 in order',
     derived.pendingTags.join(',') ===
-      '0016_yummy_tattoo,0017_phase_5_private_storefront,0018_strain_leaning_types,0019_demonic_rockslide',
+      '0016_yummy_tattoo,0017_phase_5_private_storefront,0018_strain_leaning_types,0019_demonic_rockslide,0020_notifications',
   )
-  check('a fully migrated ledger derives nothing pending', derivePendingStack({ migrations, rows: ledgerRows(20) }).pendingTags.length === 0)
+  check('a fully migrated ledger derives nothing pending', derivePendingStack({ migrations, rows: ledgerRows(21) }).pendingTags.length === 0)
   check(
     'a ledger one migration behind derives a stack that is refused',
     has(derivePendingStack({ migrations, rows: ledgerRows(15) }).problems, 'is not the expected'),
@@ -338,7 +372,7 @@ section('[3] The pending stack is derived, then required to be exactly the four'
 }
 
 /* ================================================= 4. DECLARED OBJECTS ==== */
-section('[4] Every object the four pending migrations declare is inventoried')
+section('[4] Every object the five pending migrations declare is inventoried')
 
 const { inventory, dropped, problems: inventoryProblems } = buildPendingInventory({ migrations })
 const keys = new Set(inventory.map((o) => o.key))
@@ -395,6 +429,23 @@ check(
     objectKey.index('marketplace_access_user_unique'),
     objectKey.index('invite_code_redemptions_invite_user_unique'),
   ].every((k) => keys.has(k)),
+)
+check(
+  '0020 — the notifications table, its owner foreign key, and its two indexes',
+  [
+    objectKey.table('notifications'),
+    objectKey.constraint('notifications_user_id_users_id_fk'),
+    objectKey.index('notifications_user_created_idx'),
+    objectKey.index('notifications_user_unread_idx'),
+  ].every((k) => keys.has(k)) &&
+    inventory.filter((o) => o.tag === '0020_notifications').length === 4,
+)
+check(
+  '0020 declares no type, no enum value, no trigger, and drops nothing',
+  inventory
+    .filter((o) => o.tag === '0020_notifications')
+    .every((o) => o.kind === 'table' || o.kind === 'constraint' || o.kind === 'index') &&
+    dropped.every((o) => o.tag !== '0020_notifications'),
 )
 check(
   "0019's two dropped indexes are tracked separately from what it creates",
@@ -458,7 +509,7 @@ const observe = (extra = {}) => {
     evaluateDrift({ inventory, recordedTags: RECORDED_TAGS, observedKeys: clean.keys }).problems.length === 0,
   )
   check(
-    'every declared object of the four unrecorded migrations is actually checked',
+    'every declared object of the five unrecorded migrations is actually checked',
     evaluateDrift({ inventory, recordedTags: RECORDED_TAGS, observedKeys: clean.keys }).checked === inventory.length,
   )
 
@@ -492,6 +543,14 @@ const observe = (extra = {}) => {
       inventory,
       recordedTags: RECORDED_TAGS,
       observedKeys: observe({ columns: [{ table: 'invite_codes', column: 'target_role' }] }).keys,
+    }).problems.length === 1,
+  )
+  check(
+    'an existing notifications table with 0020 unrecorded is blocking drift',
+    evaluateDrift({
+      inventory,
+      recordedTags: RECORDED_TAGS,
+      observedKeys: observe({ tables: ['notifications'] }).keys,
     }).problems.length === 1,
   )
   check(
@@ -660,7 +719,7 @@ section('[9] The clone must prove it is a disposable child, not production')
 {
   const parent = production
   const evidence = { default: true, primary: true }
-  const clone = { id: 'br-clone', name: `${REHEARSAL_BRANCH_PREFIX}0016-0019-1`, default: false, primary: false, parent_id: 'br-prod' }
+  const clone = { id: 'br-clone', name: `${REHEARSAL_BRANCH_PREFIX}0016-0020-1`, default: false, primary: false, parent_id: 'br-prod' }
 
   check('a proper clone passes', evaluateCloneMetadata({ clone, parent, flagEvidence: evidence }).problems.length === 0)
   check(
@@ -705,7 +764,7 @@ section('[9] The clone must prove it is a disposable child, not production')
     'a clone reporting the parent id is refused',
     evaluateCloneMetadata({ clone: { ...clone, id: 'br-prod' }, parent, flagEvidence: evidence }).problems.length > 0,
   )
-  check('generated rehearsal names carry the prefix and the stack span', rehearsalBranchName(1).startsWith(`${REHEARSAL_BRANCH_PREFIX}0016-0019-`))
+  check('generated rehearsal names carry the prefix and the stack span', rehearsalBranchName(1).startsWith(`${REHEARSAL_BRANCH_PREFIX}0016-0020-`))
 }
 
 section('[10] The clone\'s write targets can never be current or retired production')
@@ -810,7 +869,7 @@ section('[12] SKIP, NOT-REACHED, missing, or FAIL all prevent PASS')
 
 const allPassing = REQUIRED_PROBES.map((id) => ({ id, status: 'PASS', detail: '' }))
 check('every required probe passing is the only way through', evaluateProbeOutcomes(allPassing).problems.length === 0)
-check('the probe set covers all four pending migrations', ['0016.', '0017.', '0018.', '0019.'].every((p) => REQUIRED_PROBES.some((id) => id.startsWith(p))))
+check('the probe set covers all five pending migrations', ['0016.', '0017.', '0018.', '0019.', '0020.'].every((p) => REQUIRED_PROBES.some((id) => id.startsWith(p))))
 check(
   'a SKIPPED probe prevents PASS',
   has(evaluateProbeOutcomes(allPassing.map((r, i) => (i === 0 ? { ...r, status: 'SKIP' } : r))).problems, 'reported SKIP'),
@@ -1997,7 +2056,7 @@ section('[20] Every path is derived from the module, so the launch directory can
    * migration stack when the repository is perfectly intact. Worse, the child
    * `drizzle-kit migrate` inherited that same directory, so it resolved
    * `drizzle.config.ts`, the migrations folder and the journal from wherever the
-   * operator was standing rather than from the twenty files this run hashed.
+   * operator was standing rather than from the twenty-one files this run hashed.
    *
    * The root is a fact about this file's own location: `<repo>/scripts/…`, one
    * level up. It is derived here exactly as the runner derives it, and then USED
@@ -2515,7 +2574,13 @@ section('[23] Pre-existing 0018 values reconcile only when every condition is in
     refuses({ pendingTags: PENDING_TAGS.filter((tag) => tag !== STRAIN_EQUIVALENCE_TAG) }, 'pending stack of exactly'),
   )
   check('a pending stack in the wrong order refuses', refuses({ pendingTags: [...PENDING_TAGS].reverse() }))
-  check('an extra pending migration refuses', refuses({ pendingTags: [...PENDING_TAGS, '0020_invented'] }))
+  /*
+   * 0020 IS NOW CERTIFIED INTO THE STACK, SO THE HYPOTHETICAL MOVES UP. This
+   * check has never been about a particular number — it is about a repository
+   * that grew a migration nobody certified. Now that PENDING_TAGS names 0020
+   * explicitly, the uncertified extra is 0021.
+   */
+  check('an extra pending migration refuses', refuses({ pendingTags: [...PENDING_TAGS, '0021_invented'] }))
   check('missing pending evidence refuses', refuses({ pendingTags: undefined }, 'No pending-stack evidence'))
 
   /* ---- the catalog must prove the complete ordered sequence ------------- */
@@ -2762,12 +2827,12 @@ section('[23] Pre-existing 0018 values reconcile only when every condition is in
       !/\b(insert|update|delete|alter|create|drop|truncate)\b/i.test(STRAIN_TYPE_ORDER_QUERY),
   )
   check(
-    'the post-migration reconciliation through 0019 and every probe are untouched',
+    'the post-migration reconciliation through 0020 and every probe are untouched',
     runnerSource.includes('reconcileLedger({ migrations, rows: afterLedger, expectedTags: ALL_TAGS })') &&
       runnerSource.includes('evaluateApplied({ inventory, dropped, observedKeys: afterObserved.keys })') &&
       runnerSource.includes('await runProbes(pool)') &&
-      REQUIRED_PROBES.length === 14 &&
-      ALL_TAGS[ALL_TAGS.length - 1] === '0019_demonic_rockslide',
+      REQUIRED_PROBES.length === 17 &&
+      ALL_TAGS[ALL_TAGS.length - 1] === '0020_notifications',
   )
   check(
     'no refusal in this section ever reports equivalence, whatever it was handed',

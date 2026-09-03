@@ -1,6 +1,6 @@
 'use client'
 
-import { Menu, ShoppingBag, X } from 'lucide-react'
+import { Bell, Menu, ShoppingBag, X } from 'lucide-react'
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 
@@ -70,6 +70,28 @@ const LINKS = [
   { href: '/about', label: 'About' },
 ] as const
 
+/**
+ * THE NOTIFICATION BELL IS TOLD TO THIS COMPONENT TOO, ON THE SAME TERMS.
+ *
+ * `unreadNotificationCount` carries two facts at once, and the type is what
+ * keeps them apart:
+ *
+ *   - a NUMBER means the server resolved a signed-in customer and counted their
+ *     own unread rows. The bell renders.
+ *   - `null`, or the prop omitted entirely, means there is no viewer to count
+ *     for — anonymous, or a caller that has established nothing. NO BELL AND NO
+ *     COUNT RENDER AT ALL.
+ *
+ * Zero is therefore not the anonymous case: a signed-in customer with nothing
+ * unread still gets the bell, because the control belongs to them and only the
+ * badge is conditional. The presence test is an explicit `typeof === 'number'`
+ * rather than a truthiness check for exactly that reason.
+ *
+ * This component resolves no identity of its own. It has no session and no
+ * database, it is never handed a user id, and it could not fetch a count if it
+ * wanted to — `components/customer-site-nav.tsx` does that on the server and
+ * passes the number in.
+ */
 type SiteNavProps = {
   bagCount?: number
   /**
@@ -77,9 +99,19 @@ type SiteNavProps = {
    * default is the denial — omitting it can never widen access.
    */
   marketplaceEntry?: MarketplaceEntry
+  /**
+   * Unread notifications for the signed-in viewer, or `null`/omitted when there
+   * is no viewer. Optional, and its default hides the bell — an unwired caller
+   * shows less, never more.
+   */
+  unreadNotificationCount?: number | null
 }
 
-export function SiteNav({ bagCount = 0, marketplaceEntry = 'denied' }: SiteNavProps) {
+export function SiteNav({
+  bagCount = 0,
+  marketplaceEntry = 'denied',
+  unreadNotificationCount = null,
+}: SiteNavProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
 
@@ -173,6 +205,35 @@ export function SiteNav({ bagCount = 0, marketplaceEntry = 'denied' }: SiteNavPr
         </nav>
 
         <div className="flex items-center gap-2">
+          {/*
+           * Presence, not truthiness. `unreadNotificationCount > 0` here would
+           * hide the bell from a signed-in customer who has read everything,
+           * and `unreadNotificationCount &&` would render a bare `0`.
+           *
+           * The count is in the accessible name because the badge is
+           * `aria-hidden` — same rule as the bag below: a number that exists
+           * only as a coloured chip is announced to nobody.
+           */}
+          {typeof unreadNotificationCount === 'number' && (
+            <a
+              href="/notifications"
+              className="relative inline-flex size-11 items-center justify-center rounded-md text-cream transition-colors hover:bg-cream/10"
+              aria-label={`Notifications, ${unreadNotificationCount} unread`}
+            >
+              <Bell aria-hidden="true" className="size-5" />
+              {unreadNotificationCount > 0 && (
+                <Badge
+                  variant="signal"
+                  shadow={false}
+                  className="absolute -top-0.5 -right-0.5 px-1.5 py-0.5"
+                  aria-hidden="true"
+                >
+                  {unreadNotificationCount}
+                </Badge>
+              )}
+            </a>
+          )}
+
           <a
             href="/bag"
             className="relative inline-flex size-11 items-center justify-center rounded-md text-cream transition-colors hover:bg-cream/10"
