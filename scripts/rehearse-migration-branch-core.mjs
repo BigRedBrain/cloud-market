@@ -69,12 +69,22 @@ export const RECORDED_TAGS = Object.freeze([
   '0015_catalog_compliance',
 ])
 
-/** The stack this rehearsal exists to apply, in order. */
+/**
+ * The stack this rehearsal exists to apply, in order.
+ *
+ * EXTENDED TO 0020 DELIBERATELY, AND THAT IS THE ONLY WAY IT MAY GROW. A
+ * migration is added here by a person who has decided that this rollout now
+ * includes it — never by the tooling noticing a new file. `buildRepositoryMigrations`
+ * requires the journal to be exactly `ALL_TAGS`, so a repository that gained a
+ * migration this constant does not name fails closed instead of quietly
+ * enlarging the reviewed stack.
+ */
 export const PENDING_TAGS = Object.freeze([
   '0016_yummy_tattoo',
   '0017_phase_5_private_storefront',
   '0018_strain_leaning_types',
   '0019_demonic_rockslide',
+  '0020_notifications',
 ])
 
 export const ALL_TAGS = Object.freeze([...RECORDED_TAGS, ...PENDING_TAGS])
@@ -107,6 +117,9 @@ export const REQUIRED_PROBES = Object.freeze([
   '0019.redemption_other_invite_allowed',
   '0019.marketplace_access_user_unique',
   '0019.marketplace_access_user_cascade',
+  '0020.notification_defaults',
+  '0020.notification_unread_partial_index',
+  '0020.notification_user_cascade',
   'probe.isolation',
 ])
 
@@ -353,7 +366,7 @@ export function reconcileLedger({ migrations, rows, expectedTags }) {
 /**
  * What is left to apply, derived from the ledger rather than assumed.
  *
- * The derived stack is then required to be EXACTLY the four pending tags, in
+ * The derived stack is then required to be EXACTLY the five pending tags, in
  * order, as a contiguous tail. A pending set that is anything else means the
  * clone is not the database this rehearsal was designed against.
  */
@@ -728,7 +741,7 @@ export function evaluateApplied({ inventory, dropped, observedKeys }) {
  * consulted by it.
  *
  * ONE CONFIRMED STATE IS RECONCILABLE RATHER THAN DANGEROUS. A clone whose
- * ledger is exactly 0000 … 0015, whose pending stack is exactly 0016 … 0019,
+ * ledger is exactly 0000 … 0015, whose pending stack is exactly 0016 … 0020,
  * whose ONLY pre-existing pending objects are `strain_type.hybrid_i` and
  * `strain_type.hybrid_s`, whose repository copy of 0018 still carries exactly
  * the two intended `ADD VALUE IF NOT EXISTS … BEFORE 'cbd'` operations and no
@@ -762,7 +775,7 @@ export function evaluateApplied({ inventory, dropped, observedKeys }) {
  * WHAT THIS IS NOT. It is not a repair, not a ledger row, not a way to skip
  * 0018, not a per-file executor, and not a second migration path. It decides one
  * boolean; the run it belongs to still applies the whole stack once, through the
- * repository's own command, and still reconciles the ledger through 0019
+ * repository's own command, and still reconciles the ledger through 0020
  * afterwards.
  */
 
@@ -1158,7 +1171,7 @@ export function evaluateStrainLeaningEquivalence({
     proofs.ledger = true
   }
 
-  /* ---- 2. the pending stack is exactly 0016 … 0019 ---------------------- */
+  /* ---- 2. the pending stack is exactly 0016 … 0020 ---------------------- */
   if (!Array.isArray(pendingTags)) {
     problems.push('No pending-stack evidence was supplied to the 0018 equivalence exception, so it refuses.')
   } else if (pendingTags.join(',') !== PENDING_TAGS.join(',')) {
@@ -1281,7 +1294,7 @@ export function describeStrainLeaningEquivalence(equivalence) {
       `[${STRAIN_EQUIVALENCE_OPERATIONS.map(describeAddValueOperation).join('; ')}] and nothing else executable`,
     `the clone's public.strain_type reads exactly ${STRAIN_TYPE_EXPECTED_ORDER.join(', ')}`,
     'so 0018 is a proven no-op against this clone: the whole pending stack goes through the one gated ' +
-      'drizzle-kit migrate unchanged, and the ledger is reconciled through 0019 afterwards',
+      'drizzle-kit migrate unchanged, and the ledger is reconciled through 0020 afterwards',
   ]
 }
 

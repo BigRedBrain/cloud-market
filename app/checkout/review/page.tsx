@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 
 import { PlaceOrderForm } from '@/components/orders/checkout-forms'
-import { SiteNav } from '@/components/site-nav'
+import { CustomerSiteNav } from '@/components/customer-site-nav'
 import { buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert } from '@/components/ui/feedback'
@@ -69,7 +69,7 @@ export default async function CheckoutReviewPage() {
 
   return (
     <>
-      <SiteNav bagCount={0} />
+      <CustomerSiteNav bagCount={0} />
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6">
         <h1 className="mb-6 font-poster text-3xl tracking-tight text-white uppercase">

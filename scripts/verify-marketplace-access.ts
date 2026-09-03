@@ -35,6 +35,11 @@
  *      it traces back to the prop, that the granted branch resolves to `/shop`,
  *      and that no other route into `/shop` exists in the component at all.
  *
+ *   6. THE WRAPPER ONLY CARRIES THE DECISION. `CustomerSiteNav` is the Server
+ *      Component the customer pages render for the notification bell. It
+ *      forwards `marketplaceEntry` to `SiteNav` unchanged and resolves no
+ *      membership itself, so claim 5 still describes what a page renders.
+ *
  * WHY BOTH 4 AND 5. The guard is the boundary; the nav is only a signpost. A
  * hidden link is not a check, which is why the private routes are required to
  * call the guard BEFORE they read the catalogue — and why the nav is required
@@ -291,9 +296,22 @@ function firstCatalogRead(body: string): number {
   return hits.length === 0 ? -1 : Math.min(...hits)
 }
 
-/** The rendered `<SiteNav …/>` tag, or ''. */
+/**
+ * The rendered nav tag — `<SiteNav …/>` or `<CustomerSiteNav …/>` — or ''.
+ *
+ * `CustomerSiteNav` is the Server Component wrapper the customer pages render.
+ * It resolves the viewer and their unread notification count and then renders
+ * `SiteNav`, FORWARDING `marketplaceEntry` UNCHANGED — it makes no membership
+ * decision of its own, which is asserted directly further down rather than
+ * assumed here.
+ *
+ * Both spellings are accepted so that the assertions below keep reading the
+ * attribute the page actually passes. Widening the match does not widen what is
+ * allowed: every check that consumes this tag still demands the same
+ * `marketplaceEntry` value it demanded before, from the same call sites.
+ */
 function siteNavTag(body: string): string {
-  return body.match(/<SiteNav\b[^>]*\/>/)?.[0] ?? ''
+  return body.match(/<(?:Customer)?SiteNav\b[^>]*\/>/)?.[0] ?? ''
 }
 
 /** Fixture rows. Built through the exported type so a shape change fails here. */
@@ -1109,14 +1127,56 @@ function main() {
     'a client component deciding its own membership decides it in the browser',
   )
 
+  console.log('\n-- the nav wrapper forwards, it does not decide ---------')
+
+  /*
+   * `CustomerSiteNav` sits between the customer pages and `SiteNav`. It exists
+   * for the viewer and their unread notification count, and it is a Server
+   * Component — which is exactly the position from which it COULD start
+   * deciding membership, and must not.
+   *
+   * Everything proven about the ternary above is proven about `SiteNav`. That
+   * argument only reaches the pages if the value they pass arrives unchanged,
+   * so the forwarding is asserted here rather than taken on trust. A wrapper
+   * that defaulted, coerced or invented `marketplaceEntry` would leave every
+   * assertion in this file technically true and the shop link wrong.
+   */
+  const wrapperCode = stripComments(source('components', 'customer-site-nav.tsx'))
+
+  assert('components/customer-site-nav.tsx was found', wrapperCode.length > 0)
+  assert(
+    'it forwards the marketplaceEntry prop through to SiteNav, unaltered',
+    /<SiteNav\b[\s\S]*?marketplaceEntry=\{\s*marketplaceEntry\s*\}/.test(wrapperCode),
+    'the value the page passed must be the value SiteNav tests',
+  )
+  assert(
+    'and manufactures no entry of its own — no literal, no default, no fallback',
+    !/['"]granted['"]/.test(wrapperCode) &&
+      !/marketplaceEntry\s*(?:=|\?\?|\|\|)\s*['"]/.test(wrapperCode),
+    'an omitted prop must still arrive omitted, so SiteNav falls through to the gate',
+  )
+  assert(
+    'it resolves no membership: no probe, no guard, no resolver, no schema read',
+    !/\b(?:getMarketplaceAccess|requireMarketplaceAccess|resolveMarketplaceAccess|lookupMarketplaceMembership)\b/.test(
+      wrapperCode,
+    ) && !/from\s+['"][^'"]*lib\/(?:marketplace\/access|db)/.test(wrapperCode),
+    'membership belongs to the route that reads private data, not to the header',
+  )
+  assert(
+    'and the shop target appears nowhere in it',
+    !/\/shop\b/.test(wrapperCode),
+    'a link built here would bypass the === granted test entirely',
+  )
+
   console.log('\n-- untouched nav callers still reach the gate -----------')
 
   /*
-   * The four pages that were never part of this slice. They pass no
-   * `marketplaceEntry`, so by the ternary proven above they render `/gate` —
-   * which is the correct answer for a page that has established nothing about
-   * the viewer. Named individually because "we changed nothing there" is
-   * exactly the claim that rots silently.
+   * The four pages that were never part of the membership slice. They pass no
+   * `marketplaceEntry` — through the wrapper or, for `/design`, directly — so by
+   * the ternary proven above they render `/gate`, which is the correct answer
+   * for a page that has established nothing about the viewer. Named
+   * individually because "we changed nothing there" is exactly the claim that
+   * rots silently.
    */
   for (const segments of [
     ['app', 'design', 'page.tsx'],

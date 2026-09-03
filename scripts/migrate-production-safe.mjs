@@ -26,7 +26,7 @@
  *
  * THE ORDER IS THE SAFETY PROPERTY
  *
- *   1. The repository is snapshotted (journal + all 20 migration files) BEFORE
+ *   1. The repository is snapshotted (journal + all 21 migration files) BEFORE
  *      any authorization is acted upon, so "the committed files are what ran"
  *      is checked afterwards against bytes captured beforehand.
  *   2. The live application at the fixed health URL must say, itself, that it is
@@ -41,7 +41,7 @@
  *   5. Only then is a connection opened, and only inside an explicit
  *      READ ONLY transaction: the ledger must reconcile exactly through 0015 by
  *      order, hash and timestamp; the pending stack must derive to exactly
- *      0016 … 0019; the complete pre-existing drift must be exactly
+ *      0016 … 0020; the complete pre-existing drift must be exactly
  *      `strain_type.hybrid_i` and `strain_type.hybrid_s`; and the 0018
  *      equivalence exception must prove itself against this run's own evidence.
  *   6. ONLY after all of that, and only with the one exact authorization value,
@@ -143,6 +143,34 @@ import {
  * What the working tree actually contains is proved separately and far more
  * strictly: every migration file is hashed and reconciled against the production
  * ledger, and re-read byte-for-byte after the migration.
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────┐
+ * │ MUST BE REBOUND BEFORE THIS ROLLOUT IS AUTHORIZED.                       │
+ * │                                                                          │
+ * │ The value below names the release that was reviewed for the FOUR-        │
+ * │ migration stack 0016 … 0019. The pending stack is now FIVE — 0020        │
+ * │ (notifications) has been certified into it — so this commit no longer    │
+ * │ contains the migration set it authorizes. Nothing here can fix that      │
+ * │ itself: the commit that carries 0020 does not exist until 0020 is        │
+ * │ generated and committed, and this script runs no git command and reads   │
+ * │ nothing from the working tree, by design.                                │
+ * │                                                                          │
+ * │ A person must, in this order:                                            │
+ * │   1. generate and commit drizzle/0020_notifications.sql, its snapshot,   │
+ * │      and the journal entry (see the human step in                        │
+ * │      scripts/verify-notification-schema.ts);                             │
+ * │   2. re-take the production restore branch against the 0016 … 0020 span  │
+ * │      and rebind RESTORE_BRANCH_ID / RESTORE_BRANCH_NAME below;           │
+ * │   3. replace this constant with that reviewed commit's full 40-character │
+ * │      sha, and update the matching assertion in                           │
+ * │      scripts/verify-migrate-production-safe.mjs.                         │
+ * │                                                                          │
+ * │ Leaving it stale is not a silent failure — the ledger reconciliation,    │
+ * │ the derived pending stack, and the object inventory below are all        │
+ * │ defined against the 21-migration repository and will refuse anything     │
+ * │ else — but the authorization value would name a release that does not    │
+ * │ contain 0020, and that is a claim no operator should be asked to type.   │
+ * └──────────────────────────────────────────────────────────────────────────┘
  */
 export const ROLLOUT_COMMIT = 'c211e69184bcf3425a3a913564cf6ffa8eb7bc38'
 
@@ -163,6 +191,12 @@ export const PRODUCTION_ROLE = 'neondb_owner'
  * four facts are checked against the control plane's own metadata, and the two
  * flags must read explicitly `false` — an omitted, null, or non-boolean flag is
  * unproven, and this script does not migrate production on an inferred negative.
+ *
+ * REBIND WITH THE ROLLOUT COMMIT ABOVE. This branch was taken as the way back
+ * from a 0016 … 0019 rollout, which its name says out loud. The stack is now
+ * 0016 … 0020, so a fresh restore point must be taken from production and named
+ * here before the extended stack is authorized; the name is checked exactly, so
+ * a stale one refuses rather than being quietly accepted.
  */
 export const RESTORE_BRANCH_ID = 'br-damp-bird-axk2dy92'
 export const RESTORE_BRANCH_NAME = 'restore-pre-0016-0019-1787595530198'
@@ -255,12 +289,20 @@ export const IDENTITY_ENVIRONMENT_EXPECTATIONS = Object.freeze({
  * The complete declared inventory of the pending stack, and the part of it that
  * must still exist afterwards.
  *
- * 0019 drops two indexes that 0017 creates, so the stack declares 75 objects of
- * which 73 survive it. Both numbers are asserted: a repository that declares a
+ * 0019 drops two indexes that 0017 creates, so the stack declares 79 objects of
+ * which 77 survive it. Both numbers are asserted: a repository that declares a
  * different number of objects is not the reviewed rollout, whichever direction
  * it moved in.
+ *
+ * 0020 RAISED THE DECLARED COUNT FROM 75 TO 79 AND THE DROPPED COUNT NOT AT ALL.
+ * The four are the `notifications` table, its `user_id` foreign key, and its two
+ * indexes — `notifications_user_created_idx` and the partial
+ * `notifications_user_unread_idx`. The number is written here rather than
+ * counted from the files on purpose: it is the reviewed shape of the migration,
+ * so a generated 0020 that declares anything else fails closed here instead of
+ * redefining what was reviewed.
  */
-export const PENDING_DECLARED_OBJECTS = 75
+export const PENDING_DECLARED_OBJECTS = 79
 export const PENDING_DROPPED_OBJECTS = 2
 export const PENDING_SURVIVING_OBJECTS = PENDING_DECLARED_OBJECTS - PENDING_DROPPED_OBJECTS
 

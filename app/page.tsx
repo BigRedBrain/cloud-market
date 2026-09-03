@@ -11,7 +11,7 @@ import { BurningCloud } from '@/components/brand/burning-cloud'
 import { CloudButton } from '@/components/brand/cloud-button'
 import { SmokeBackground } from '@/components/brand/smoke-background'
 import { ProductCard } from '@/components/product-card'
-import { SiteNav } from '@/components/site-nav'
+import { CustomerSiteNav } from '@/components/customer-site-nav'
 import { getBagCount } from '@/lib/bag/core'
 import { getCurrentUser, getMarketplaceAccess } from '@/lib/auth/dal'
 import { Badge } from '@/components/ui/badge'
@@ -103,7 +103,7 @@ export default async function Home() {
        * value that produces a `/shop` link; every denial, including the
        * anonymous one, points the nav at `/gate`.
        */}
-      <SiteNav
+      <CustomerSiteNav
         bagCount={bagCount}
         marketplaceEntry={marketplace.granted ? 'granted' : 'denied'}
       />

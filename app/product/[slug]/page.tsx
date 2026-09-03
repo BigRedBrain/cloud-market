@@ -5,7 +5,7 @@ import { notFound } from 'next/navigation'
 
 import { AddToBagForm } from '@/components/bag/bag-controls'
 import { ProductCard } from '@/components/product-card'
-import { SiteNav } from '@/components/site-nav'
+import { CustomerSiteNav } from '@/components/customer-site-nav'
 import { getBagCount } from '@/lib/bag/core'
 import { getCurrentUser, requireMarketplaceAccess } from '@/lib/auth/dal'
 import { Badge } from '@/components/ui/badge'
@@ -85,7 +85,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
   return (
     <>
       {/* Literal grant, dominated by the guard above — see app/shop/page.tsx. */}
-      <SiteNav bagCount={bagCount} marketplaceEntry="granted" />
+      <CustomerSiteNav bagCount={bagCount} marketplaceEntry="granted" />
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-10 sm:px-6">
         <nav aria-label="Breadcrumb" className="mb-6">

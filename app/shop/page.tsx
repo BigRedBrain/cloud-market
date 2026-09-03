@@ -5,7 +5,7 @@ import { PackageOpen } from 'lucide-react'
 
 import { CatalogFilters, CategoryChips } from '@/components/catalog/catalog-filters'
 import { ProductCard } from '@/components/product-card'
-import { SiteNav } from '@/components/site-nav'
+import { CustomerSiteNav } from '@/components/customer-site-nav'
 import { getBagCount } from '@/lib/bag/core'
 import { getCurrentUser, requireMarketplaceAccess } from '@/lib/auth/dal'
 import { Button } from '@/components/ui/button'
@@ -104,7 +104,7 @@ export default async function ShopPage({
        * users.role, users.status, the membership scope or anything a client
        * sent — the authoritative guard is the only reason this renders.
        */}
-      <SiteNav bagCount={bagCount} marketplaceEntry="granted" />
+      <CustomerSiteNav bagCount={bagCount} marketplaceEntry="granted" />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-10 sm:px-6">
         <header className="mb-8 flex flex-col gap-3">
