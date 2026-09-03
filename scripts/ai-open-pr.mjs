@@ -636,23 +636,66 @@ function verifyLocalCommit(
         change.path,
       );
 
-    const bytes =
-      gitBuffer(
-        [
-          'show',
-          `${integration.commit}:${path}`,
-        ],
+    const fullPath =
+      join(
         integrationPath,
+        path,
       );
 
-    const hash =
+    const worktreeHash =
       sha256Buffer(
-        bytes,
+        readFileSync(
+          fullPath,
+        ),
       );
 
     if (
-      hash.toLowerCase() !==
+      worktreeHash.toLowerCase() !==
       change.sha256.toLowerCase()
+    ) {
+      throw new Error(
+        `Committed worktree fingerprint mismatch: ${path}`,
+      );
+    }
+
+    let expectedCommittedObject;
+
+    try {
+      expectedCommittedObject =
+        gitTrim(
+          [
+            'hash-object',
+            `--path=${path}`,
+            fullPath,
+          ],
+          integrationPath,
+        );
+    } catch {
+      throw new Error(
+        `Unable to compute Git-filtered committed fingerprint: ${path}`,
+      );
+    }
+
+    let committedObject;
+
+    try {
+      committedObject =
+        gitTrim(
+          [
+            'rev-parse',
+            `${integration.commit}:${path}`,
+          ],
+          integrationPath,
+        );
+    } catch {
+      throw new Error(
+        `Unable to read committed file identity: ${path}`,
+      );
+    }
+
+    if (
+      committedObject !==
+      expectedCommittedObject
     ) {
       throw new Error(
         `Committed fingerprint mismatch: ${path}`,

@@ -619,31 +619,66 @@ function verifyCommittedIntegration(
       change.operation ===
       'copy'
     ) {
-      let bytes;
+      const fullPath =
+        join(
+          integrationPath,
+          path,
+        );
+
+      const worktreeHash =
+        sha256Buffer(
+          readFileSync(
+            fullPath,
+          ),
+        );
+
+      if (
+        worktreeHash.toLowerCase() !==
+        change.sha256.toLowerCase()
+      ) {
+        throw new Error(
+          `Committed worktree fingerprint mismatch: ${path}`,
+        );
+      }
+
+      let expectedCommittedObject;
 
       try {
-        bytes =
-          gitBuffer(
+        expectedCommittedObject =
+          gitTrim(
             [
-              'show',
+              'hash-object',
+              `--path=${path}`,
+              fullPath,
+            ],
+            integrationPath,
+          );
+      } catch {
+        throw new Error(
+          `Unable to compute Git-filtered committed fingerprint: ${path}`,
+        );
+      }
+
+      let committedObject;
+
+      try {
+        committedObject =
+          gitTrim(
+            [
+              'rev-parse',
               `${integration.commit}:${path}`,
             ],
             integrationPath,
           );
       } catch {
         throw new Error(
-          `Unable to read committed file: ${path}`,
+          `Unable to read committed file identity: ${path}`,
         );
       }
 
-      const actualHash =
-        sha256Buffer(
-          bytes,
-        );
-
       if (
-        actualHash.toLowerCase() !==
-        change.sha256.toLowerCase()
+        committedObject !==
+        expectedCommittedObject
       ) {
         throw new Error(
           `Committed fingerprint mismatch: ${path}`,
