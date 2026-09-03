@@ -6,7 +6,30 @@ import { forbidden, redirect } from 'next/navigation'
 import { and, eq, isNull } from 'drizzle-orm'
 
 import { db } from '@/lib/db'
-import { userPermissions, type AdminPermission, type UserRole } from '@/lib/db/schema'
+import {
+  adminBackup,
+  marketplaceAccess,
+  userPermissions,
+  type AdminPermission,
+  type UserRole,
+} from '@/lib/db/schema'
+import {
+  deniedForAnonymous,
+  resolveMarketplaceAccess,
+  type MarketplaceAccessDecision,
+  type MarketplaceAccessGranted,
+  type MarketplaceMembership,
+} from '@/lib/marketplace/access'
+import {
+  auditEventForFailure,
+  auditEventForOwnerConfig,
+  resolveAdminIdentity,
+  type AdminIdentity,
+  type AdminIdentityFailure,
+  type AdminIdentityResolution,
+  type OwnerConfigFault,
+} from './admin-identity'
+import { recordAuditEvent } from './audit'
 import { resolveSession, type ActiveSession, type SessionUser } from './session'
 
 /**
@@ -186,4 +209,342 @@ export async function requirePermission(
 export async function hasPermission(permission: AdminPermission): Promise<boolean> {
   const user = await getCurrentUser()
   return user !== null && (await holdsPermission(user.id, permission))
+}
+
+/* ==========================================================================
+ * Administrator identity — configured owner + the single backup slot
+ * ==========================================================================
+ *
+ * NOT WIRED. NOTHING BELOW CHANGES WHAT ANY USER CAN REACH TODAY.
+ *
+ * `requireAdmin()` above is untouched and remains the only guard on /admin.
+ * These two functions have no call sites outside their own test. Swapping
+ * `requireAdmin()` for `requireAdminIdentity()` is a separate, production-
+ * impacting step that requires rehearsal against the real production owner id
+ * and an explicit go-ahead — because the moment it lands, every account holding
+ * `users.role = 'admin'` that is neither the configured owner nor the live
+ * backup loses administrative access.
+ *
+ * THE MODEL. Migration 0017 documented it and the database already enforces
+ * the ceiling; the application never implemented it. An administrator is:
+ *
+ *   1. the user id in `CLOUDMARKET_OWNER_USER_ID`, or
+ *   2. the user in the one live `admin_backup` row (`revoked_at IS NULL`).
+ *
+ * That is the whole list. THERE IS NO `users.role` FALLBACK, deliberately: the
+ * point of anchoring the owner in the environment is that no database write —
+ * no compromised admin screen, no stray migration, no seed script — can mint an
+ * administrator. Adding a role fallback "so nobody gets locked out" would give
+ * the entire property back.
+ */
+
+/**
+ * The live backup administrator's user id, or null when the slot is empty.
+ *
+ * `LIMIT 1` is a belt to the database's braces: `admin_backup_single_active_slot`
+ * is a partial unique index over a CHECK-pinned constant column, so more than
+ * one live row cannot exist. The limit means that even if that guarantee were
+ * ever dropped, this returns one deterministic answer rather than throwing.
+ */
+async function lookupLiveBackupUserId(): Promise<string | null> {
+  const [row] = await db
+    .select({ userId: adminBackup.userId })
+    .from(adminBackup)
+    .where(isNull(adminBackup.revokedAt))
+    .limit(1)
+
+  return row?.userId ?? null
+}
+
+/**
+ * The shared resolution. Both entry points below go through this one call, so
+ * the silent probe and the enforcing guard cannot drift into disagreeing about
+ * who is an administrator — which is the failure mode that produces a nav item
+ * leading to a 403, or worse, the reverse.
+ *
+ * Cached, and safe to cache precisely because `resolveAdminIdentity` is
+ * side-effect free: it writes nothing and throws no navigation interrupt. A
+ * render where the guard and the probe both run performs one backup lookup.
+ *
+ * Not exported. The resolution type carries a `SessionUser` and a failure
+ * reason; callers get the narrowed shape appropriate to what they asked.
+ */
+const resolveAdminIdentityCached = cache(
+  async (): Promise<AdminIdentityResolution> =>
+    resolveAdminIdentity(await getCurrentUser(), lookupLiveBackupUserId),
+)
+
+/**
+ * Non-redirecting probe: is the current user an administrator, and which kind?
+ *
+ * For rendering — showing an admin link, labelling a session as owner or
+ * backup. Returns null for anonymous, for a signed-in non-administrator, and
+ * for a broken owner configuration alike.
+ *
+ * WRITES NO AUDIT EVENTS, EVER. A probe fires on ordinary page renders for
+ * ordinary visitors, and `null` is its ordinary answer. Recording
+ * `ADMIN_ACCESS_DENIED` here would fill the security log with rows describing
+ * nothing but a nav item that was not drawn, and bury the real ones.
+ * `OWNER_IDENTITY_MISCONFIGURED` is withheld for the same reason: a
+ * misconfiguration is a real incident, but re-reporting it on every render of
+ * every page is not how it should surface. Enforcement audits belong in
+ * `requireAdminIdentity()`; configuration health belongs in a deliberate check.
+ *
+ * NOT AN AUTHORIZATION BOUNDARY. Rendering decisions only — anything that
+ * actually exposes admin data must call `requireAdminIdentity()`.
+ */
+export async function getAdminIdentity(): Promise<AdminIdentity | null> {
+  const resolution = await resolveAdminIdentityCached()
+  return resolution.status === 'authorized' ? resolution.identity : null
+}
+
+/** Audit summaries. Fixed strings — never interpolate the configured value. */
+const ADMIN_IDENTITY_DENIAL_SUMMARY: Record<AdminIdentityFailure, string> = {
+  not_signed_in: 'Anonymous request to an administrator-only resource',
+  owner_not_configured:
+    'CLOUDMARKET_OWNER_USER_ID is not set; owner authorization is unavailable and the requester is not the backup administrator',
+  owner_malformed:
+    'CLOUDMARKET_OWNER_USER_ID is not a valid UUID; owner authorization is unavailable and the requester is not the backup administrator',
+  not_an_administrator:
+    'Signed-in user is neither the configured owner nor the live backup administrator',
+}
+
+/** Summaries for the degraded-but-working case: backup in, owner variable broken. */
+const OWNER_CONFIG_FAULT_SUMMARY: Record<OwnerConfigFault, string> = {
+  owner_not_configured:
+    'Backup administrator authorized while CLOUDMARKET_OWNER_USER_ID is not set; owner authorization is unavailable',
+  owner_malformed:
+    'Backup administrator authorized while CLOUDMARKET_OWNER_USER_ID is not a valid UUID; owner authorization is unavailable',
+}
+
+/**
+ * Requires the configured owner or the live backup administrator. 403 otherwise.
+ *
+ * NOT WRAPPED IN `cache()`, following the same rule as the guards above: this
+ * function's failure result is a thrown `forbidden()`, and memoising a thrown
+ * control-flow signal buys nothing. The costly part — the session lookup and
+ * the backup query — is already deduplicated inside `resolveAdminIdentityCached`.
+ *
+ * FAILS CLOSED, BUT NOT FURTHER THAN IT HAS TO. A broken owner variable removes
+ * owner authorization only; the live backup administrator is still admitted,
+ * because the backup slot exists so that losing the owner is recoverable from
+ * inside the product rather than requiring a deploy.
+ *
+ * AUTHENTICATION IS A SEPARATE STEP FROM AUTHORIZATION HERE, and the two must
+ * not be collapsed — see the comment on the first line of the body.
+ */
+export async function requireAdminIdentity(): Promise<AdminIdentity> {
+  /*
+   * ANONYMOUS REQUESTS REDIRECT TO SIGN-IN; THEY DO NOT GET A 403.
+   *
+   * This call is what makes that true, and it is not redundant with the
+   * resolver's own `not_signed_in` branch. That branch ends in `forbidden()`
+   * like every other denial, so relying on it would mean a signed-out
+   * administrator opening /admin gets a "forbidden" page instead of a login
+   * form — a dead end offering no way forward. `requireAdmin()`, which this
+   * will eventually replace, redirects via `requireRole` -> `requireUser` ->
+   * `requireSession`, and that boundary has to survive the swap unchanged.
+   *
+   * Deliberately `requireUser()` and not `requireVerifiedUser()`: `requireRole`
+   * does not gate on email verification either, and quietly adding a
+   * verification requirement at the cutover would be a second behaviour change
+   * smuggled in beside the first.
+   *
+   * Costs nothing. `requireSession` reads `getCurrentSession()`, which is
+   * `cache()`-wrapped and is the same lookup the resolution below already
+   * performs, so a render pays for one session read however many guards run.
+   */
+  await requireUser()
+
+  const resolution = await resolveAdminIdentityCached()
+
+  if (resolution.status === 'authorized') {
+    /*
+     * A SUCCESSFUL request can still carry a configuration incident: the backup
+     * administrator is in, the owner variable is unusable, and the platform is
+     * now one revoked row away from having no administrators at all. Nothing
+     * else reports this — the request works, so no denial is logged — which is
+     * exactly why it is recorded here rather than left to be noticed.
+     *
+     * NOISE WARNING FOR THE CUTOVER: while the platform sits in this state,
+     * every admin page load by the backup writes one of these. That is the same
+     * de-duplication problem described at the denial below, and it wants the
+     * same answer — a configuration-health check that reports once, rather than
+     * a row per render. Do not solve it by dropping the event.
+     */
+    if (resolution.ownerConfig !== 'ok') {
+      const event = auditEventForOwnerConfig(resolution.ownerConfig)
+      if (event !== null) {
+        await recordAuditEvent({
+          event,
+          userId: resolution.identity.user.id,
+          entityType: 'admin_identity',
+          entityId: resolution.identity.user.id,
+          summary: OWNER_CONFIG_FAULT_SUMMARY[resolution.ownerConfig],
+        })
+      }
+    }
+
+    return resolution.identity
+  }
+
+  /*
+   * `not_signed_in` maps to null and is not recorded.
+   *
+   * It should be unreachable: `requireUser()` at the top of this function
+   * redirects an anonymous request before anything here runs. It is handled
+   * anyway as a fail-closed backstop — if the two reads ever disagree, or if
+   * someone removes that call, the outcome is still a denial rather than an
+   * accidental grant. Nothing is written for it because there is no actor to
+   * attribute the row to, and the request never reached an authorization
+   * decision worth logging.
+   *
+   * NOTE: this does NOT assume some earlier guard authenticated the caller.
+   * `requireAdminIdentity()` is safe to use as the only guard on a route, and
+   * an earlier draft of this comment claimed otherwise.
+   *
+   * FUTURE CUTOVER HOOK — NOT IMPLEMENTED HERE, BY DESIGN. Once this guard is
+   * live, every denied request writes a row, and a scanner sweeping /admin/*
+   * can inflate `audit_log` through it. De-duplicating or throttling those
+   * writes needs a TRUSTED origin, since a client-supplied forwarding header
+   * can be forged both to evade a limit and to poison another origin's counter.
+   * `lib/security/rate-limit.ts` is built and unwired; wiring it belongs to the
+   * cutover, together with deciding what a trusted origin is on Vercel.
+   */
+  const event = auditEventForFailure(resolution.detail)
+  if (event !== null) {
+    await recordAuditEvent({
+      event,
+      userId: resolution.user?.id ?? null,
+      entityType: 'admin_identity',
+      /* uuid column — only ever a real user id, never the configured value. */
+      entityId: resolution.user?.id ?? null,
+      summary: ADMIN_IDENTITY_DENIAL_SUMMARY[resolution.detail],
+    })
+  }
+
+  forbidden()
+}
+
+/* ==========================================================================
+ * Private-marketplace access — membership probe + guard
+ * ==========================================================================
+ *
+ * NOT WIRED. NOTHING BELOW CHANGES WHAT ANY USER CAN REACH TODAY.
+ *
+ * `requireMarketplaceAccess()` has ZERO call sites: no route, no page, no
+ * layout, no Server Action, no proxy matcher, no sign-up path, no catalog
+ * query. The storefront is exactly as open as it was before this landed, and
+ * `scripts/verify-marketplace-access.ts` scans the tree to keep it that way —
+ * adding the first call site is meant to fail that check and force the
+ * conversation, not to slip through as a one-line diff.
+ *
+ * WHY IT MUST STAY UNWIRED FOR NOW. `marketplace_access` is EMPTY. Migration
+ * 0019 created the table and granted nobody a row, which is safe only while
+ * nothing reads it. Wiring this guard today would deny every account on the
+ * platform, including the owner. Before enforcement, a production-reviewed
+ * backfill has to identify the explicitly grandfathered accounts and grant them
+ * `scope = 'shopper', status = 'active'` — and that population MUST NOT be
+ * derived from `users.role` or `users.status`, which is the entire reason
+ * membership got its own table instead of another enum value on `users`.
+ *
+ * NO AUDIT EVENTS, IN EITHER DIRECTION. Unlike `requireAdminIdentity()` above,
+ * this guard writes nothing: `audit_log`'s event enum has no marketplace values
+ * yet, deliberately — migration 0019 added none, on the grounds that audit
+ * values arrive with the mutations that emit them. Inventing one here would
+ * mean a schema change smuggled in beside an unwired guard. Deciding what a
+ * marketplace denial is worth recording belongs to the wiring batch, together
+ * with the rate-limiting question the admin cutover already has open.
+ */
+
+/**
+ * The membership row for one account, or null.
+ *
+ * `LIMIT 1` against `marketplace_access_user_unique`, which is a unique index
+ * on `user_id` — one membership per account, enforced by the database. The
+ * limit costs nothing and means that if that guarantee were ever relaxed this
+ * returns at most one row; choosing deterministically would require an ORDER BY if uniqueness were ever relaxed.
+ *
+ * Selects only `scope` and `status`. The decision needs no more than that, and
+ * a narrow projection is what keeps the resolver honest: `users.role` and
+ * `users.status` are not merely unread here, they are never fetched.
+ */
+async function lookupMarketplaceMembership(
+  userId: string,
+): Promise<MarketplaceMembership | null> {
+  const [row] = await db
+    .select({ scope: marketplaceAccess.scope, status: marketplaceAccess.status })
+    .from(marketplaceAccess)
+    .where(eq(marketplaceAccess.userId, userId))
+    .limit(1)
+
+  return row ?? null
+}
+
+/**
+ * Non-redirecting probe: may the current user enter the private marketplace,
+ * and if not, why not?
+ *
+ * Read fresh from the database rather than carried on the session, matching
+ * `holdsPermission` above: a suspension that only took effect whenever the
+ * member next happened to sign out would not be a suspension.
+ *
+ * `cache()`-wrapped, and safe to cache precisely because it is side-effect free
+ * — no audit write, no navigation interrupt. A render where a layout, a page
+ * and the guard all ask performs one membership query. This is the DAL's
+ * standing rule: memoise the resolution, never the guard that throws.
+ *
+ * NOT AN AUTHORIZATION BOUNDARY. Rendering decisions only. Anything that
+ * actually exposes private-marketplace data must call
+ * `requireMarketplaceAccess()`, and a hidden nav item is not a check.
+ */
+export const getMarketplaceAccess = cache(
+  async (): Promise<MarketplaceAccessDecision> => {
+    const user = await getCurrentUser()
+    if (!user) return deniedForAnonymous()
+
+    return resolveMarketplaceAccess(await lookupMarketplaceMembership(user.id))
+  },
+)
+
+/**
+ * Requires live marketplace membership. 403 otherwise.
+ *
+ * UNWIRED — see the block comment above before adding the first call site.
+ *
+ * NOT `cache()`-WRAPPED, following the same rule as every other guard here: its
+ * failure result is a thrown `forbidden()`, and memoising a thrown control-flow
+ * signal buys nothing. The query is already deduplicated inside
+ * `getMarketplaceAccess()`.
+ *
+ * ANONYMOUS REQUESTS REDIRECT TO SIGN-IN; THEY DO NOT GET A 403. `requireUser()`
+ * runs first for that reason and is not redundant with the probe's
+ * `not_signed_in` denial — relying on that branch would hand a signed-out
+ * member a "forbidden" page instead of a login form, which is a dead end
+ * offering no way forward. It costs nothing: the session lookup underneath is
+ * `cache()`-wrapped and shared with the probe.
+ *
+ * Deliberately `requireUser()` and not `requireVerifiedUser()`. Membership and
+ * email verification are separate gates; ordering and payment gate on the
+ * latter, and quietly folding it in here would make this guard mean two things.
+ *
+ * RETURNS THE GRANTED DECISION, so the caller has the scope without asking
+ * again — and the type it gets back is the granted arm, so a call site cannot
+ * read `scope` off a denial. THAT SCOPE IS ENTRY, NOT A SELLING RIGHT: see
+ * `authorizesSelling` in `lib/marketplace/access.ts`. A vendor is admitted to
+ * the marketplace and is neither a seller nor an administrator.
+ */
+export async function requireMarketplaceAccess(): Promise<MarketplaceAccessGranted> {
+  await requireUser()
+
+  const decision = await getMarketplaceAccess()
+  if (decision.granted) return decision
+
+  /*
+   * Written as an early return above rather than `if (!granted) forbidden()`,
+   * so that narrowing to the granted arm comes from the discriminant itself and
+   * not from `forbidden()`'s `never` return. Both compile today; only one keeps
+   * compiling if that signature is ever widened.
+   */
+  forbidden()
 }

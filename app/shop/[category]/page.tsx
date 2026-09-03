@@ -8,7 +8,7 @@ import { CatalogFilters, CategoryChips } from '@/components/catalog/catalog-filt
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
 import { getBagCount } from '@/lib/bag/core'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { getCurrentUser, requireMarketplaceAccess } from '@/lib/auth/dal'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Pagination, parseCatalogSearchParams } from '@/app/shop/page'
@@ -24,7 +24,18 @@ type CategoryPageProps = {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }
 
+/**
+ * Metadata is a private read too.
+ *
+ * `generateMetadata` runs on its own, ahead of the component, and it queries the
+ * catalogue — so guarding only the page body would leave a route that answers
+ * "which categories exist, and what are they called" to anyone who asks. The
+ * title is a small leak, but it is a leak, and a `<title>` differing between
+ * "Category not found" and a real name is an enumeration oracle.
+ */
 export async function generateMetadata({ params }: CategoryPageProps): Promise<Metadata> {
+  await requireMarketplaceAccess()
+
   const { category: slug } = await params
   const category = await getCategoryBySlug(slug)
 
@@ -47,6 +58,13 @@ export async function generateMetadata({ params }: CategoryPageProps): Promise<M
  * the category instead of silently navigating out of it.
  */
 export default async function CategoryPage({ params, searchParams }: CategoryPageProps) {
+  /*
+   * Before the category lookup, not after. `notFound()` on a missing slug is
+   * only an honest answer to someone entitled to ask; run the other way round
+   * it would tell a non-member which category slugs are real.
+   */
+  await requireMarketplaceAccess()
+
   const bagViewer = await getCurrentUser()
   const bagCount = await getBagCount(bagViewer?.id ?? null)
 
@@ -68,7 +86,8 @@ export default async function CategoryPage({ params, searchParams }: CategoryPag
 
   return (
     <>
-      <SiteNav bagCount={bagCount} />
+      {/* Literal grant, dominated by the guard above — see app/shop/page.tsx. */}
+      <SiteNav bagCount={bagCount} marketplaceEntry="granted" />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-10 sm:px-6">
         <nav aria-label="Breadcrumb" className="mb-4">

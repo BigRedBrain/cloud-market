@@ -18,8 +18,8 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import { db, schema } from '../lib/db'
 import { createDraft, placeOrder, sweepExpiredDrafts } from '../lib/orders/core'
 import { runDraftSweep, SWEEP_JOB, lastSuccessfulSweep } from '../lib/jobs/sweep'
+import { isProductionHostFingerprint } from './environment-fingerprints.mjs'
 
-const PRODUCTION_FP = '2b968b3cbe06'
 const fp = (u: string) =>
   createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)
 
@@ -27,7 +27,7 @@ if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL is required.')
   process.exit(1)
 }
-if (fp(process.env.DATABASE_URL) === PRODUCTION_FP) {
+if (isProductionHostFingerprint(fp(process.env.DATABASE_URL))) {
   console.error('REFUSING: this is production.')
   process.exit(1)
 }

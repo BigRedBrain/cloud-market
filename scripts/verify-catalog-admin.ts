@@ -27,8 +27,8 @@ import { createDraft, placeOrder } from '../lib/orders/core'
 import { checkoutGate, MAX_SWEEP_AGE_SECONDS } from '../lib/orders/gate'
 import { runDraftSweep, SWEEP_JOB } from '../lib/jobs/sweep'
 import { CLASS_MEASUREMENT, SUPPORTED_CANNABIS_CLASSES } from '../lib/orders/limits'
+import { isProductionHostFingerprint } from './environment-fingerprints.mjs'
 
-const PRODUCTION_FP = '2b968b3cbe06'
 const fp = (u: string) =>
   createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)
 
@@ -36,7 +36,7 @@ if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL is required.')
   process.exit(1)
 }
-if (fp(process.env.DATABASE_URL) === PRODUCTION_FP) {
+if (isProductionHostFingerprint(fp(process.env.DATABASE_URL))) {
   console.error('REFUSING: this is production.')
   process.exit(1)
 }

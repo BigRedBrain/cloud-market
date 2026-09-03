@@ -25,6 +25,7 @@
 import { createHash } from 'node:crypto'
 import { config as loadEnv } from 'dotenv'
 import { Pool, neonConfig } from '@neondatabase/serverless'
+import { isProductionHostFingerprint, PRODUCTION_HOST_FINGERPRINT } from './environment-fingerprints.mjs'
 
 loadEnv({ path: '.env.local', quiet: true })
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
@@ -59,7 +60,7 @@ const secretFp = (url) => h12(new URL(url).password)
 
 /** Known constants. Fingerprints only — none of these is usable as a secret. */
 const DEV_ENDPOINT_FP = 'a5d81ac199d8'
-const PRODUCTION_HOST_FP = '2b968b3cbe06'
+
 /** The development password that leaked during debugging. Must never come back. */
 const EXPOSED_SECRET_FP = '67c25d76c19c'
 
@@ -116,7 +117,7 @@ async function main() {
     endpointFp(pooled) === DEV_ENDPOINT_FP && endpointFp(direct) === DEV_ENDPOINT_FP,
     `${endpointFp(pooled)} / ${endpointFp(direct)}`)
   check('neither string is the production host',
-    hostFp(pooled) !== PRODUCTION_HOST_FP && hostFp(direct) !== PRODUCTION_HOST_FP)
+    !isProductionHostFingerprint(hostFp(pooled)) && !isProductionHostFingerprint(hostFp(direct)))
   check('pooled and direct share one credential',
     secretFp(pooled) === secretFp(direct))
 
@@ -182,7 +183,7 @@ async function main() {
     console.log('         test is still worth doing.)')
   } else {
     check('the supplied production string is the production host',
-      hostFp(prodUrl) === PRODUCTION_HOST_FP, hostFp(prodUrl))
+      hostFp(prodUrl) === PRODUCTION_HOST_FINGERPRINT, hostFp(prodUrl))
 
     /** The new development password, aimed at the production host. */
     const crossed = new URL(prodUrl)

@@ -4,12 +4,12 @@
  *   # Production
  *   $env:DATABASE_URL_UNPOOLED = "<production DIRECT string>"
  *   $env:PRODUCTION_POOLED_URL = "<production POOLED string>"
- *   node scripts/verify-migration-target.mjs https://cloudmarket.cc --expect-migrations=8
+ *   node scripts/verify-migration-target.mjs https://cloudmarket.cc --expect-migrations=19
  *
  *   # An isolated rehearsal copy
  *   $env:DATABASE_URL          = "<copy POOLED string>"
  *   $env:DATABASE_URL_UNPOOLED = "<copy DIRECT string>"
- *   node scripts/verify-migration-target.mjs https://cloudmarket.cc --rehearsal --expect-migrations=8
+ *   node scripts/verify-migration-target.mjs https://cloudmarket.cc --rehearsal --expect-migrations=19
  *
  * Run this in the SAME shell that will run the migration, immediately before it.
  *
@@ -63,6 +63,14 @@ import { pathToFileURL } from 'node:url'
 import { config as loadEnv } from 'dotenv'
 import { Pool, neonConfig } from '@neondatabase/serverless'
 
+import {
+  DEVELOPMENT_ENDPOINT_FINGERPRINT,
+  DEVELOPMENT_HOST_FINGERPRINTS,
+  isProductionHostFingerprint,
+  PRODUCTION_HOST_FINGERPRINT,
+  PRODUCTION_HOST_FINGERPRINTS,
+} from './environment-fingerprints.mjs'
+
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
 /**
@@ -72,9 +80,16 @@ if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocke
  * they identify a database without disclosing one.
  */
 export const KNOWN_FINGERPRINTS = {
-  productionHost: '2b968b3cbe06',
-  developmentHosts: ['eec6912eb35b', '3c503c1409d2'],
-  developmentEndpoint: 'a5d81ac199d8',
+  productionHost: PRODUCTION_HOST_FINGERPRINT,
+  /**
+   * Current AND retired production. A retired endpoint is still not a valid
+   * rehearsal target, and `productionHost` alone would silently stop refusing
+   * one the moment production moved — which is exactly what happened to the
+   * hand-copied constant this replaces.
+   */
+  productionHosts: PRODUCTION_HOST_FINGERPRINTS,
+  developmentHosts: DEVELOPMENT_HOST_FINGERPRINTS,
+  developmentEndpoint: DEVELOPMENT_ENDPOINT_FINGERPRINT,
 }
 
 export const hostFp = (u) =>
@@ -147,8 +162,11 @@ export function evaluateIdentity({
           'must never be run against production.',
       )
     }
-    if (fp === KNOWN_FINGERPRINTS.productionHost) {
-      problems.push(`The ${label} matches the known production fingerprint.`)
+    if (isProductionHostFingerprint(fp)) {
+      problems.push(
+        `The ${label} matches a known production fingerprint ` +
+          `(${fp === PRODUCTION_HOST_FINGERPRINT ? 'current' : 'retired'}).`,
+      )
     }
     if (KNOWN_FINGERPRINTS.developmentHosts.includes(fp)) {
       problems.push(
@@ -177,7 +195,7 @@ const BASE = process.argv[2]?.startsWith('http') ? process.argv[2] : 'https://cl
  * for a reason that stopped being true two phases ago.
  *
  *   --rehearsal                         verify an isolated copy, not production
- *   --expect-migrations=8               journal length BEFORE this migration
+ *   --expect-migrations=19              journal length BEFORE this migration (0000..0018)
  *   --require-table=carts,cart_lines    must already exist
  *   --forbid-table=foo                  must NOT yet exist
  *   --forbid-column=verification_tokens.superseded_at

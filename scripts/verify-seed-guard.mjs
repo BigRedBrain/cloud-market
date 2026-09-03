@@ -34,18 +34,24 @@ import {
   KNOWN_PRODUCTION_FINGERPRINTS,
   PERMITTED_ENVIRONMENTS,
 } from './seed-target-guard.mjs'
+import { isProductionHostFingerprint, PRODUCTION_HOST_FINGERPRINT } from './environment-fingerprints.mjs'
 
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 loadEnv({ path: '.env.local', quiet: true })
 
-const PRODUCTION_FP = '2b968b3cbe06'
+/**
+ * The CURRENT production fingerprint, used below as the TEST FIXTURE fed to
+ * classifyTarget. It must be a value the denylist actually contains, or the
+ * refusal tests would pass without proving anything.
+ */
+const PRODUCTION_FP = PRODUCTION_HOST_FINGERPRINT
 const fp = (u) => hostFingerprint(u)
 
 if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL is required.')
   process.exit(1)
 }
-if (fp(process.env.DATABASE_URL) === PRODUCTION_FP) {
+if (isProductionHostFingerprint(fp(process.env.DATABASE_URL))) {
   console.error('REFUSING: this is production.')
   process.exit(1)
 }

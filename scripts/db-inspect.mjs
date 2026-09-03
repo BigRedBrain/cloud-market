@@ -6,11 +6,10 @@
 import { createHash } from 'node:crypto'
 import { config as loadEnv } from 'dotenv'
 import { Pool, neonConfig } from '@neondatabase/serverless'
+import { isProductionHostFingerprint } from './environment-fingerprints.mjs'
 
 loadEnv({ path: '.env.local', quiet: true })
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
-
-const PRODUCTION_POOLED_FP = '2b968b3cbe06'
 
 const fp = (u) => createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)
 
@@ -26,7 +25,7 @@ for (const key of ['DATABASE_URL', 'DATABASE_URL_UNPOOLED']) {
   console.log(`  fingerprint  ${fp(raw)}`)
   console.log(`  endpoint     ${pooled ? 'POOLED' : 'DIRECT'}`)
   console.log(`  database     ${url.pathname.slice(1).split('?')[0]}`)
-  console.log(`  is production? ${fp(raw) === PRODUCTION_POOLED_FP ? '*** YES ***' : 'no'}`)
+  console.log(`  is production? ${isProductionHostFingerprint(fp(raw)) ? '*** YES ***' : 'no'}`)
 
   const pool = new Pool({ connectionString: raw })
   try {

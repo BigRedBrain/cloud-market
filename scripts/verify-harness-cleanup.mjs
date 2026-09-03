@@ -37,12 +37,12 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { config as loadEnv } from 'dotenv'
 import { Pool, neonConfig } from '@neondatabase/serverless'
+import { isProductionHostFingerprint } from './environment-fingerprints.mjs'
 
 loadEnv({ path: '.env.local', quiet: true })
 if (typeof WebSocket !== 'undefined') neonConfig.webSocketConstructor = WebSocket
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:3404'
-const PRODUCTION_ENDPOINT_FP = '2b968b3cbe06'
 
 const hostFp = (u) => createHash('sha256').update(new URL(u).hostname).digest('hex').slice(0, 12)
 
@@ -50,7 +50,7 @@ if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL is required (development).')
   process.exit(1)
 }
-if (hostFp(process.env.DATABASE_URL) === PRODUCTION_ENDPOINT_FP) {
+if (isProductionHostFingerprint(hostFp(process.env.DATABASE_URL))) {
   console.error('REFUSING: this is the production database. Run it against development.')
   process.exit(1)
 }

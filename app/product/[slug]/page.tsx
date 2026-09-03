@@ -7,7 +7,7 @@ import { AddToBagForm } from '@/components/bag/bag-controls'
 import { ProductCard } from '@/components/product-card'
 import { SiteNav } from '@/components/site-nav'
 import { getBagCount } from '@/lib/bag/core'
-import { getCurrentUser } from '@/lib/auth/dal'
+import { getCurrentUser, requireMarketplaceAccess } from '@/lib/auth/dal'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { getProductBySlug, listProducts } from '@/lib/catalog/queries'
@@ -15,7 +15,15 @@ import { formatCents } from '@/lib/money'
 
 type ProductPageProps = { params: Promise<{ slug: string }> }
 
+/**
+ * Metadata is a private read too — see the note on the category route. A
+ * product name and short description in a `<title>`/`<meta>` pair is exactly
+ * the catalogue data membership exists to keep private, and it is produced by a
+ * query that runs before the component does.
+ */
 export async function generateMetadata({ params }: ProductPageProps): Promise<Metadata> {
+  await requireMarketplaceAccess()
+
   const { slug } = await params
   const detail = await getProductBySlug(slug)
 
@@ -51,6 +59,12 @@ function Spec({ label, value }: { label: string; value: string | null }) {
  
  */
 export default async function ProductPage({ params }: ProductPageProps) {
+  /*
+   * Before the product lookup: `notFound()` on an unknown slug must not double
+   * as a "this product exists" oracle for someone who is not a member.
+   */
+  await requireMarketplaceAccess()
+
   const bagViewer = await getCurrentUser()
   const bagCount = await getBagCount(bagViewer?.id ?? null)
 
@@ -70,7 +84,8 @@ export default async function ProductPage({ params }: ProductPageProps) {
 
   return (
     <>
-      <SiteNav bagCount={bagCount} />
+      {/* Literal grant, dominated by the guard above — see app/shop/page.tsx. */}
+      <SiteNav bagCount={bagCount} marketplaceEntry="granted" />
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-10 sm:px-6">
         <nav aria-label="Breadcrumb" className="mb-6">
