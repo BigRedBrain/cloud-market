@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation'
 import { and, asc, eq } from 'drizzle-orm'
 
 import { CancelOrderForm } from '@/components/orders/checkout-forms'
-import { SiteNav } from '@/components/site-nav'
+import { CustomerSiteNav } from '@/components/customer-site-nav'
 import { Badge } from '@/components/ui/badge'
 import { buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -89,7 +89,7 @@ export default async function OrderPage({
 
   return (
     <>
-      <SiteNav bagCount={0} />
+      <CustomerSiteNav bagCount={0} />
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6">
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
