@@ -222,6 +222,90 @@ assert.throws(
   /not exactly one approved head commit/,
 );
 
+const { readFileSync: readOpenPrSourceFile } =
+  await import('node:fs');
+
+const patchedOpenPrSource =
+  readOpenPrSourceFile(
+    new URL(
+      './ai-open-pr.mjs',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+
+assert.equal(
+  (
+    patchedOpenPrSource.match(
+      /pr\.headRefOid\s*&&/g,
+    ) ?? []
+  ).length,
+  0,
+  'Created PR verification must not conditionally skip a missing headRefOid.',
+);
+
+assert.match(
+  patchedOpenPrSource,
+  /if\s*\(\s*pr\.headRefOid\s*!==\s*manifest\.integration\.commit\s*\)/m,
+  'Created PR verification must require the exact approved headRefOid.',
+);
+
+assert.equal(
+  (
+    patchedOpenPrSource.match(
+      /verifyPrBaseAndScope\s*\(\{/g,
+    ) ?? []
+  ).length,
+  3,
+  'Source must contain one verifyPrBaseAndScope definition plus pre-create and post-create calls.',
+);
+
+const normalCreateMatch =
+  patchedOpenPrSource.match(
+    /const\s+pr\s*=\s*\r?\n\s*createPullRequest\(\{/m,
+  );
+
+assert.ok(
+  normalCreateMatch,
+  'Normal runtime PR creation call must exist.',
+);
+
+const normalCreateIndex =
+  patchedOpenPrSource.indexOf(
+    normalCreateMatch[0],
+  );
+
+assert.ok(
+  normalCreateIndex >= 0,
+  'Normal runtime PR creation call index must resolve.',
+);
+
+const postCreateOpenPrSource =
+  patchedOpenPrSource.slice(
+    normalCreateIndex,
+  );
+
+const postCreateVerifyIndex =
+  postCreateOpenPrSource.indexOf(
+    'verifyPrBaseAndScope({',
+  );
+
+const postCreateManifestIndex =
+  postCreateOpenPrSource.indexOf(
+    'updateManifestPrOpened({',
+  );
+
+assert.ok(
+  postCreateVerifyIndex > 0,
+  'Normal PR creation must rerun exact base/scope verification after the PR exists.',
+);
+
+assert.ok(
+  postCreateManifestIndex >
+    postCreateVerifyIndex,
+  'Post-create base/scope verification must finish before manifest pr-opened state is recorded.',
+);
+
 console.log(
   'AI open-PR base smoke: PASS',
 );

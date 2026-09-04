@@ -1240,7 +1240,6 @@ function createPullRequest({
   }
 
   if (
-    pr.headRefOid &&
     pr.headRefOid !==
     manifest.integration.commit
   ) {
@@ -2650,6 +2649,15 @@ export function runOpenPr({
       integrationBranch,
       baseBranch,
     });
+
+  verifyPrBaseAndScope({
+    manifest,
+    integrationPath,
+    integrationBranch,
+    commit,
+    baseBranch,
+  });
+
 
   updateManifestPrOpened({
     manifestPath,
