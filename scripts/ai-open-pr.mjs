@@ -33,8 +33,253 @@ const REMOTE =
 const EXPECTED_REPO =
   'BigRedBrain/cloud-market';
 
-const BASE_BRANCH =
+const DEFAULT_BRANCH =
   'main';
+
+export function resolvePrBaseBranch(
+  manifest,
+) {
+  const value =
+    manifest?.targetBranch;
+
+  if (
+    typeof value !== 'string' ||
+    !value.trim() ||
+    value !== value.trim()
+  ) {
+    throw new Error(
+      'Session manifest does not contain a valid recorded targetBranch. Legacy sessions must be recreated or explicitly recovered; refusing to assume main.',
+    );
+  }
+
+  if (
+    value ===
+    manifest?.integration?.branch
+  ) {
+    throw new Error(
+      'Recorded PR base branch may not equal the integration branch.',
+    );
+  }
+
+  return value;
+}
+
+export function validatePrComparison({
+  manifest,
+  comparison,
+  baseBranch,
+  commit,
+}) {
+  if (
+    !comparison ||
+    typeof comparison !== 'object'
+  ) {
+    throw new Error(
+      'GitHub returned invalid PR-base comparison data.',
+    );
+  }
+
+  if (
+    comparison.merge_base_commit?.sha !==
+    manifest.baseCommit
+  ) {
+    throw new Error(
+      'PR base merge-base no longer matches the audited session base commit.',
+    );
+  }
+
+  if (
+    comparison.ahead_by !== 1 ||
+    comparison.total_commits !== 1 ||
+    !Number.isInteger(
+      comparison.behind_by,
+    ) ||
+    comparison.behind_by < 0
+  ) {
+    throw new Error(
+      'PR comparison is not exactly one approved head commit above the audited merge-base.',
+    );
+  }
+
+  if (
+    !Array.isArray(
+      comparison.commits,
+    ) ||
+    comparison.commits.length !== 1 ||
+    comparison.commits[0]?.sha !==
+      commit
+  ) {
+    throw new Error(
+      'PR comparison commit set does not equal the approved integration commit.',
+    );
+  }
+
+  const expectedPaths =
+    manifest.integration
+      .changedPaths
+      .map(
+        (change) =>
+          normalizeRepoPath(
+            change.path,
+          ),
+      )
+      .sort();
+
+  if (
+    !Array.isArray(
+      comparison.files,
+    )
+  ) {
+    throw new Error(
+      'GitHub comparison did not return a complete file list.',
+    );
+  }
+
+  const actualPaths =
+    comparison.files
+      .map(
+        (file) =>
+          normalizeRepoPath(
+            file.filename,
+          ),
+      )
+      .sort();
+
+  if (
+    JSON.stringify(
+      actualPaths,
+    ) !==
+    JSON.stringify(
+      expectedPaths,
+    )
+  ) {
+    throw new Error(
+      'PR comparison path set differs from the approved integration manifest.',
+    );
+  }
+
+  return {
+    baseBranch,
+    behindBy:
+      comparison.behind_by,
+  };
+}
+
+function verifyPrBaseAndScope({
+  manifest,
+  integrationPath,
+  integrationBranch,
+  commit,
+  baseBranch,
+}) {
+  try {
+    gitTrim(
+      [
+        'check-ref-format',
+        '--branch',
+        baseBranch,
+      ],
+      integrationPath,
+    );
+  } catch {
+    throw new Error(
+      `Recorded PR base branch is not a valid Git branch name: ${baseBranch}`,
+    );
+  }
+
+  const remoteResultBefore =
+    gitTrim(
+      [
+        'ls-remote',
+        '--heads',
+        REMOTE,
+        `refs/heads/${baseBranch}`,
+      ],
+      integrationPath,
+    );
+
+  if (!remoteResultBefore) {
+    throw new Error(
+      `Recorded PR base branch does not exist on ${REMOTE}: ${baseBranch}`,
+    );
+  }
+
+  const remoteFieldsBefore =
+    remoteResultBefore
+      .split(/\s+/)
+      .filter(Boolean);
+
+  if (
+    remoteFieldsBefore.length < 2 ||
+    !/^[0-9a-f]{40,64}$/i.test(
+      remoteFieldsBefore[0] ?? '',
+    )
+  ) {
+    throw new Error(
+      'Could not parse the recorded PR base branch identity.',
+    );
+  }
+
+  const remoteBaseCommit =
+    remoteFieldsBefore[0];
+
+  const comparison =
+    ghJson(
+      [
+        'api',
+        `repos/${EXPECTED_REPO}/compare/${remoteBaseCommit}...${commit}`,
+      ],
+      integrationPath,
+    );
+
+  const validated =
+    validatePrComparison({
+      manifest,
+      comparison,
+      baseBranch,
+      commit,
+    });
+
+  const remoteResultAfter =
+    gitTrim(
+      [
+        'ls-remote',
+        '--heads',
+        REMOTE,
+        `refs/heads/${baseBranch}`,
+      ],
+      integrationPath,
+    );
+
+  if (!remoteResultAfter) {
+    throw new Error(
+      `Recorded PR base branch disappeared during verification: ${baseBranch}`,
+    );
+  }
+
+  const remoteFieldsAfter =
+    remoteResultAfter
+      .split(/\s+/)
+      .filter(Boolean);
+
+  if (
+    remoteFieldsAfter.length < 2 ||
+    !/^[0-9a-f]{40,64}$/i.test(
+      remoteFieldsAfter[0] ?? '',
+    ) ||
+    remoteFieldsAfter[0] !==
+      remoteBaseCommit
+  ) {
+    throw new Error(
+      'Recorded PR base branch moved while PR scope was being verified.',
+    );
+  }
+
+  return {
+    ...validated,
+    remoteBaseCommit,
+  };
+}
 
 function gitText(
   args,
@@ -784,10 +1029,10 @@ function verifyRepositoryIdentity(
   if (
     repo.defaultBranchRef
       ?.name !==
-    BASE_BRANCH
+    DEFAULT_BRANCH
   ) {
     throw new Error(
-      `Default branch mismatch. Expected ${BASE_BRANCH}, received ${repo.defaultBranchRef?.name ?? 'unknown'}.`,
+      `Default branch mismatch. Expected ${DEFAULT_BRANCH}, received ${repo.defaultBranchRef?.name ?? 'unknown'}.`,
     );
   }
 }
@@ -871,6 +1116,7 @@ function buildPrTitle(
 
 function buildPrBody(
   manifest,
+  baseBranch,
 ) {
   const task =
     String(
@@ -882,7 +1128,7 @@ function buildPrBody(
     '## Controlled AI integration',
     '',
     `Session: \`${manifest.sessionId}\``,
-    `Base: \`${BASE_BRANCH}\``,
+    `Base: \`${baseBranch}\``,
     `Head: \`${manifest.integration.branch}\``,
     `Approved commit: \`${manifest.integration.commit}\``,
     '',
@@ -904,6 +1150,7 @@ function createPullRequest({
   manifest,
   integrationPath,
   integrationBranch,
+  baseBranch,
 }) {
   const title =
     buildPrTitle(
@@ -913,6 +1160,7 @@ function createPullRequest({
   const body =
     buildPrBody(
       manifest,
+      baseBranch,
     );
 
   const url =
@@ -923,7 +1171,7 @@ function createPullRequest({
         '--repo',
         EXPECTED_REPO,
         '--base',
-        BASE_BRANCH,
+        baseBranch,
         '--head',
         integrationBranch,
         '--title',
@@ -984,7 +1232,7 @@ function createPullRequest({
 
   if (
     pr.baseRefName !==
-    BASE_BRANCH
+    baseBranch
   ) {
     throw new Error(
       'Created PR base branch mismatch.',
@@ -1008,6 +1256,7 @@ function updateManifestPrOpened({
   manifestPath,
   manifest,
   pr,
+  baseBranch,
 }) {
   const now =
     new Date()
@@ -1036,7 +1285,7 @@ function updateManifestPrOpened({
       pr.state,
 
     baseBranch:
-      BASE_BRANCH,
+      baseBranch,
 
     headBranch:
       manifest.integration.branch,
@@ -1142,7 +1391,25 @@ export function runOpenPr({
   );
 
   console.log(
-    `BASE BRANCH: PASS (${BASE_BRANCH})`,
+    `DEFAULT BRANCH: PASS (${DEFAULT_BRANCH})`,
+  );
+
+  const baseBranch =
+    resolvePrBaseBranch(
+      manifest,
+    );
+
+  const baseScope =
+    verifyPrBaseAndScope({
+      manifest,
+      integrationPath,
+      integrationBranch,
+      commit,
+      baseBranch,
+    });
+
+  console.log(
+    `PR BASE SCOPE: PASS (${baseBranch} @ ${baseScope.remoteBaseCommit}; base ahead by ${baseScope.behindBy})`,
   );
 
   findExistingPr({
@@ -1177,6 +1444,7 @@ export function runOpenPr({
       integrationPath,
       integrationBranch,
       commit,
+      baseBranch,
     };
   }
 
@@ -1190,12 +1458,14 @@ export function runOpenPr({
       manifest,
       integrationPath,
       integrationBranch,
+      baseBranch,
     });
 
   updateManifestPrOpened({
     manifestPath,
     manifest,
     pr,
+    baseBranch,
   });
 
   console.log('');
@@ -1220,7 +1490,7 @@ export function runOpenPr({
   );
 
   console.log(
-    `Base: ${BASE_BRANCH}`,
+    `Base: ${baseBranch}`,
   );
 
   console.log(
@@ -1260,6 +1530,7 @@ export function runOpenPr({
     integrationPath,
     integrationBranch,
     commit,
+    baseBranch,
     pr,
   };
 }

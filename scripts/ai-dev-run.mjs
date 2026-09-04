@@ -1928,6 +1928,7 @@ function writeSessionManifest({
   plan,
   sessionId,
   taskSlug,
+  targetBranch,
   baseRef,
   baseCommit,
   worktreeRoot,
@@ -1963,6 +1964,7 @@ function writeSessionManifest({
     updatedAt:
       now,
 
+    targetBranch,
     baseRef,
     baseCommit,
 
@@ -2623,6 +2625,8 @@ writeSessionManifest({
   plan,
   sessionId,
   taskSlug,
+  targetBranch:
+    branch,
   baseRef,
   baseCommit,
   worktreeRoot,
