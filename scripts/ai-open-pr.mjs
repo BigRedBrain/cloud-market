@@ -1305,6 +1305,1196 @@ function updateManifestPrOpened({
   );
 }
 
+
+export function validateRecoveryHeadBranch({
+  sessionId,
+  headBranch,
+  integrationBranch,
+}) {
+  if (
+    typeof headBranch !== 'string' ||
+    !headBranch.trim() ||
+    headBranch !== headBranch.trim()
+  ) {
+    throw new Error(
+      'Recovery head branch is invalid.',
+    );
+  }
+
+  if (
+    headBranch ===
+    integrationBranch
+  ) {
+    throw new Error(
+      'Recovery head branch must be separate from the original integration branch.',
+    );
+  }
+
+  const exact =
+    `ai/recover-${sessionId}`;
+
+  const slugPrefix =
+    'ai/recover-';
+
+  const sessionSuffix =
+    `-${sessionId}`;
+
+  const slugged =
+    headBranch.startsWith(
+      slugPrefix,
+    ) &&
+    headBranch.endsWith(
+      sessionSuffix,
+    ) &&
+    headBranch.length >
+      slugPrefix.length +
+      sessionSuffix.length;
+
+  if (
+    headBranch !== exact &&
+    !slugged
+  ) {
+    throw new Error(
+      `Recovery head branch must use a session-scoped recovery name ending in ${sessionId}.`,
+    );
+  }
+
+  return headBranch;
+}
+
+export function validateRecoveryComparison({
+  manifest,
+  comparison,
+  baseCommit,
+  headCommit,
+}) {
+  if (
+    !comparison ||
+    typeof comparison !== 'object'
+  ) {
+    throw new Error(
+      'GitHub returned invalid recovery comparison data.',
+    );
+  }
+
+  if (
+    comparison.merge_base_commit?.sha !==
+    baseCommit
+  ) {
+    throw new Error(
+      'Recovery merge-base does not equal the current replacement base commit.',
+    );
+  }
+
+  if (
+    comparison.ahead_by !== 1 ||
+    comparison.behind_by !== 0 ||
+    comparison.total_commits !== 1
+  ) {
+    throw new Error(
+      'Recovery PR must be exactly one commit ahead of the current replacement base with no base drift.',
+    );
+  }
+
+  if (
+    !Array.isArray(
+      comparison.commits,
+    ) ||
+    comparison.commits.length !== 1 ||
+    comparison.commits[0]?.sha !==
+      headCommit
+  ) {
+    throw new Error(
+      'Recovery comparison commit set does not equal the expected recovery head commit.',
+    );
+  }
+
+  const expectedPaths =
+    manifest.integration
+      .changedPaths
+      .map(
+        (change) =>
+          normalizeRepoPath(
+            change.path,
+          ),
+      )
+      .sort();
+
+  if (
+    !Array.isArray(
+      comparison.files,
+    )
+  ) {
+    throw new Error(
+      'GitHub recovery comparison did not return a complete file list.',
+    );
+  }
+
+  const actualPaths =
+    comparison.files
+      .map(
+        (file) =>
+          normalizeRepoPath(
+            file.filename,
+          ),
+      )
+      .sort();
+
+  if (
+    JSON.stringify(
+      actualPaths,
+    ) !==
+    JSON.stringify(
+      expectedPaths,
+    )
+  ) {
+    throw new Error(
+      'Recovery PR path set differs from the approved integration manifest.',
+    );
+  }
+
+  return {
+    baseCommit,
+    headCommit,
+    changedPaths:
+      actualPaths,
+  };
+}
+
+function readRemoteBranchSha({
+  integrationPath,
+  branch,
+}) {
+  try {
+    gitTrim(
+      [
+        'check-ref-format',
+        '--branch',
+        branch,
+      ],
+      integrationPath,
+    );
+  } catch {
+    throw new Error(
+      `Invalid Git branch name: ${branch}`,
+    );
+  }
+
+  const result =
+    gitTrim(
+      [
+        'ls-remote',
+        '--heads',
+        REMOTE,
+        `refs/heads/${branch}`,
+      ],
+      integrationPath,
+    );
+
+  if (!result) {
+    throw new Error(
+      `Required remote branch does not exist on ${REMOTE}: ${branch}`,
+    );
+  }
+
+  const fields =
+    result
+      .split(/\s+/)
+      .filter(Boolean);
+
+  if (
+    fields.length < 2 ||
+    fields[1] !==
+      `refs/heads/${branch}` ||
+    !/^[0-9a-f]{40,64}$/i.test(
+      fields[0] ?? '',
+    )
+  ) {
+    throw new Error(
+      `Unexpected remote branch response for ${branch}.`,
+    );
+  }
+
+  return fields[0];
+}
+
+function validateRecoveryManifest({
+  sessionsRoot,
+  manifestPath,
+  sessionId,
+}) {
+  let manifest;
+
+  try {
+    manifest =
+      JSON.parse(
+        readFileSync(
+          manifestPath,
+          'utf8',
+        ),
+      );
+  } catch {
+    throw new Error(
+      'Recovery requires a valid session manifest.',
+    );
+  }
+
+  if (
+    manifest.manifestVersion !== 1
+  ) {
+    throw new Error(
+      'Unsupported manifest version for recovery.',
+    );
+  }
+
+  if (
+    manifest.sessionId !==
+    sessionId
+  ) {
+    throw new Error(
+      'Recovery manifest session ID mismatch.',
+    );
+  }
+
+  if (
+    manifest.status !==
+    'pr-opened'
+  ) {
+    throw new Error(
+      `Recovery requires manifest status pr-opened. Current status: ${manifest.status ?? 'unknown'}.`,
+    );
+  }
+
+  if (
+    manifest.cleanup
+  ) {
+    throw new Error(
+      'Recovery is refused after cleanup state has been recorded.',
+    );
+  }
+
+  if (
+    !manifest.worktreeRoot ||
+    !pathIsInside(
+      sessionsRoot,
+      manifest.worktreeRoot,
+    )
+  ) {
+    throw new Error(
+      'Recovery manifest worktree root is outside the allowed workspace.',
+    );
+  }
+
+  if (
+    resolve(
+      dirname(
+        manifestPath,
+      ),
+    ) !==
+    resolve(
+      manifest.worktreeRoot,
+    )
+  ) {
+    throw new Error(
+      'Recovery manifest location does not match its recorded worktree root.',
+    );
+  }
+
+  const integration =
+    manifest.integration;
+
+  if (
+    !integration ||
+    typeof integration !==
+      'object'
+  ) {
+    throw new Error(
+      'Recovery integration metadata is missing.',
+    );
+  }
+
+  if (
+    integration.branch !==
+    `ai/integrate-${sessionId}`
+  ) {
+    throw new Error(
+      'Recovery integration branch does not match the session.',
+    );
+  }
+
+  if (
+    typeof integration.commit !==
+      'string' ||
+    !/^[0-9a-f]{40,64}$/i.test(
+      integration.commit,
+    )
+  ) {
+    throw new Error(
+      'Recovery integration commit is invalid.',
+    );
+  }
+
+  const expectedPath =
+    join(
+      manifest.worktreeRoot,
+      'integration',
+    );
+
+  if (
+    resolve(
+      integration.path ?? '',
+    ) !==
+    resolve(
+      expectedPath,
+    ) ||
+    !existsSync(
+      integration.path,
+    )
+  ) {
+    throw new Error(
+      'Recovery integration worktree is missing or outside the recorded session.',
+    );
+  }
+
+  if (
+    !Array.isArray(
+      integration.changedPaths,
+    ) ||
+    integration.changedPaths.length === 0
+  ) {
+    throw new Error(
+      'Recovery requires the approved integration changed-path manifest.',
+    );
+  }
+
+  const pr =
+    integration.pullRequest;
+
+  if (
+    !pr ||
+    typeof pr !== 'object' ||
+    pr.repository !==
+      EXPECTED_REPO ||
+    !Number.isInteger(
+      pr.number,
+    ) ||
+    pr.number < 1 ||
+    typeof pr.headBranch !==
+      'string' ||
+    typeof pr.baseBranch !==
+      'string' ||
+    typeof pr.commit !==
+      'string' ||
+    !/^[0-9a-f]{40,64}$/i.test(
+      pr.commit,
+    )
+  ) {
+    throw new Error(
+      'Recovery requires a complete recorded pull request identity.',
+    );
+  }
+
+  return manifest;
+}
+
+function verifyApprovedIntegrationTree({
+  manifest,
+  recoveryTree,
+}) {
+  if (
+    !recoveryTree ||
+    typeof recoveryTree !==
+      'object' ||
+    !Array.isArray(
+      recoveryTree.tree,
+    ) ||
+    recoveryTree.truncated === true
+  ) {
+    throw new Error(
+      'Recovery head tree is unavailable or truncated.',
+    );
+  }
+
+  const byPath =
+    new Map(
+      recoveryTree.tree.map(
+        (entry) => [
+          normalizeRepoPath(
+            entry.path,
+          ),
+          entry,
+        ],
+      ),
+    );
+
+  for (
+    const change
+    of manifest.integration
+      .changedPaths
+  ) {
+    const path =
+      normalizeRepoPath(
+        change.path,
+      );
+
+    const entry =
+      byPath.get(
+        path,
+      );
+
+    let expectedObject;
+
+    try {
+      expectedObject =
+        gitTrim(
+          [
+            'rev-parse',
+            `${manifest.integration.commit}:${path}`,
+          ],
+          manifest.integration.path,
+        );
+    } catch {
+      throw new Error(
+        `Unable to read approved integration object identity: ${path}`,
+      );
+    }
+
+    if (
+      !entry ||
+      entry.type !==
+        'blob' ||
+      entry.sha !==
+        expectedObject
+    ) {
+      throw new Error(
+        `Recovery head content differs from the approved integration commit: ${path}`,
+      );
+    }
+  }
+
+  if (
+    typeof recoveryTree.sha !==
+      'string' ||
+    !/^[0-9a-f]{40,64}$/i.test(
+      recoveryTree.sha,
+    )
+  ) {
+    throw new Error(
+      'Recovery head tree identity is invalid.',
+    );
+  }
+
+  return recoveryTree.sha;
+}
+
+function verifyRecoveryCandidate({
+  manifest,
+  replacementNumber,
+  expectedBaseBranch,
+  expectedHeadBranch,
+  expectedHeadCommit,
+}) {
+  const integrationPath =
+    manifest.integration.path;
+
+  const recordedPr =
+    manifest.integration
+      .pullRequest;
+
+  if (
+    replacementNumber ===
+    recordedPr.number
+  ) {
+    throw new Error(
+      'Replacement PR number must differ from the currently recorded PR.',
+    );
+  }
+
+  if (
+    !Number.isInteger(
+      replacementNumber,
+    ) ||
+    replacementNumber < 1
+  ) {
+    throw new Error(
+      'Replacement PR number is invalid.',
+    );
+  }
+
+  if (
+    typeof expectedHeadCommit !==
+      'string' ||
+    !/^[0-9a-f]{40}$/i.test(
+      expectedHeadCommit,
+    )
+  ) {
+    throw new Error(
+      'Expected recovery head commit must be a full 40-character SHA.',
+    );
+  }
+
+  validateRecoveryHeadBranch({
+    sessionId:
+      manifest.sessionId,
+    headBranch:
+      expectedHeadBranch,
+    integrationBranch:
+      manifest.integration
+        .branch,
+  });
+
+  if (
+    expectedBaseBranch ===
+    expectedHeadBranch
+  ) {
+    throw new Error(
+      'Recovery base and head branches may not be the same.',
+    );
+  }
+
+  const baseCommitBefore =
+    readRemoteBranchSha({
+      integrationPath,
+      branch:
+        expectedBaseBranch,
+    });
+
+  const headCommitBefore =
+    readRemoteBranchSha({
+      integrationPath,
+      branch:
+        expectedHeadBranch,
+    });
+
+  if (
+    headCommitBefore !==
+    expectedHeadCommit
+  ) {
+    throw new Error(
+      'Recovery head branch does not point to the explicitly expected commit.',
+    );
+  }
+
+  const oldPr =
+    ghJson(
+      [
+        'api',
+        `repos/${EXPECTED_REPO}/pulls/${recordedPr.number}`,
+      ],
+      integrationPath,
+    );
+
+  if (
+    oldPr.number !==
+      recordedPr.number ||
+    oldPr.state !==
+      'closed' ||
+    oldPr.merged === true
+  ) {
+    throw new Error(
+      'The currently recorded PR must be CLOSED and NOT MERGED before replacement recovery.',
+    );
+  }
+
+  if (
+    oldPr.head?.ref !==
+      recordedPr.headBranch ||
+    oldPr.head?.sha !==
+      recordedPr.commit
+  ) {
+    throw new Error(
+      'The closed original PR no longer matches the recorded head identity.',
+    );
+  }
+
+  const replacementPr =
+    ghJson(
+      [
+        'api',
+        `repos/${EXPECTED_REPO}/pulls/${replacementNumber}`,
+      ],
+      integrationPath,
+    );
+
+  if (
+    replacementPr.number !==
+      replacementNumber ||
+    replacementPr.state !==
+      'open' ||
+    replacementPr.merged === true ||
+    replacementPr.draft === true
+  ) {
+    throw new Error(
+      'Replacement PR must be OPEN, unmerged, and non-draft.',
+    );
+  }
+
+  if (
+    replacementPr.base?.repo
+      ?.full_name !==
+      EXPECTED_REPO ||
+    replacementPr.head?.repo
+      ?.full_name !==
+      EXPECTED_REPO
+  ) {
+    throw new Error(
+      'Replacement PR base and head must both belong to the approved repository.',
+    );
+  }
+
+  if (
+    replacementPr.base?.ref !==
+      expectedBaseBranch ||
+    replacementPr.head?.ref !==
+      expectedHeadBranch ||
+    replacementPr.head?.sha !==
+      expectedHeadCommit
+  ) {
+    throw new Error(
+      'Replacement PR base/head identity differs from the explicit recovery arguments.',
+    );
+  }
+
+  if (
+    typeof replacementPr.html_url !==
+      'string' ||
+    !/^https:\/\/github\.com\//i.test(
+      replacementPr.html_url,
+    )
+  ) {
+    throw new Error(
+      'Replacement PR URL is invalid.',
+    );
+  }
+
+  const comparison =
+    ghJson(
+      [
+        'api',
+        `repos/${EXPECTED_REPO}/compare/${baseCommitBefore}...${expectedHeadCommit}`,
+      ],
+      integrationPath,
+    );
+
+  validateRecoveryComparison({
+    manifest,
+    comparison,
+    baseCommit:
+      baseCommitBefore,
+    headCommit:
+      expectedHeadCommit,
+  });
+
+  const recoveryGitCommit =
+    ghJson(
+      [
+        'api',
+        `repos/${EXPECTED_REPO}/git/commits/${expectedHeadCommit}`,
+      ],
+      integrationPath,
+    );
+
+  if (
+    recoveryGitCommit.sha !==
+      expectedHeadCommit ||
+    typeof recoveryGitCommit.tree?.sha !==
+      'string' ||
+    !/^[0-9a-f]{40,64}$/i.test(
+      recoveryGitCommit.tree.sha,
+    )
+  ) {
+    throw new Error(
+      'Recovery Git commit did not resolve to a valid tree.',
+    );
+  }
+
+  const recoveryTree =
+    ghJson(
+      [
+        'api',
+        `repos/${EXPECTED_REPO}/git/trees/${recoveryGitCommit.tree.sha}?recursive=1`,
+      ],
+      integrationPath,
+    );
+
+  if (
+    recoveryTree.sha !==
+      recoveryGitCommit.tree.sha
+  ) {
+    throw new Error(
+      'Recovery tree identity does not match the recovery commit.',
+    );
+  }
+
+  const verifiedHeadTree =
+    verifyApprovedIntegrationTree({
+      manifest,
+      recoveryTree,
+    });
+
+  const baseCommitAfter =
+    readRemoteBranchSha({
+      integrationPath,
+      branch:
+        expectedBaseBranch,
+    });
+
+  const headCommitAfter =
+    readRemoteBranchSha({
+      integrationPath,
+      branch:
+        expectedHeadBranch,
+    });
+
+  if (
+    baseCommitAfter !==
+      baseCommitBefore ||
+    headCommitAfter !==
+      expectedHeadCommit
+  ) {
+    throw new Error(
+      'Recovery base or head branch moved while verification was running.',
+    );
+  }
+
+  return {
+    oldPr: {
+      number:
+        recordedPr.number,
+      liveState:
+        'CLOSED',
+      observedBaseBranch:
+        oldPr.base?.ref ??
+        null,
+      headBranch:
+        recordedPr.headBranch,
+      commit:
+        recordedPr.commit,
+    },
+
+    replacementPr: {
+      number:
+        replacementNumber,
+      url:
+        replacementPr.html_url,
+      createdAt:
+        replacementPr.created_at ??
+        null,
+      baseBranch:
+        expectedBaseBranch,
+      headBranch:
+        expectedHeadBranch,
+      commit:
+        expectedHeadCommit,
+    },
+
+    verifiedBaseCommit:
+      baseCommitBefore,
+
+    verifiedHeadTree,
+  };
+}
+
+export function buildRecoveryManifestUpdate({
+  manifest,
+  candidate,
+  now,
+}) {
+  if (
+    typeof now !== 'string' ||
+    !now
+  ) {
+    throw new Error(
+      'Recovery manifest update requires an explicit timestamp.',
+    );
+  }
+
+  const next =
+    JSON.parse(
+      JSON.stringify(
+        manifest,
+      ),
+    );
+
+  const previous =
+    next.integration
+      ?.pullRequest;
+
+  if (
+    !previous ||
+    typeof previous !==
+      'object'
+  ) {
+    throw new Error(
+      'Recovery manifest update requires an existing pull request record.',
+    );
+  }
+
+  const existingHistory =
+    next.integration
+      .pullRequestHistory;
+
+  if (
+    existingHistory !== undefined &&
+    !Array.isArray(
+      existingHistory,
+    )
+  ) {
+    throw new Error(
+      'Existing pull request history is invalid.',
+    );
+  }
+
+  const history =
+    Array.isArray(
+      existingHistory,
+    )
+      ? existingHistory
+      : [];
+
+  history.push({
+    ...previous,
+
+    supersededAt:
+      now,
+
+    supersededBy:
+      candidate.replacementPr
+        .number,
+
+    supersededLiveState:
+      candidate.oldPr
+        .liveState,
+
+    observedBaseBranch:
+      candidate.oldPr
+        .observedBaseBranch,
+  });
+
+  next.integration.pullRequestHistory =
+    history;
+
+  next.integration.pullRequest = {
+    openedAt:
+      candidate.replacementPr
+        .createdAt ??
+      now,
+
+    recoveredAt:
+      now,
+
+    repository:
+      EXPECTED_REPO,
+
+    number:
+      candidate.replacementPr
+        .number,
+
+    url:
+      candidate.replacementPr
+        .url,
+
+    state:
+      'OPEN',
+
+    baseBranch:
+      candidate.replacementPr
+        .baseBranch,
+
+    headBranch:
+      candidate.replacementPr
+        .headBranch,
+
+    commit:
+      candidate.replacementPr
+        .commit,
+
+    recovery: {
+      kind:
+        'replacement-pr',
+
+      reason:
+        'stacked-base-rewrite-or-deletion',
+
+      previousNumber:
+        previous.number,
+
+      verifiedBaseCommit:
+        candidate.verifiedBaseCommit,
+
+      verifiedHeadTree:
+        candidate.verifiedHeadTree,
+    },
+  };
+
+  next.updatedAt =
+    now;
+
+  return next;
+}
+
+function recoverySnapshot(
+  candidate,
+) {
+  return JSON.stringify(
+    candidate,
+  );
+}
+
+export function runRecoverPr({
+  repoRoot,
+  sessionId,
+  replacementNumber,
+  expectedBaseBranch,
+  expectedHeadBranch,
+  expectedHeadCommit,
+  checkOnly = false,
+}) {
+  requireCleanOrchestrator(
+    repoRoot,
+  );
+
+  const orchestratorBranch =
+    requireSafeOrchestratorBranch(
+      repoRoot,
+    );
+
+  const {
+    sessionsRoot,
+    manifestPath,
+  } =
+    findSessionManifest({
+      repoRoot,
+      sessionId,
+    });
+
+  const manifestRaw =
+    readFileSync(
+      manifestPath,
+      'utf8',
+    );
+
+  const manifest =
+    validateRecoveryManifest({
+      sessionsRoot,
+      manifestPath,
+      sessionId,
+    });
+
+  verifyLocalCommit(
+    manifest,
+  );
+
+  verifyRepositoryIdentity(
+    manifest.integration.path,
+  );
+
+  console.log('');
+  console.log(
+    checkOnly
+      ? 'REPLACEMENT PR RECOVERY PREFLIGHT'
+      : 'HUMAN-APPROVED REPLACEMENT PR RECOVERY',
+  );
+  console.log(
+    '========================================',
+  );
+  console.log(
+    `Orchestrator branch: ${orchestratorBranch}`,
+  );
+  console.log(
+    `Session: ${sessionId}`,
+  );
+  console.log(
+    `Recorded PR: #${manifest.integration.pullRequest.number}`,
+  );
+  console.log(
+    `Replacement PR: #${replacementNumber}`,
+  );
+  console.log(
+    `Replacement base: ${expectedBaseBranch}`,
+  );
+  console.log(
+    `Replacement head: ${expectedHeadBranch}`,
+  );
+  console.log(
+    `Replacement commit: ${expectedHeadCommit}`,
+  );
+
+  const first =
+    verifyRecoveryCandidate({
+      manifest,
+      replacementNumber,
+      expectedBaseBranch,
+      expectedHeadBranch,
+      expectedHeadCommit,
+    });
+
+  console.log('');
+  console.log(
+    'RECOVERY CANDIDATE: PASS',
+  );
+  console.log(
+    `Original PR: #${first.oldPr.number} CLOSED / NOT MERGED`,
+  );
+  console.log(
+    `Replacement PR: #${first.replacementPr.number} OPEN`,
+  );
+  console.log(
+    `Verified base commit: ${first.verifiedBaseCommit}`,
+  );
+  console.log(
+    `Verified head tree: ${first.verifiedHeadTree}`,
+  );
+  console.log(
+    `Approved changed paths: ${manifest.integration.changedPaths.length}`,
+  );
+
+  if (checkOnly) {
+    console.log('');
+    console.log(
+      'RECOVERY PREFLIGHT COMPLETE',
+    );
+    console.log(
+      'No manifest was changed.',
+    );
+    console.log(
+      'No branch or pull request was created, closed, deleted, merged, or modified.',
+    );
+
+    return {
+      manifestPath,
+      candidate:
+        first,
+    };
+  }
+
+  const second =
+    verifyRecoveryCandidate({
+      manifest,
+      replacementNumber,
+      expectedBaseBranch,
+      expectedHeadBranch,
+      expectedHeadCommit,
+    });
+
+  if (
+    recoverySnapshot(
+      first,
+    ) !==
+    recoverySnapshot(
+      second,
+    )
+  ) {
+    throw new Error(
+      'Recovery candidate changed between verification passes.',
+    );
+  }
+
+  const manifestRawBeforeWrite =
+    readFileSync(
+      manifestPath,
+      'utf8',
+    );
+
+  if (
+    manifestRawBeforeWrite !==
+    manifestRaw
+  ) {
+    throw new Error(
+      'Session manifest changed during recovery verification.',
+    );
+  }
+
+  const now =
+    new Date()
+      .toISOString();
+
+  const next =
+    buildRecoveryManifestUpdate({
+      manifest,
+      candidate:
+        second,
+      now,
+    });
+
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      next,
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  const written =
+    JSON.parse(
+      readFileSync(
+        manifestPath,
+        'utf8',
+      ),
+    );
+
+  if (
+    written.status !==
+      'pr-opened' ||
+    written.integration
+      ?.pullRequest
+      ?.number !==
+      replacementNumber ||
+    written.integration
+      ?.pullRequest
+      ?.baseBranch !==
+      expectedBaseBranch ||
+    written.integration
+      ?.pullRequest
+      ?.headBranch !==
+      expectedHeadBranch ||
+    written.integration
+      ?.pullRequest
+      ?.commit !==
+      expectedHeadCommit
+  ) {
+    throw new Error(
+      'Recovery manifest post-write verification failed.',
+    );
+  }
+
+  console.log('');
+  console.log(
+    '========================================',
+  );
+  console.log(
+    'REPLACEMENT PR RECOVERY: PASS',
+  );
+  console.log(
+    '========================================',
+  );
+  console.log(
+    `Manifest PR record: #${replacementNumber}`,
+  );
+  console.log(
+    'Previous PR record preserved in pullRequestHistory.',
+  );
+  console.log(
+    'Manifest status remains: pr-opened',
+  );
+  console.log('');
+  console.log(
+    'No GitHub pull request or branch was modified by this recovery command.',
+  );
+  console.log(
+    'No merge, deployment, migration, or database command was executed.',
+  );
+
+  return {
+    manifestPath,
+    candidate:
+      second,
+  };
+}
+
+
 export function runOpenPr({
   repoRoot,
   sessionId,
